@@ -1,6 +1,6 @@
 # FRIDAY Core API
 
-FastAPI service for the Nimbus Desk frontend and its deterministic agent engine. All analysis and market data is currently mocked; this service does not connect to AI providers, brokers, MT5, trading platforms, or external data providers.
+FastAPI service for the Nimbus Desk frontend and its deterministic agent engine. FRIDAY can ingest TradingView webhook events and manually requested Twelve Data market snapshots. It does not connect to brokers, MT5, order execution, automated trading, or AI providers.
 
 ## Setup
 
@@ -33,6 +33,7 @@ The API is available at `http://127.0.0.1:8000`, with interactive documentation 
 - `GET /api/markets`
 - `POST /api/analyze`
 - `POST /api/webhooks/tradingview/{webhook_token}`
+- `POST /api/market-data/twelve-data/snapshot?symbol=XAU%2FUSD`
 
 Example analysis request:
 
@@ -58,7 +59,26 @@ source connector -> normalized event -> ingestion service -> FRIDAY Core -> agen
 - `app/ingestion/` defines the `SourceConnector` contract and the provider-agnostic ingestion hand-off.
 - `app/agents/` receives only normalized events; it does not parse provider payloads.
 
-TradingView is currently the only connector, classified as a webhook market-data source. Future market-data, financial-news, economic-calendar, fundamental, forex, crypto, commodities, sentiment, or alternative-data integrations should implement `SourceConnector`, normalize their payload into `NormalizedDataEvent`, and send it through `IngestionService`. No external provider is connected by this foundation.
+TradingView is a webhook market-data connector. Twelve Data is an API market-data connector using the same provider-neutral flow. Future market-data, financial-news, economic-calendar, fundamental, forex, crypto, commodities, sentiment, or alternative-data integrations should implement `SourceConnector`, normalize their payload into `NormalizedDataEvent`, and send it through `IngestionService`.
+
+## Twelve Data market snapshots
+
+Set `TWELVE_DATA_API_KEY` in the backend process environment before starting the API. The process environment takes precedence; for local development only, the backend also reads this single setting from `backend/.env` when the process variable is absent. Keep the value in your operating-system or deployment secret manager; never commit it or place it in a URL, request body, test, or documentation.
+
+For local PowerShell use, set the environment variable in the same terminal that starts Uvicorn:
+
+```powershell
+$env:TWELVE_DATA_API_KEY = Read-Host "Twelve Data API key"
+python -m uvicorn app.main:app --reload --no-access-log --host 127.0.0.1 --port 8000
+```
+
+Request the initial supported test instrument, using Twelve Data's `XAU/USD` symbol format:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/market-data/twelve-data/snapshot?symbol=XAU%2FUSD"
+```
+
+The backend calls Twelve Data's quote endpoint, authenticates in the outbound request header, normalizes the response into `NormalizedDataEvent`, and sends it through the shared `IngestionService` into FRIDAY Core. The API response contains the normalized market event, never the API key. Provider failures return a generic error without provider credentials or response details. This manual route performs one upstream request and is intended for development and controlled testing; it is not a live stream or trading endpoint.
 
 ## TradingView webhooks
 

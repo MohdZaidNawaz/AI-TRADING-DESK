@@ -21,3 +21,10 @@ class EventConsumer(Protocol):
 
     def ingest_event(self, event: NormalizedDataEvent) -> object:
         """Pass an event to the intelligence orchestration layer."""
+
+
+class MarketDataClient(Protocol):
+    """Retrieves a provider payload without exposing provider details downstream."""
+
+    async def fetch_snapshot(self, symbol: str) -> Mapping[str, Any]:
+        """Return one raw market snapshot for connector normalization."""
