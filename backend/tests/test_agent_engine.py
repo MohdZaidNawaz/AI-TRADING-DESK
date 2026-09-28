@@ -38,6 +38,16 @@ def test_existing_health_endpoint_still_works() -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_existing_agents_and_markets_endpoints_still_work() -> None:
+    agents_response = get("/api/agents")
+    markets_response = get("/api/markets")
+
+    assert agents_response.status_code == 200
+    assert agents_response.json()["count"] == 8
+    assert markets_response.status_code == 200
+    assert markets_response.json()["count"] == 3
+
+
 def test_generic_analysis_routes_to_full_desk() -> None:
     response = post_json(
         "/api/analyze",
@@ -48,6 +58,7 @@ def test_generic_analysis_routes_to_full_desk() -> None:
     payload = response.json()
     assert payload["symbol"] == "XAUUSD"
     assert payload["mode"] == "deterministic_mock"
+    assert payload["selected_agents"] == payload["routing"]["selected_agents"]
     assert len(payload["routing"]["selected_agents"]) == 8
     assert len(payload["agent_results"]) == 8
     assert all(result["status"] == "completed" for result in payload["agent_results"])
@@ -62,6 +73,7 @@ def test_targeted_query_routes_specialists_and_marks_others_skipped() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["selected_agents"] == ["news", "risk", "journal"]
     assert payload["routing"]["selected_agents"] == ["news", "risk", "journal"]
 
     statuses = {
@@ -72,6 +84,20 @@ def test_targeted_query_routes_specialists_and_marks_others_skipped() -> None:
     assert statuses["risk"] == "completed"
     assert statuses["journal"] == "completed"
     assert statuses["technical"] == "skipped"
+    assert payload["synthesis"]["agents_consulted"] == ["news", "risk", "journal"]
+
+
+def test_analysis_accepts_an_optional_symbol() -> None:
+    response = post_json(
+        "/api/analyze",
+        {"query": "Review the latest news catalysts"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] is None
+    assert payload["selected_agents"] == ["news", "risk", "journal"]
+    assert "MARKET CONTEXT" in payload["synthesis"]["summary"]
 
 
 def test_same_request_has_deterministic_response() -> None:

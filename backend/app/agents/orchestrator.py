@@ -6,12 +6,20 @@ from app.agents.specialists import create_specialist_agents
 from app.models.schemas import AgentAnalysis, AnalyzeRequest, AnalyzeResponse, RoutingDecision
 
 
-class NimbusOrchestrator:
+class FridayCore:
+    """Coordinates deterministic specialist analysis and master synthesis.
+
+    The core depends only on the shared agent contract, so deterministic agents can
+    later be replaced with data- or model-backed adapters without changing the API.
+    """
+
+    _DEFAULT_SUBJECT = "MARKET CONTEXT"
+
     def __init__(self, specialists: list[BaseAgent], master: MasterAgent) -> None:
         self._specialists = specialists
         self._master = master
 
-    def route(self, query: str) -> RoutingDecision:
+    def select_agents(self, query: str) -> RoutingDecision:
         matched_ids = {
             agent.agent_id
             for agent in self._specialists
@@ -32,14 +40,20 @@ class NimbusOrchestrator:
         ]
         return RoutingDecision(selected_agents=selected_agents, reason=reason)
 
-    def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
-        context = AnalysisContext(symbol=request.symbol, query=request.query)
-        routing = self.route(request.query)
-        selected = set(routing.selected_agents)
+    def route(self, query: str) -> RoutingDecision:
+        """Compatibility alias for the previous orchestration interface."""
+        return self.select_agents(query)
+
+    def run_agents(
+        self,
+        context: AnalysisContext,
+        selected_agents: set[str],
+    ) -> list[AgentAnalysis]:
+        """Run selected specialists and preserve a status for the rest of the desk."""
         results: list[AgentAnalysis] = []
 
         for agent in self._specialists:
-            if agent.agent_id not in selected:
+            if agent.agent_id not in selected_agents:
                 results.append(agent.skipped())
                 continue
 
@@ -58,23 +72,42 @@ class NimbusOrchestrator:
                     )
                 )
 
+        return results
+
+    def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
+        context = AnalysisContext(
+            symbol=request.symbol or self._DEFAULT_SUBJECT,
+            query=request.query,
+        )
+        routing = self.select_agents(request.query)
+        results = self.run_agents(context, set(routing.selected_agents))
+
         completed_results = [result for result in results if result.status == "completed"]
         synthesis = self._master.synthesize(context, completed_results)
-        digest = sha256(f"{request.symbol}\n{request.query}".encode()).hexdigest()[:16]
+        digest = sha256(f"{request.symbol or ''}\n{request.query}".encode()).hexdigest()[:16]
 
         return AnalyzeResponse(
             analysis_id=f"mock-{digest}",
             mode="deterministic_mock",
             symbol=request.symbol,
             query=request.query,
+            selected_agents=routing.selected_agents,
             routing=routing,
             agent_results=results,
             synthesis=synthesis,
         )
 
 
-def create_orchestrator() -> NimbusOrchestrator:
-    return NimbusOrchestrator(
+def create_friday_core() -> FridayCore:
+    return FridayCore(
         specialists=create_specialist_agents(),
         master=MasterAgent(),
     )
+
+
+# Keep the previous public names available to avoid breaking existing imports.
+NimbusOrchestrator = FridayCore
+
+
+def create_orchestrator() -> FridayCore:
+    return create_friday_core()

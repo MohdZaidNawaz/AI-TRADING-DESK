@@ -6,7 +6,7 @@ class MasterAgent:
     """Deterministic synthesis layer; replaceable by a model-backed adapter later."""
 
     agent_id = "master"
-    name = "Nimbus Master"
+    name = "FRIDAY Master"
 
     def synthesize(
         self,
@@ -20,7 +20,7 @@ class MasterAgent:
         return Synthesis(
             status="completed",
             agents_consulted=consulted,
-            summary=f"Nimbus routed {context.symbol} to {agent_names}.",
+            summary=f"FRIDAY Core routed {context.symbol} to {agent_names}.",
             final_response=(
                 f"Deterministic mock synthesis for {context.symbol}: {result_digest} "
                 "Treat these outputs as a research checklist only. Confirm all conclusions with verified "

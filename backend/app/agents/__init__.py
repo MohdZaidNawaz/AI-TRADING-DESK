@@ -1,5 +1,15 @@
-"""Deterministic Nimbus agent engine."""
+"""Deterministic FRIDAY Core agent engine."""
 
-from app.agents.orchestrator import NimbusOrchestrator, create_orchestrator
+from app.agents.orchestrator import (
+    FridayCore,
+    NimbusOrchestrator,
+    create_friday_core,
+    create_orchestrator,
+)
 
-__all__ = ["NimbusOrchestrator", "create_orchestrator"]
+__all__ = [
+    "FridayCore",
+    "NimbusOrchestrator",
+    "create_friday_core",
+    "create_orchestrator",
+]

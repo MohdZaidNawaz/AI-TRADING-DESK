@@ -43,14 +43,15 @@ class MarketListResponse(APIModel):
 
 
 class AnalyzeRequest(APIModel):
-    symbol: str = Field(min_length=1, max_length=20, pattern=r"^[A-Z0-9._/-]+$")
+    symbol: str | None = Field(default=None, max_length=20, pattern=r"^[A-Z0-9._/-]+$")
     query: str = Field(min_length=3, max_length=500)
 
     @field_validator("symbol", mode="before")
     @classmethod
     def normalize_symbol(cls, value: object) -> object:
         if isinstance(value, str):
-            return value.strip().upper()
+            normalized_symbol = value.strip().upper()
+            return normalized_symbol or None
         return value
 
     @field_validator("query", mode="before")
@@ -87,8 +88,9 @@ class Synthesis(APIModel):
 class AnalyzeResponse(APIModel):
     analysis_id: str
     mode: Literal["deterministic_mock"]
-    symbol: str
+    symbol: str | None
     query: str
+    selected_agents: list[str]
     routing: RoutingDecision
     agent_results: list[AgentAnalysis]
     synthesis: Synthesis
