@@ -94,3 +94,9 @@ class AnalyzeResponse(APIModel):
     routing: RoutingDecision
     agent_results: list[AgentAnalysis]
     synthesis: Synthesis
+
+
+class WebhookAcceptedResponse(APIModel):
+    status: Literal["accepted"]
+    event_id: str
+    source: Literal["tradingview"]

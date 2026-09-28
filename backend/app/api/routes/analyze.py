@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 
-from app.agents import create_friday_core
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse
+from app.services.friday_core import get_friday_core
 
 router = APIRouter(tags=["analysis"])
-friday_core = create_friday_core()
+friday_core = get_friday_core()
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

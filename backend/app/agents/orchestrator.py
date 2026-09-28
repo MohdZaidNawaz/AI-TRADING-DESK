@@ -1,9 +1,17 @@
+from collections import deque
 from hashlib import sha256
+from threading import Lock
 
 from app.agents.base import AnalysisContext, BaseAgent
 from app.agents.master import MasterAgent
 from app.agents.specialists import create_specialist_agents
-from app.models.schemas import AgentAnalysis, AnalyzeRequest, AnalyzeResponse, RoutingDecision
+from app.models.schemas import (
+    AgentAnalysis,
+    AnalyzeRequest,
+    AnalyzeResponse,
+    RoutingDecision,
+)
+from app.models.events import NormalizedDataEvent
 
 
 class FridayCore:
@@ -18,6 +26,8 @@ class FridayCore:
     def __init__(self, specialists: list[BaseAgent], master: MasterAgent) -> None:
         self._specialists = specialists
         self._master = master
+        self._recent_market_events: deque[NormalizedDataEvent] = deque(maxlen=100)
+        self._event_lock = Lock()
 
     def select_agents(self, query: str) -> RoutingDecision:
         matched_ids = {
@@ -96,6 +106,32 @@ class FridayCore:
             agent_results=results,
             synthesis=synthesis,
         )
+
+    def ingest_event(self, event: NormalizedDataEvent) -> AnalyzeResponse:
+        """Consume a provider-neutral event through the existing FRIDAY analysis flow.
+
+        Connectors and transports must normalize provider payloads before invoking
+        this boundary, so agent routing stays independent of any external source.
+        """
+        with self._event_lock:
+            self._recent_market_events.append(event)
+
+        subject = event.symbol or self._DEFAULT_SUBJECT
+        query = (
+            f"{event.source.display_name} {event.event} event for {subject}. "
+            "Review technical structure, market surveillance, and risk context."
+        )
+        return self.analyze(AnalyzeRequest(symbol=event.symbol, query=query))
+
+    def ingest_market_event(self, event: NormalizedDataEvent) -> AnalyzeResponse:
+        """Compatibility entry point for the existing market-event integration."""
+        return self.ingest_event(event)
+
+    @property
+    def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:
+        """Expose a snapshot for future event-aware agent adapters."""
+        with self._event_lock:
+            return tuple(self._recent_market_events)
 
 
 def create_friday_core() -> FridayCore:
