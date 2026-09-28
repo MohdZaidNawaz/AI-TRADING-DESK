@@ -66,12 +66,15 @@ class NormalizedDataEvent(APIModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=40)
     exchange: str | None = Field(default=None, max_length=40)
     timeframe: str | None = Field(default=None, max_length=20)
+    alert_name: str | None = Field(default=None, max_length=200)
+    message: str | None = Field(default=None, max_length=4_000)
     price: float | None = None
     open: float | None = None
     high: float | None = None
     low: float | None = None
     close: float | None = None
     volume: float | None = None
+    indicator_values: dict[str, float] = Field(default_factory=dict)
     timestamp: datetime
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     attributes: dict[str, Any] = Field(default_factory=dict)

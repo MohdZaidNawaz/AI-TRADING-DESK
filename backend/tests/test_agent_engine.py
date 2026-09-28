@@ -3,14 +3,15 @@ from collections.abc import Mapping
 from typing import Any
 
 import httpx
+import pytest
 
 from app.agents import create_friday_core
 from app.connectors import tradingview_connector
 from app.ingestion import IngestionService
 from app.ingestion.contracts import SourceConnector
 from app.main import app
-from app.models.events import EventType, SourceTransport
-from app.webhooks.tradingview import normalize_tradingview_payload
+from app.models.events import EventType, NormalizedDataEvent, SourceTransport
+from app.webhooks.tradingview import TradingViewPayloadError, normalize_tradingview_payload
 
 
 def post_json(
@@ -166,6 +167,77 @@ def test_tradingview_webhook_accepts_a_valid_authenticated_alert(monkeypatch: An
     assert response.json()["status"] == "accepted"
     assert response.json()["source"] == "tradingview"
     assert response.json()["event_id"].startswith("tv-")
+
+
+def test_tradingview_connector_normalizes_a_rich_alert_payload() -> None:
+    event = normalize_tradingview_payload(
+        {
+            "symbol": "OANDA:XAUUSD",
+            "timeframe": "60",
+            "event": "price_alert",
+            "alert_name": "Gold momentum review",
+            "message": "Momentum threshold observed.",
+            "price": "2648.32",
+            "open": "2640.00",
+            "high": "2650.00",
+            "low": "2638.00",
+            "close": "2648.32",
+            "volume": "1420",
+            "time": "2026-09-29T12:00:00Z",
+            "indicators": {"momentum_score": "61.2"},
+            "plots": {"trend_line": "2639.5"},
+            "indicator_values": {"custom_signal": "1"},
+        }
+    )
+
+    assert isinstance(event, NormalizedDataEvent)
+    assert event.exchange == "OANDA"
+    assert event.symbol == "XAUUSD"
+    assert event.timeframe == "60"
+    assert event.alert_name == "Gold momentum review"
+    assert event.message == "Momentum threshold observed."
+    assert event.open == 2640.0
+    assert event.high == 2650.0
+    assert event.low == 2638.0
+    assert event.close == 2648.32
+    assert event.volume == 1420.0
+    assert event.indicator_values == {
+        "momentum_score": 61.2,
+        "trend_line": 2639.5,
+        "custom_signal": 1.0,
+    }
+    assert event.source.source_id == "tradingview"
+
+
+def test_tradingview_connector_allows_missing_optional_rich_fields() -> None:
+    event = normalize_tradingview_payload({"symbol": "XAUUSD", "price": "2648.32"})
+
+    assert event.alert_name is None
+    assert event.message is None
+    assert event.indicator_values == {}
+    assert event.open is None
+    assert event.volume is None
+
+
+def test_tradingview_webhook_rejects_malformed_numeric_values(monkeypatch: Any) -> None:
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_SECRET", "test-webhook-token")
+
+    response = post_json(
+        "/api/webhooks/tradingview/test-webhook-token",
+        {"symbol": "XAUUSD", "price": "not-a-number"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_tradingview_connector_rejects_malformed_indicator_values() -> None:
+    with pytest.raises(TradingViewPayloadError, match="indicators.momentum_score must be numeric"):
+        normalize_tradingview_payload(
+            {
+                "symbol": "XAUUSD",
+                "indicators": {"momentum_score": "not-a-number"},
+            }
+        )
 
 
 def test_tradingview_webhook_rejects_invalid_authentication(monkeypatch: Any) -> None:

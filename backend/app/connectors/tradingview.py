@@ -53,6 +53,7 @@ class TradingViewConnector:
         exchange = _optional_text(_extract_value(raw_payload, "exchange"), "exchange")
         symbol = _required_text(raw_symbol, "symbol")
         exchange, symbol = _split_symbol(exchange, symbol)
+        alert_name = _optional_text(_extract_value(raw_payload, "alert_name"), "alert_name")
 
         return NormalizedDataEvent(
             event_id=f"tv-{uuid4().hex}",
@@ -69,12 +70,15 @@ class TradingViewConnector:
                 _extract_value(raw_payload, "timeframe", "interval"),
                 "timeframe",
             ),
+            alert_name=alert_name,
+            message=_optional_text(_extract_value(raw_payload, "message"), "message"),
             price=_optional_number(_extract_value(raw_payload, "price", "close"), "price"),
             open=_optional_number(_extract_value(raw_payload, "open"), "open"),
             high=_optional_number(_extract_value(raw_payload, "high"), "high"),
             low=_optional_number(_extract_value(raw_payload, "low"), "low"),
             close=_optional_number(_extract_value(raw_payload, "close", "price"), "close"),
             volume=_optional_number(_extract_value(raw_payload, "volume"), "volume"),
+            indicator_values=_normalize_indicator_values(raw_payload),
             timestamp=_normalize_timestamp(
                 _extract_value(raw_payload, "timestamp", "time", "timenow")
             ),
@@ -189,6 +193,35 @@ def _optional_number(value: Any, field_name: str) -> float | None:
     if not math.isfinite(normalized):
         raise TradingViewPayloadError(f"{field_name} must be finite.")
     return normalized
+
+
+def _normalize_indicator_values(payload: dict[str, Any]) -> dict[str, float]:
+    """Normalize generic indicator or plot maps without coupling to indicator names."""
+    indicator_values: dict[str, float] = {}
+
+    for field_name in ("indicators", "plots", "indicator_values"):
+        values = payload.get(field_name)
+        if values is None:
+            continue
+        if not isinstance(values, Mapping):
+            raise TradingViewPayloadError(f"{field_name} must be an object of numeric values.")
+
+        for raw_name, raw_value in values.items():
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise TradingViewPayloadError(f"{field_name} keys must be non-empty text.")
+
+            name = raw_name.strip()
+            if name in indicator_values:
+                raise TradingViewPayloadError("indicator and plot keys must be unique.")
+
+            value = _optional_number(
+                _resolve_placeholders(raw_value, payload),
+                f"{field_name}.{name}",
+            )
+            if value is not None:
+                indicator_values[name] = value
+
+    return indicator_values
 
 
 def _normalize_timestamp(value: Any) -> datetime:

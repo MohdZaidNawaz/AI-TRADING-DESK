@@ -74,6 +74,8 @@ Treat the full webhook URL as a secret: use HTTPS, do not share it publicly, and
 
 ### Alert message template
 
+The connector supports a resolved `symbol` or `ticker`, `exchange`, `timeframe`/`interval`, `event`/`action`, `alert_name`, `message`, OHLCV fields, `price`, and an ISO-8601 or Unix `time`/`timestamp`. All price and volume fields are optional except the resolved symbol/ticker.
+
 Configure TradingView with a JSON message such as the following. TradingView resolves the placeholders before sending the alert:
 
 ```json
@@ -81,17 +83,25 @@ Configure TradingView with a JSON message such as the following. TradingView res
   "symbol": "{{exchange}}:{{ticker}}",
   "timeframe": "{{interval}}",
   "event": "price_alert",
+  "alert_name": "FRIDAY market observation",
+  "message": "Optional context defined in the TradingView alert.",
   "price": "{{close}}",
   "time": "{{time}}",
   "open": "{{open}}",
   "high": "{{high}}",
   "low": "{{low}}",
   "close": "{{close}}",
-  "volume": "{{volume}}"
+  "volume": "{{volume}}",
+  "indicators": {
+    "custom_plot_one": "{{plot_0}}",
+    "custom_plot_two": "{{plot_1}}"
+  }
 }
 ```
 
-The normalizer separates an `EXCHANGE:SYMBOL` value, converts numeric strings to numbers, converts ISO-8601 or Unix timestamps to UTC, and retains the original JSON as `raw_payload` for future agent adapters. A resolved `symbol` or `ticker` is required; all price fields are optional.
+Indicator and plot values are optional. Send any object of unique string keys with finite numeric values in `indicators`, `plots`, or `indicator_values`; all are normalized into the provider-neutral `indicator_values` map. The connector does not reserve or interpret indicator names, so Pine alerts can use any plots or calculations without requiring backend changes.
+
+The normalizer separates an `EXCHANGE:SYMBOL` value, converts numeric strings to numbers, converts ISO-8601 or Unix timestamps to UTC, preserves optional alert text and indicator values, and retains the original JSON as `raw_payload` for future agent adapters. Never include the webhook token or any secret in this JSON body.
 
 ### Local test
 
