@@ -282,25 +282,34 @@ def test_alpha_vantage_event_ids_preserve_query_order_and_duplicates() -> None:
 
 
 @pytest.mark.parametrize(
-    ("response_payload", "expected_error"),
+    ("response_payload", "expected_error", "expected_diagnostic"),
     [
         (
             {"Error Message": "Invalid API call."},
             AlphaVantageProviderError,
+            "Invalid API call.",
+        ),
+        (
+            {"message": "The requested news filters are invalid."},
+            AlphaVantageProviderError,
+            "The requested news filters are invalid.",
         ),
         (
             {"Note": "The standard API rate limit is 25 requests per day."},
             AlphaVantageRateLimitError,
+            "The standard API rate limit is 25 requests per day.",
         ),
         (
             {"Information": "API call frequency has been exceeded."},
             AlphaVantageRateLimitError,
+            "API call frequency has been exceeded.",
         ),
     ],
 )
 def test_alpha_vantage_client_handles_documented_error_responses(
     response_payload: Mapping[str, Any],
     expected_error: type[AlphaVantageProviderError],
+    expected_diagnostic: str,
 ) -> None:
     api_key = secrets.token_urlsafe(32)
 
@@ -310,6 +319,7 @@ def test_alpha_vantage_client_handles_documented_error_responses(
     with pytest.raises(expected_error) as error:
         _run(_mock_client(handler, api_key).fetch_news())
 
+    assert expected_diagnostic in str(error.value)
     assert api_key not in str(error.value)
 
 
@@ -478,19 +488,50 @@ def test_alpha_vantage_provider_error_payload_cannot_expose_the_api_key(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     api_key = secrets.token_urlsafe(32)
+    provider_url = (
+        "https://www.alphavantage.co/query?function=NEWS_SENTIMENT"
+        f"&apikey={api_key}"
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"Error Message": f"Invalid credential: {api_key}"},
+            json={
+                "message": (
+                    f"Invalid credential: {api_key}. Request URL: {provider_url}"
+                ),
+                "raw_provider_detail": "raw-provider-marker",
+            },
         )
 
     caplog.set_level(logging.DEBUG)
     with pytest.raises(AlphaVantageProviderError) as error:
         _run(_mock_client(handler, api_key).fetch_news())
 
-    assert api_key not in str(error.value)
+    diagnostic = str(error.value)
+    assert "Provider diagnostic:" in diagnostic
+    assert "[REDACTED]" in diagnostic
+    assert "[REDACTED_URL]" in diagnostic
+    assert "alphavantage.co" not in diagnostic
+    assert "raw-provider-marker" not in diagnostic
+    assert api_key not in diagnostic
     assert api_key not in caplog.text
+    assert "raw-provider-marker" not in caplog.text
+
+
+@pytest.mark.parametrize("unsafe_value", [None, "", {"detail": "not text"}])
+def test_alpha_vantage_provider_error_uses_generic_fallback_without_safe_text(
+    unsafe_value: Any,
+) -> None:
+    api_key = secrets.token_urlsafe(32)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": unsafe_value})
+
+    with pytest.raises(AlphaVantageProviderError) as error:
+        _run(_mock_client(handler, api_key).fetch_news())
+
+    assert str(error.value) == "Alpha Vantage news request failed."
 
 
 def test_alpha_vantage_connector_rejects_malformed_overall_sentiment() -> None:

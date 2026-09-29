@@ -6,7 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
 
 import httpx
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
@@ -32,6 +32,13 @@ AlphaVantageNewsSort = Literal["LATEST", "EARLIEST", "RELEVANCE"]
 
 _ALLOWED_SORTS = {"LATEST", "EARLIEST", "RELEVANCE"}
 _NEWS_TIMESTAMP_PATTERN = re.compile(r"^\d{8}T\d{6}$")
+_PROVIDER_DIAGNOSTIC_FIELDS = ("Error Message", "message", "Note", "Information")
+_PROVIDER_DIAGNOSTIC_MAX_LENGTH = 500
+_PROVIDER_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_SENSITIVE_PARAMETER_PATTERN = re.compile(
+    r"\b(api_?key|token|secret)\s*[:=]\s*[^\s&,;]+",
+    re.IGNORECASE,
+)
 _SENSITIVE_FIELD_NAMES = {
     "api_key",
     "apikey",
@@ -191,7 +198,7 @@ class AlphaVantageNewsClient:
                 "Alpha Vantage returned malformed news data."
             )
 
-        _raise_for_provider_message(payload)
+        _raise_for_provider_message(payload, forbidden_value=self._api_key)
         sanitized_payload = _sanitize_value(payload, forbidden_value=self._api_key)
         feed = sanitized_payload.get("feed")
         if not isinstance(feed, list):
@@ -329,23 +336,83 @@ def _normalize_query_timestamp(
     return normalized
 
 
-def _raise_for_provider_message(payload: Mapping[str, Any]) -> None:
-    if "Error Message" in payload:
-        raise AlphaVantageProviderError("Alpha Vantage news request failed.")
+def _raise_for_provider_message(
+    payload: Mapping[str, Any],
+    *,
+    forbidden_value: str,
+) -> None:
+    provider_messages = [
+        payload[field]
+        for field in _PROVIDER_DIAGNOSTIC_FIELDS
+        if field in payload
+    ]
+    if not provider_messages:
+        return
 
-    for key in ("Note", "Information"):
-        message = payload.get(key)
-        if message is None:
-            continue
-        normalized = str(message).lower()
-        if any(
-            marker in normalized
-            for marker in ("rate limit", "call frequency", "requests per")
-        ):
-            raise AlphaVantageRateLimitError(
-                "Alpha Vantage news request limit reached."
+    diagnostic = next(
+        (
+            sanitized
+            for message in provider_messages
+            if (sanitized := _sanitize_provider_diagnostic(message, forbidden_value))
+        ),
+        None,
+    )
+    is_rate_limited = any(
+        _is_rate_limit_diagnostic(message) for message in provider_messages
+    )
+    if is_rate_limited:
+        raise AlphaVantageRateLimitError(
+            _provider_error_message(
+                "Alpha Vantage news request limit reached.",
+                diagnostic,
             )
-        raise AlphaVantageProviderError("Alpha Vantage news request failed.")
+        )
+    raise AlphaVantageProviderError(
+        _provider_error_message(
+            "Alpha Vantage news request failed.",
+            diagnostic,
+        )
+    )
+
+
+def _sanitize_provider_diagnostic(value: Any, forbidden_value: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+
+    forbidden_variants = {
+        forbidden_value,
+        quote(forbidden_value, safe=""),
+        quote_plus(forbidden_value, safe=""),
+    }
+    for forbidden_variant in forbidden_variants:
+        if forbidden_variant:
+            normalized = normalized.replace(forbidden_variant, "[REDACTED]")
+    normalized = _PROVIDER_URL_PATTERN.sub("[REDACTED_URL]", normalized)
+    normalized = _SENSITIVE_PARAMETER_PATTERN.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        normalized,
+    )
+    return normalized[:_PROVIDER_DIAGNOSTIC_MAX_LENGTH]
+
+
+def _is_rate_limit_diagnostic(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.lower()
+    return any(
+        marker in normalized
+        for marker in ("rate limit", "call frequency", "requests per")
+    )
+
+
+def _provider_error_message(fallback: str, diagnostic: str | None) -> str:
+    if diagnostic is None:
+        return fallback
+    return f"{fallback} Provider diagnostic: {diagnostic}"
 
 
 def _required_text(value: Any, field_name: str) -> str:
