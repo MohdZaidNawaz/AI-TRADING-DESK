@@ -80,6 +80,27 @@ Evidence projections retain safe normalized fields and provenance only. They del
 
 All nine specialists receive only their declared evidence subset. News is shared evidence, not a tenth specialist seat. Pilot Execution can receive read-only context but remains disabled: this architecture has no execution authority, broker integration, MT5 connection, credentials, order placement, or automated trading.
 
+## Phase 3 trade proposal and Sentinel risk gate
+
+Phase 3 adds internal, provider-neutral contracts for a non-executable `TradeProposal` and a `SentinelDecision`. A proposal references only safe evidence provenance, specialist-result digests, and optional observed normalized market facts. It does not contain raw provider payloads, article bodies, credentials, or executable instructions.
+
+```text
+immutable EvidenceSnapshot
+    -> nine-specialist analysis
+    -> F.R.I.D.A.Y. non-executable draft proposal
+    -> Sentinel risk decision
+    -> APPROVED / REJECTED / INSUFFICIENT_DATA
+    -> future Pilot hand-off boundary (disabled)
+```
+
+The existing `/api/analyze` contract is unchanged. Phase 3 has no proposal or execution endpoint. FRIDAY's current deterministic agents do not produce structured direction, entry, stop, target, sizing, portfolio, or risk-limit data, so ordinary runs remain non-executable and Sentinel returns `INSUFFICIENT_DATA` rather than inventing those values.
+
+An approval can exist only when explicit proposal parameters, fresh market evidence under an explicitly supplied policy, explicit portfolio/sizing context, structured specialist agreement, and any required news-risk assessment are all available. Invalid trade mathematics or configured risk-limit violations are `REJECTED`; absent or stale information is `INSUFFICIENT_DATA`.
+
+Approved decisions are registered only in a lock-protected, process-local approval registry. Each approval is bound to the proposal ID and fingerprint, analysis ID, evidence fingerprint, evaluation time, and expiry. Re-evaluation is idempotent, and a Pilot hand-off claim is atomic and single-use. Restarting the backend clears this registry and invalidates every approval.
+
+Pilot remains disabled in Phase 3. It verifies a matching registry-issued Sentinel approval and then returns `DISABLED_NO_EXECUTION`; it has no adapter, no execution API route, no MT5 import, no broker connection, no credentials, and no order placement capability.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

@@ -19,6 +19,8 @@ from app.models.schemas import (
     RoutingDecision,
 )
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
+from app.models.proposals import RiskContext, TradeProposalWorkflowResult
+from app.services.trade_proposal_workflow import TradeProposalWorkflow
 
 
 class FridayCore:
@@ -37,11 +39,15 @@ class FridayCore:
         *,
         evidence_store: EvidenceStore | None = None,
         evidence_router: EvidenceRouter | None = None,
+        trade_proposal_workflow: TradeProposalWorkflow | None = None,
     ) -> None:
         self._specialists = specialists
         self._master = master
         self._evidence_store = evidence_store or EvidenceStore()
         self._evidence_router = evidence_router or EvidenceRouter()
+        self._trade_proposal_workflow = trade_proposal_workflow or TradeProposalWorkflow(
+            master=self._master
+        )
         self._recent_market_events: deque[NormalizedDataEvent] = deque(maxlen=100)
         self._event_lock = Lock()
 
@@ -136,6 +142,29 @@ class FridayCore:
             request,
             snapshot=self._evidence_store.snapshot(symbol=request.symbol),
             lifecycle=AnalysisLifecycle(),
+        )
+
+    def run_trade_proposal_workflow(
+        self,
+        request: AnalyzeRequest,
+        *,
+        risk_context: RiskContext | None = None,
+    ) -> TradeProposalWorkflowResult:
+        """Run the internal Phase 3 proposal gate without changing `/api/analyze`.
+
+        One symbol-scoped snapshot is captured exactly once and is shared by
+        specialist analysis, Master draft creation, and Sentinel evaluation.
+        """
+        snapshot = self._evidence_store.snapshot(symbol=request.symbol)
+        analysis = self._analyze(
+            request,
+            snapshot=snapshot,
+            lifecycle=AnalysisLifecycle(),
+        )
+        return self._trade_proposal_workflow.run(
+            analysis=analysis,
+            snapshot=snapshot,
+            risk_context=risk_context,
         )
 
     def _analyze(
