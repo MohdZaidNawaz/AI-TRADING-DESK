@@ -1,14 +1,60 @@
 from app.models.schemas import Agent, Market
 
 AGENTS = [
-    Agent(id="macro", name="Macro", description="Global regime analysis", status="active"),
-    Agent(id="news", name="News", description="News and event intelligence", status="syncing"),
-    Agent(id="technical", name="Technical", description="Price structure and momentum", status="active"),
-    Agent(id="quant", name="Quant", description="Statistical models and probability", status="active"),
-    Agent(id="fundamental", name="Fundamental", description="Value and catalyst analysis", status="idle"),
-    Agent(id="risk", name="Risk", description="Risk and exposure oversight", status="active"),
-    Agent(id="recon", name="Recon", description="Market surveillance", status="syncing"),
-    Agent(id="journal", name="Journal", description="Desk intelligence memory", status="idle"),
+    Agent(
+        id="atlas_macro",
+        name="Atlas Macro",
+        description="Global regime, rates, and cross-asset context",
+        status="active",
+    ),
+    Agent(
+        id="capitol_smart_money",
+        name="Capitol Smart Money",
+        description="Institutional positioning and capital-flow research",
+        status="idle",
+    ),
+    Agent(
+        id="scout_recon",
+        name="Scout Recon",
+        description="Market surveillance and catalyst reconnaissance",
+        status="syncing",
+    ),
+    Agent(
+        id="athena_analyst",
+        name="Athena Analyst",
+        description="Fundamental context and catalyst analysis",
+        status="idle",
+    ),
+    Agent(
+        id="chartist_technician",
+        name="Chartist Technician",
+        description="Price structure, trend, and momentum",
+        status="active",
+    ),
+    Agent(
+        id="oracle_quant",
+        name="Oracle Quant",
+        description="Statistical models and probability research",
+        status="active",
+    ),
+    Agent(
+        id="sentinel_risk_officer",
+        name="Sentinel Risk Officer",
+        description="Research-risk and exposure oversight",
+        status="active",
+    ),
+    Agent(
+        id="pilot_execution",
+        name="Pilot Execution",
+        description="Disabled future execution coordination",
+        status="idle",
+    ),
+    Agent(
+        id="ledger_the_book",
+        name="Ledger The Book",
+        description="Research memory and decision review",
+        status="idle",
+    ),
 ]
 
 MARKETS = [

@@ -37,8 +37,11 @@ class FridayCore:
         }
 
         if matched_ids:
-            matched_ids.update({"risk", "journal"})
-            reason = "Selected agents by deterministic keyword routing; Risk and Journal are always included."
+            matched_ids.update({"sentinel_risk_officer", "ledger_the_book"})
+            reason = (
+                "Selected agents by deterministic keyword routing; Sentinel Risk Officer and "
+                "Ledger The Book are always included."
+            )
         else:
             matched_ids = {agent.agent_id for agent in self._specialists}
             reason = "No specialist keywords matched, so the orchestrator selected the full desk."

@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from app.agents import create_friday_core
+from app.agents.master import MasterAgent
+from app.agents.specialists import create_specialist_agents
 from app.connectors import tradingview_connector
 from app.ingestion import IngestionService
 from app.ingestion.contracts import SourceConnector
@@ -70,9 +72,48 @@ def test_existing_agents_and_markets_endpoints_still_work() -> None:
     markets_response = get("/api/markets")
 
     assert agents_response.status_code == 200
-    assert agents_response.json()["count"] == 8
+    agents_payload = agents_response.json()
+    assert agents_payload["count"] == 9
+    assert [(agent["id"], agent["name"]) for agent in agents_payload["agents"]] == [
+        ("atlas_macro", "Atlas Macro"),
+        ("capitol_smart_money", "Capitol Smart Money"),
+        ("scout_recon", "Scout Recon"),
+        ("athena_analyst", "Athena Analyst"),
+        ("chartist_technician", "Chartist Technician"),
+        ("oracle_quant", "Oracle Quant"),
+        ("sentinel_risk_officer", "Sentinel Risk Officer"),
+        ("pilot_execution", "Pilot Execution"),
+        ("ledger_the_book", "Ledger The Book"),
+    ]
+    assert "news" not in {agent["id"] for agent in agents_payload["agents"]}
+    assert "master" not in {agent["id"] for agent in agents_payload["agents"]}
     assert markets_response.status_code == 200
     assert markets_response.json()["count"] == 3
+
+
+def test_friday_is_the_master_and_not_one_of_the_nine_specialist_seats() -> None:
+    specialists = create_specialist_agents()
+
+    assert MasterAgent.name == "F.R.I.D.A.Y. — The Master"
+    assert len(specialists) == 9
+    assert MasterAgent.agent_id not in {agent.agent_id for agent in specialists}
+
+
+def test_pilot_execution_is_a_non_executing_placeholder() -> None:
+    response = post_json(
+        "/api/analyze",
+        {"symbol": "XAUUSD", "query": "Review a broker execution order"},
+    )
+
+    assert response.status_code == 200
+    pilot_result = next(
+        result for result in response.json()["agent_results"] if result["agent_id"] == "pilot_execution"
+    )
+    assert pilot_result["status"] == "completed"
+    assert "disabled" in pilot_result["summary"].lower()
+    assert "not authorized" in pilot_result["summary"].lower()
+    assert "mt5" in pilot_result["limitations"][0].lower()
+    assert "order placement" in pilot_result["limitations"][0].lower()
 
 
 def test_generic_analysis_routes_to_full_desk() -> None:
@@ -86,8 +127,8 @@ def test_generic_analysis_routes_to_full_desk() -> None:
     assert payload["symbol"] == "XAUUSD"
     assert payload["mode"] == "deterministic_mock"
     assert payload["selected_agents"] == payload["routing"]["selected_agents"]
-    assert len(payload["routing"]["selected_agents"]) == 8
-    assert len(payload["agent_results"]) == 8
+    assert len(payload["routing"]["selected_agents"]) == 9
+    assert len(payload["agent_results"]) == 9
     assert all(result["status"] == "completed" for result in payload["agent_results"])
     assert "No live data" in payload["synthesis"]["caveat"]
 
@@ -100,18 +141,30 @@ def test_targeted_query_routes_specialists_and_marks_others_skipped() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["selected_agents"] == ["news", "risk", "journal"]
-    assert payload["routing"]["selected_agents"] == ["news", "risk", "journal"]
+    assert payload["selected_agents"] == [
+        "scout_recon",
+        "sentinel_risk_officer",
+        "ledger_the_book",
+    ]
+    assert payload["routing"]["selected_agents"] == [
+        "scout_recon",
+        "sentinel_risk_officer",
+        "ledger_the_book",
+    ]
 
     statuses = {
         result["agent_id"]: result["status"]
         for result in payload["agent_results"]
     }
-    assert statuses["news"] == "completed"
-    assert statuses["risk"] == "completed"
-    assert statuses["journal"] == "completed"
-    assert statuses["technical"] == "skipped"
-    assert payload["synthesis"]["agents_consulted"] == ["news", "risk", "journal"]
+    assert statuses["scout_recon"] == "completed"
+    assert statuses["sentinel_risk_officer"] == "completed"
+    assert statuses["ledger_the_book"] == "completed"
+    assert statuses["chartist_technician"] == "skipped"
+    assert payload["synthesis"]["agents_consulted"] == [
+        "scout_recon",
+        "sentinel_risk_officer",
+        "ledger_the_book",
+    ]
 
 
 def test_analysis_accepts_an_optional_symbol() -> None:
@@ -123,7 +176,11 @@ def test_analysis_accepts_an_optional_symbol() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["symbol"] is None
-    assert payload["selected_agents"] == ["news", "risk", "journal"]
+    assert payload["selected_agents"] == [
+        "scout_recon",
+        "sentinel_risk_officer",
+        "ledger_the_book",
+    ]
     assert "MARKET CONTEXT" in payload["synthesis"]["summary"]
 
 
@@ -336,8 +393,8 @@ def test_tradingview_event_reuses_friday_core_analysis_flow() -> None:
 
     assert core.recent_market_events == (event,)
     assert analysis.symbol == "XAUUSD"
-    assert "technical" in analysis.selected_agents
-    assert "risk" in analysis.selected_agents
+    assert "chartist_technician" in analysis.selected_agents
+    assert "sentinel_risk_officer" in analysis.selected_agents
 
 
 def test_tradingview_connector_implements_the_provider_contract() -> None:
