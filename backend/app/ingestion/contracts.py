@@ -27,6 +27,13 @@ class EventConsumer(Protocol):
         """Pass an event to the intelligence orchestration layer."""
 
 
+class NewsEvidenceConsumer(Protocol):
+    """Stages normalized news/research evidence without provider-specific parsing."""
+
+    def ingest_news_event(self, event: NormalizedNewsResearchEvent) -> object:
+        """Pass a normalized news item to the shared evidence layer."""
+
+
 class MarketDataClient(Protocol):
     """Retrieves a provider payload without exposing provider details downstream."""
 

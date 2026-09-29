@@ -44,34 +44,53 @@ Example analysis request:
 }
 ```
 
-The master orchestrator uses deterministic keyword routing. It returns a result for all eight agents, marking agents that were not selected as `skipped`, followed by a mock synthesized response. The architecture under `app/agents` is intentionally isolated so model-backed agents and real data adapters can be introduced later.
+The master orchestrator uses deterministic keyword routing. It returns a result for all nine specialists, marking agents that were not selected as `skipped`, followed by a mock synthesized response. The architecture under `app/agents` is intentionally isolated so model-backed agents and real data adapters can be introduced later.
 
 ## Multi-source ingestion architecture
 
 The backend keeps external-source details outside FRIDAY Core:
 
 ```text
-source connector -> normalized event -> ingestion service -> FRIDAY Core -> agents -> master synthesis
+source connector -> normalized event -> ingestion service -> Evidence Store -> FRIDAY Core -> agents -> master synthesis
 ```
 
 - `app/connectors/` contains source-specific adapters.
 - `app/models/events.py` defines provider-neutral source metadata, data domains, asset classes, event types, and normalized event fields.
 - `app/ingestion/` defines the `SourceConnector` contract and the provider-agnostic ingestion hand-off.
-- `app/agents/` receives only normalized events; it does not parse provider payloads.
+- `app/agents/` receives provider-neutral structured evidence; it does not parse provider payloads.
 
-TradingView is a webhook market-data connector. Twelve Data is an API market-data connector using the same provider-neutral flow. Future market-data, financial-news, economic-calendar, fundamental, forex, crypto, commodities, sentiment, or alternative-data integrations should implement `SourceConnector`, normalize their payload into `NormalizedDataEvent`, and send it through `IngestionService`.
+TradingView is a webhook market-data connector. Twelve Data is an API market-data connector using the same provider-neutral flow. Future market-data, economic-calendar, fundamental, forex, crypto, commodities, sentiment, or alternative-data integrations should implement `SourceConnector`, normalize their payload into `NormalizedDataEvent`, and send it through `IngestionService`. Financial-news and research connectors use `NewsResearchConnector` and `NormalizedNewsResearchEvent` instead.
+
+## Phase 2 structured evidence architecture
+
+FRIDAY converts validated normalized market and news events into a safe, immutable evidence projection before specialists consume it:
+
+```text
+NormalizedDataEvent / NormalizedNewsResearchEvent
+    -> bounded process-local EvidenceStore
+    -> immutable EvidenceSnapshot
+    -> provider-neutral EvidenceRouter
+    -> specialist-specific AgentEvidence
+    -> AnalysisContext
+```
+
+`app/evidence/` contains the provider-neutral evidence projections, thread-safe bounded store, generic symbol matching, and nine-specialist routing policy. The store is process-local and non-persistent, so it resets when the API process restarts. It retains only bounded market/news evidence and creates deterministic snapshots without exposing mutable internal collections.
+
+Evidence projections retain safe normalized fields and provenance only. They deliberately exclude provider `raw_payload` and provider-only attributes from market evidence, and exclude full article bodies from news evidence. The original normalized event remains unchanged for compatible API responses and transport behavior.
+
+All nine specialists receive only their declared evidence subset. News is shared evidence, not a tenth specialist seat. Pilot Execution can receive read-only context but remains disabled: this architecture has no execution authority, broker integration, MT5 connection, credentials, order placement, or automated trading.
 
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:
 
 ```text
-future provider connector -> NormalizedNewsResearchEvent -> NewsResearchIngestionService
+future provider connector -> NormalizedNewsResearchEvent -> NewsResearchIngestionService -> EvidenceStore
 ```
 
 `NormalizedNewsResearchEvent` records stable source metadata, provider, title, HTTP(S) URL, timezone-aware timestamp, optional symbols and topics, and either a short summary or content value. `NewsResearchConnector` defines the future provider-adapter boundary, ensuring provider-specific parsing remains outside FRIDAY Core. `NewsResearchIngestionService` keeps a bounded, process-local collection of validated events.
 
-This foundation does not register an API route, scrape or poll websites, call an external provider, require credentials, or change FRIDAY Core and agent behavior. A future provider integration must normalize its payload at the connector boundary before ingestion and must define an explicit, tested Core hand-off separately.
+This foundation does not register an API route, scrape or poll websites, call an external provider, or require credentials. `NewsResearchIngestionService` can hand validated provider-neutral events to the same process-local Evidence Store used by FRIDAY Core; it does not alter Alpha Vantage retrieval behavior or create background polling. A future provider integration must normalize its payload at the connector boundary before ingestion.
 
 ## Twelve Data market snapshots
 

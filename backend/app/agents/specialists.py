@@ -18,6 +18,7 @@ class AtlasMacroAgent(BaseAgent):
             findings=[
                 "Review rate, currency, liquidity, and risk-regime sensitivity.",
                 "Confirm whether the requested horizon is tactical or structural before weighting macro factors.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "No live economic releases, central-bank data, rates, or cross-asset prices were used."
@@ -40,6 +41,7 @@ class CapitolSmartMoneyAgent(BaseAgent):
             findings=[
                 "Define which positioning, flow, and participation measures would be relevant to the research question.",
                 "Separate confirmed positioning evidence from narrative claims about institutional activity.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "No positioning, order-flow, holdings, fund-flow, or institutional dataset was accessed."
@@ -76,6 +78,7 @@ class ScoutReconAgent(BaseAgent):
             findings=[
                 "Check relative activity, cross-market confirmation, event context, and unusual behavior.",
                 "Escalate anomalies only after confirming them across independent, time-aligned data sources.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "No scanner, news feed, social feed, order flow, watchlist, or market-wide data was accessed."
@@ -98,6 +101,7 @@ class AthenaAnalystAgent(BaseAgent):
             findings=[
                 "Identify the symbol's relevant value drivers, financial inputs, and comparison set.",
                 "Distinguish durable fundamental changes from short-lived narrative catalysts.",
+                *self.evidence_findings(context),
             ],
             limitations=["No filings, financial statements, estimates, or valuation data was loaded."],
             confidence=0.5,
@@ -118,6 +122,7 @@ class ChartistTechnicianAgent(BaseAgent):
             findings=[
                 "Establish timeframe, trend structure, volatility regime, and nearby invalidation levels.",
                 "Require alignment between structure and momentum before treating a setup as actionable research.",
+                *self.evidence_findings(context),
             ],
             limitations=["No chart, candle, volume, indicator, or live price data was analyzed."],
             confidence=0.55,
@@ -138,6 +143,7 @@ class OracleQuantAgent(BaseAgent):
             findings=[
                 "Measure return distribution, volatility, drawdown, and correlation over an explicit sample window.",
                 "Separate in-sample observations from out-of-sample validation before assigning probabilities.",
+                *self.evidence_findings(context),
             ],
             limitations=["No historical dataset, model inference, backtest, or probability forecast was run."],
             confidence=0.52,
@@ -156,6 +162,7 @@ class SentinelRiskOfficerAgent(BaseAgent):
             findings=[
                 "Define invalidation conditions and maximum acceptable research uncertainty before any decision.",
                 "Do not infer position sizing or execution parameters without verified prices and portfolio context.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "No approval gate, account, portfolio, position, broker, order, or execution data is available."
@@ -177,6 +184,7 @@ class PilotExecutionAgent(BaseAgent):
             summary=f"Pilot Execution is disabled and not authorized for {context.symbol}.",
             findings=[
                 "Phase 1 records that future execution coordination would require an approved proposal and explicit adapter policy.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "Pilot Execution performs no MT5 integration, broker connection, credential handling, order placement, or trade execution."
@@ -198,6 +206,7 @@ class LedgerTheBookAgent(BaseAgent):
             findings=[
                 f'Record the original request: "{query_excerpt}".',
                 "Capture assumptions, consulted agents, invalidation criteria, and the eventual outcome for review.",
+                *self.evidence_findings(context),
             ],
             limitations=[
                 "Phase 1 does not persist ledger entries or provide monitoring and system-health responsibilities."
@@ -220,6 +229,7 @@ class NewsAgent(BaseAgent):
             findings=[
                 "Check scheduled economic, company, and regulatory events relevant to the symbol.",
                 "Validate publication time, source quality, and whether an event is already reflected in price.",
+                *self.evidence_findings(context),
             ],
             limitations=["No news feed, web search, filings, or event calendar was queried."],
             confidence=0.5,

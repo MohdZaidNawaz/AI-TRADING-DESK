@@ -325,3 +325,22 @@ def test_news_research_ingestion_is_bounded_and_does_not_change_friday_core() ->
     assert accepted is third
     assert service.recent_events == (second, third)
     assert core.recent_market_events == ()
+
+
+def test_news_research_ingestion_can_stage_shared_core_evidence() -> None:
+    core = create_friday_core()
+    service = NewsResearchIngestionService(consumer=core)
+    event = _news_event(
+        event_id="shared-news",
+        timestamp=datetime(2026, 9, 29, 12, 0, tzinfo=UTC),
+    )
+
+    accepted = service.ingest(event)
+    snapshot = core.evidence_snapshot(symbol="EUR/USD")
+
+    assert accepted is event
+    assert service.recent_events == (event,)
+    assert tuple(item.provenance.event_id for item in snapshot.news_evidence) == (
+        "shared-news",
+    )
+    assert core.recent_market_events == ()
