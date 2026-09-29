@@ -16,6 +16,14 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field, FiniteFloat, field_validator, model_validator
 
+from app.models.derived_features import (
+    DerivedMarketFeature,
+    FeatureParameter,
+    FeatureQualityFlag,
+    FeatureStatus,
+    FeatureType,
+    FeatureValueUnit,
+)
 from app.models.events import DataDomain
 from app.models.schemas import APIModel
 
@@ -111,6 +119,121 @@ class SpecialistInterpretation(SpecialistAnalysisModel):
         return _ordered_references(values)
 
 
+class SpecialistDerivedFeatureReference(SpecialistAnalysisModel):
+    """Trace a calculated value without representing it as raw provider evidence."""
+
+    feature_id: str = Field(min_length=1, max_length=120)
+    feature_type: FeatureType
+    status: FeatureStatus
+    symbol: str = Field(min_length=1, max_length=40)
+    venue: str | None = Field(default=None, max_length=80)
+    timeframe: str = Field(min_length=1, max_length=20)
+    as_of: datetime | None = None
+    value: FiniteFloat | None = None
+    value_unit: FeatureValueUnit
+    parameters: tuple[FeatureParameter, ...] = ()
+    method_id: str = Field(min_length=1, max_length=120)
+    method_version: str = Field(min_length=1, max_length=40)
+    input_series_id: str = Field(min_length=1, max_length=120)
+    input_series_fingerprint: str = Field(min_length=64, max_length=64)
+    input_first_bar_id: str | None = Field(default=None, max_length=120)
+    input_last_bar_id: str | None = Field(default=None, max_length=120)
+    input_bar_count: int = Field(ge=0)
+    required_bar_count: int = Field(ge=1)
+    quality_flags: tuple[FeatureQualityFlag, ...] = ()
+    limitations: tuple[str, ...] = ()
+
+    @classmethod
+    def from_feature(
+        cls,
+        feature: DerivedMarketFeature,
+    ) -> "SpecialistDerivedFeatureReference":
+        return cls(
+            feature_id=feature.feature_id,
+            feature_type=feature.feature_type,
+            status=feature.status,
+            symbol=feature.symbol,
+            venue=feature.venue,
+            timeframe=feature.timeframe,
+            as_of=feature.as_of,
+            value=feature.value,
+            value_unit=feature.value_unit,
+            parameters=feature.parameters,
+            method_id=feature.method_id,
+            method_version=feature.method_version,
+            input_series_id=feature.input_series_id,
+            input_series_fingerprint=feature.input_series_fingerprint,
+            input_first_bar_id=feature.input_first_bar_id,
+            input_last_bar_id=feature.input_last_bar_id,
+            input_bar_count=feature.input_bar_count,
+            required_bar_count=feature.required_bar_count,
+            quality_flags=feature.quality_flags,
+            limitations=feature.limitations,
+        )
+
+    @field_validator("as_of")
+    @classmethod
+    def normalize_as_of(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("derived feature as_of must include a timezone")
+        return value.astimezone(UTC)
+
+    @field_validator("parameters")
+    @classmethod
+    def order_parameters(
+        cls,
+        values: tuple[FeatureParameter, ...],
+    ) -> tuple[FeatureParameter, ...]:
+        return tuple(sorted(values, key=lambda item: (item.name, repr(item.value))))
+
+    @field_validator("quality_flags")
+    @classmethod
+    def order_quality_flags(
+        cls,
+        values: tuple[FeatureQualityFlag, ...],
+    ) -> tuple[FeatureQualityFlag, ...]:
+        return tuple(sorted(set(values), key=lambda item: item.value))
+
+    @field_validator("limitations")
+    @classmethod
+    def order_limitations(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted(set(value.strip() for value in values if value.strip())))
+
+    @model_validator(mode="after")
+    def validate_feature_result(self) -> "SpecialistDerivedFeatureReference":
+        if self.status is FeatureStatus.AVAILABLE and self.value is None:
+            raise ValueError("available derived feature references require a value")
+        if self.status is not FeatureStatus.AVAILABLE and self.value is not None:
+            raise ValueError("unavailable derived feature references cannot contain a value")
+        if self.input_bar_count > 0 and (
+            self.input_first_bar_id is None
+            or self.input_last_bar_id is None
+            or self.as_of is None
+        ):
+            raise ValueError("derived feature references require complete input lineage")
+        return self
+
+
+class SpecialistDerivedObservation(SpecialistAnalysisModel):
+    """A factual calculated observation kept separate from raw facts."""
+
+    statement: str = Field(min_length=1, max_length=1_000)
+    feature_references: tuple[SpecialistDerivedFeatureReference, ...] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @field_validator("feature_references")
+    @classmethod
+    def order_feature_references(
+        cls,
+        values: tuple[SpecialistDerivedFeatureReference, ...],
+    ) -> tuple[SpecialistDerivedFeatureReference, ...]:
+        return _ordered_feature_references(values)
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -148,7 +271,15 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         default=(),
         max_length=250,
     )
+    derived_observations: tuple[SpecialistDerivedObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -181,6 +312,14 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
     ) -> tuple[SpecialistInterpretation, ...]:
         return tuple(sorted(dict.fromkeys(values), key=_interpretation_sort_key))
 
+    @field_validator("derived_observations")
+    @classmethod
+    def order_derived_observations(
+        cls,
+        values: tuple[SpecialistDerivedObservation, ...],
+    ) -> tuple[SpecialistDerivedObservation, ...]:
+        return tuple(sorted(dict.fromkeys(values), key=_derived_observation_sort_key))
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -188,6 +327,14 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         values: tuple[SpecialistEvidenceReference, ...],
     ) -> tuple[SpecialistEvidenceReference, ...]:
         return _ordered_references(values)
+
+    @field_validator("derived_feature_references")
+    @classmethod
+    def order_derived_feature_references(
+        cls,
+        values: tuple[SpecialistDerivedFeatureReference, ...],
+    ) -> tuple[SpecialistDerivedFeatureReference, ...]:
+        return _ordered_feature_references(values)
 
     @field_validator("invalidating_conditions", "limitations", "timeframes")
     @classmethod
@@ -205,6 +352,20 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         )
         if any(_reference_key(reference) not in supporting_keys for reference in observation_references):
             raise ValueError("observations must reference assigned supporting evidence")
+        feature_keys = {
+            _feature_reference_key(reference)
+            for reference in self.derived_feature_references
+        }
+        derived_references = (
+            reference
+            for observation in self.derived_observations
+            for reference in observation.feature_references
+        )
+        if any(
+            _feature_reference_key(reference) not in feature_keys
+            for reference in derived_references
+        ):
+            raise ValueError("derived observations must reference assigned derived features")
         if self.agent_id == "pilot_execution":
             if self.operational_state is not SpecialistOperationalState.DISABLED_NO_EXECUTION:
                 raise ValueError("Pilot Execution must remain DISABLED_NO_EXECUTION")
@@ -222,6 +383,10 @@ class MasterSpecialistSynthesis(SpecialistAnalysisModel):
     specialist_analyses: tuple[SpecialistAnalysis, ...] = Field(default=(), max_length=20)
     participating_analysis_ids: tuple[str, ...] = Field(default=(), max_length=20)
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -257,6 +422,14 @@ class MasterSpecialistSynthesis(SpecialistAnalysisModel):
     ) -> tuple[SpecialistEvidenceReference, ...]:
         return _ordered_references(values)
 
+    @field_validator("derived_feature_references")
+    @classmethod
+    def order_derived_feature_references(
+        cls,
+        values: tuple[SpecialistDerivedFeatureReference, ...],
+    ) -> tuple[SpecialistDerivedFeatureReference, ...]:
+        return _ordered_feature_references(values)
+
 
 def create_specialist_analysis(
     *,
@@ -270,7 +443,9 @@ def create_specialist_analysis(
     thesis: str,
     fact_observations: tuple[SpecialistFactObservation, ...] = (),
     interpretations: tuple[SpecialistInterpretation, ...] = (),
+    derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
+    derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
     limitations: tuple[str, ...] = (),
     timeframes: tuple[str, ...] = (),
@@ -290,7 +465,9 @@ def create_specialist_analysis(
         thesis=thesis,
         fact_observations=fact_observations,
         interpretations=interpretations,
+        derived_observations=derived_observations,
         supporting_evidence=supporting_evidence,
+        derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,
         limitations=limitations,
         timeframes=timeframes,
@@ -366,6 +543,11 @@ def summarize_specialist_analyses(
         for item in ordered_analyses
         for reference in item.supporting_evidence
     )
+    feature_references = tuple(
+        reference
+        for item in ordered_analyses
+        for reference in item.derived_feature_references
+    )
     synthesis_payload = {
         "analysis_id": parent_analysis_id,
         "evidence_fingerprint": evidence_fingerprint,
@@ -379,6 +561,7 @@ def summarize_specialist_analyses(
         specialist_analyses=ordered_analyses,
         participating_analysis_ids=tuple(item.analysis_id for item in completed),
         supporting_evidence=references,
+        derived_feature_references=feature_references,
         consensus=consensus,
         conflicting_analysis_ids=conflicting,
         insufficient_data_analysis_ids=insufficient,
@@ -392,6 +575,13 @@ def _ordered_references(
     return tuple(unique[key] for key in sorted(unique))
 
 
+def _ordered_feature_references(
+    values: tuple[SpecialistDerivedFeatureReference, ...],
+) -> tuple[SpecialistDerivedFeatureReference, ...]:
+    unique = {_feature_reference_key(value): value for value in values}
+    return tuple(unique[key] for key in sorted(unique))
+
+
 def _reference_key(reference: SpecialistEvidenceReference) -> tuple[str, str, str, str, str]:
     return (
         reference.event_id,
@@ -399,6 +589,17 @@ def _reference_key(reference: SpecialistEvidenceReference) -> tuple[str, str, st
         reference.domain.value,
         reference.timestamp.isoformat(),
         reference.symbol or "",
+    )
+
+
+def _feature_reference_key(
+    reference: SpecialistDerivedFeatureReference,
+) -> tuple[str, str, str, str]:
+    return (
+        reference.feature_id,
+        reference.method_id,
+        reference.method_version,
+        reference.input_series_fingerprint,
     )
 
 
@@ -412,6 +613,14 @@ def _interpretation_sort_key(
     value: SpecialistInterpretation,
 ) -> tuple[str, tuple[tuple[str, str, str, str, str], ...]]:
     return value.statement, tuple(_reference_key(item) for item in value.evidence_references)
+
+
+def _derived_observation_sort_key(
+    value: SpecialistDerivedObservation,
+) -> tuple[str, tuple[tuple[str, str, str, str], ...]]:
+    return value.statement, tuple(
+        _feature_reference_key(item) for item in value.feature_references
+    )
 
 
 def _fingerprint(value: object) -> str:

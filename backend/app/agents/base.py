@@ -10,9 +10,12 @@ from app.evidence.models import (
     NewsEvidence,
     canonical_symbol,
 )
+from app.models.derived_features import DerivedMarketFeature
 from app.models.specialist_analysis import (
     SpecialistAnalysis,
     SpecialistAnalysisStatus,
+    SpecialistDerivedFeatureReference,
+    SpecialistDerivedObservation,
     SpecialistEvidenceReference,
     SpecialistFactObservation,
     SpecialistInterpretation,
@@ -49,6 +52,7 @@ class AnalysisContext:
     symbol: str
     query: str
     evidence: AgentEvidence = field(default_factory=AgentEvidence)
+    derived_features: tuple[DerivedMarketFeature, ...] = ()
     lifecycle: AnalysisLifecycle = field(default_factory=AnalysisLifecycle)
 
 
@@ -172,12 +176,17 @@ class BaseAgent(ABC):
         thesis: str,
         fact_observations: tuple[SpecialistFactObservation, ...] = (),
         interpretations: tuple[SpecialistInterpretation, ...] = (),
+        derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
     ) -> SpecialistAnalysis:
         """Create one safe artifact tied to this specialist's assigned evidence."""
         supporting_evidence = self._supporting_evidence(context)
+        derived_feature_references = tuple(
+            self.derived_feature_reference(feature)
+            for feature in context.derived_features
+        )
         timeframes = tuple(
             evidence.timeframe
             for evidence in context.evidence.market_evidence
@@ -207,7 +216,9 @@ class BaseAgent(ABC):
             thesis=thesis,
             fact_observations=fact_observations,
             interpretations=interpretations,
+            derived_observations=derived_observations,
             supporting_evidence=supporting_evidence,
+            derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
             limitations=tuple(result.limitations),
             timeframes=timeframes,
@@ -255,6 +266,13 @@ class BaseAgent(ABC):
             timestamp=latest_timestamp,
             symbol=canonical_symbol(evidence.symbol),
         )
+
+    @staticmethod
+    def derived_feature_reference(
+        feature: DerivedMarketFeature,
+    ) -> SpecialistDerivedFeatureReference:
+        """Return derived lineage without presenting it as provider evidence."""
+        return SpecialistDerivedFeatureReference.from_feature(feature)
 
     def _supporting_evidence(
         self,

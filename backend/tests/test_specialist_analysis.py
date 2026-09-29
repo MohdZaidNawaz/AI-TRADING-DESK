@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,6 +19,12 @@ from app.models.events import (
     NormalizedNewsResearchEvent,
     SourceMetadata,
     SourceTransport,
+)
+from app.models.market_series import (
+    MarketBarState,
+    MarketSeriesSource,
+    NormalizedMarketBar,
+    VolumeKind,
 )
 from app.models.proposals import (
     PortfolioRiskContext,
@@ -95,6 +101,32 @@ def _news_event() -> NormalizedNewsResearchEvent:
         topics=["commodities"],
         summary="A short normalized summary.",
         content="This article body must never reach a specialist artifact.",
+    )
+
+
+def _market_bar(index: int, close: float) -> NormalizedMarketBar:
+    opened_at = MOMENT + timedelta(hours=index)
+    return NormalizedMarketBar(
+        source=MarketSeriesSource(
+            source_id="phase5b-specialist-test",
+            display_name="Phase 5B Specialist Test",
+            transport=SourceTransport.MANUAL,
+            domain=DataDomain.MARKET_DATA,
+        ),
+        symbol="XAUUSD",
+        asset_class=AssetClass.COMMODITY,
+        venue="TEST",
+        timeframe="1h",
+        opened_at=opened_at,
+        closed_at=opened_at + timedelta(hours=1),
+        open=close,
+        high=close + 1,
+        low=close - 1,
+        close=close,
+        volume=100,
+        volume_kind=VolumeKind.TICK,
+        state=MarketBarState.COMPLETED,
+        received_at=opened_at + timedelta(hours=1, seconds=1),
     )
 
 
@@ -223,6 +255,56 @@ def test_all_nine_specialists_produce_snapshot_linked_artifacts() -> None:
     } == {artifact.analysis_id for artifact in artifacts}
     assert all(artifact.stance is SpecialistStance.INSUFFICIENT_DATA for artifact in artifacts)
     assert all(artifact.created_at == MOMENT for artifact in artifacts)
+
+
+def test_derived_observations_are_separate_traceable_and_routed_to_two_specialists() -> None:
+    core = create_friday_core()
+    core.ingest_market_bar(_market_bar(0, 100))
+    core.ingest_market_bar(_market_bar(1, 110))
+    snapshot = core.evidence_snapshot(symbol="XAUUSD")
+    run = core._analyze_run(  # noqa: SLF001 - verifies the internal derived boundary.
+        AnalyzeRequest(symbol="XAUUSD", query="Review technical and quant evidence"),
+        snapshot=snapshot,
+        lifecycle=AnalysisLifecycle(),
+    )
+    artifacts = {item.agent_id: item for item in run.specialist_analyses}
+    chartist = artifacts["chartist_technician"]
+    oracle = artifacts["oracle_quant"]
+
+    assert {item.feature_type.value for item in chartist.derived_feature_references} == {
+        "bar_range"
+    }
+    assert {item.feature_type.value for item in oracle.derived_feature_references} == {
+        "simple_return",
+        "log_return",
+    }
+    assert chartist.derived_observations
+    assert oracle.derived_observations
+    assert chartist.fact_observations
+    assert oracle.fact_observations
+    assert not {
+        item.feature_id for item in chartist.derived_feature_references
+    } & {item.event_id for item in chartist.supporting_evidence}
+    assert not {
+        item.feature_id for item in oracle.derived_feature_references
+    } & {item.event_id for item in oracle.supporting_evidence}
+    assert all(
+        item.stance is SpecialistStance.INSUFFICIENT_DATA
+        for item in (chartist, oracle)
+    )
+    for agent_id, artifact in artifacts.items():
+        if agent_id not in {"chartist_technician", "oracle_quant"}:
+            assert artifact.derived_feature_references == ()
+            assert artifact.derived_observations == ()
+    master_feature_ids = {
+        item.feature_id for item in run.master_synthesis.derived_feature_references
+    }
+    specialist_feature_ids = {
+        item.feature_id
+        for artifact in (chartist, oracle)
+        for item in artifact.derived_feature_references
+    }
+    assert master_feature_ids == specialist_feature_ids
 
 
 def test_specialist_evidence_routing_and_safe_content_are_preserved() -> None:

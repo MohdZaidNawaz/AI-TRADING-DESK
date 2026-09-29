@@ -33,6 +33,12 @@ from app.models.proposals import (
     TradeProposal,
     TradeProposalStatus,
 )
+from app.models.market_series import (
+    MarketBarState,
+    MarketSeriesSource,
+    NormalizedMarketBar,
+    VolumeKind,
+)
 from app.models.schemas import AnalyzeRequest
 from app.services.trade_proposal_workflow import (
     ApprovalRegistry,
@@ -73,6 +79,32 @@ def _market_event(
         close=100.0,
         timestamp=timestamp,
         raw_payload={"must_not_reach_proposal": "raw"},
+    )
+
+
+def _market_bar(index: int, close: float) -> NormalizedMarketBar:
+    opened_at = MOMENT + timedelta(hours=index)
+    return NormalizedMarketBar(
+        source=MarketSeriesSource(
+            source_id="phase5b-risk-test",
+            display_name="Phase 5B Risk Test",
+            transport=SourceTransport.MANUAL,
+            domain=DataDomain.MARKET_DATA,
+        ),
+        symbol="XAUUSD",
+        asset_class=AssetClass.COMMODITY,
+        venue="TEST",
+        timeframe="1h",
+        opened_at=opened_at,
+        closed_at=opened_at + timedelta(hours=1),
+        open=close,
+        high=close + 1,
+        low=close - 1,
+        close=close,
+        volume=100,
+        volume_kind=VolumeKind.TICK,
+        state=MarketBarState.COMPLETED,
+        received_at=opened_at + timedelta(hours=1, seconds=1),
     )
 
 
@@ -201,6 +233,29 @@ def test_master_creates_a_non_executable_draft_without_inventing_trade_parameter
     assert result.proposal.parameters.direction is None
     assert result.proposal.parameters.stop_loss is None
     assert result.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
+
+
+def test_derived_features_do_not_create_trade_parameters_or_satisfy_sentinel() -> None:
+    core = create_friday_core()
+    core.ingest_market_bar(_market_bar(0, 100))
+    core.ingest_market_bar(_market_bar(1, 110))
+
+    result = core.run_trade_proposal_workflow(
+        AnalyzeRequest(symbol="XAUUSD", query="Review technical returns and risk")
+    )
+
+    assert result.proposal.parameters is not None
+    assert result.proposal.parameters.direction is None
+    assert result.proposal.parameters.reference_price is None
+    assert result.proposal.parameters.stop_loss is None
+    assert result.proposal.parameters.targets == ()
+    assert result.proposal.parameters.requested_risk_fraction is None
+    assert all(
+        reference.stance.value == "insufficient_data"
+        for reference in result.proposal.specialist_references
+    )
+    assert result.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
+    assert "market_evidence" in result.sentinel_decision.missing_requirements
 
 
 def test_complete_proposal_with_explicit_context_is_approved() -> None:

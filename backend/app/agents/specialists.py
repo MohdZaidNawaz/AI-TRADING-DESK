@@ -4,8 +4,10 @@ from datetime import datetime
 
 from app.agents.base import AnalysisContext, BaseAgent
 from app.models.events import EventType
+from app.models.derived_features import FeatureStatus
 from app.models.specialist_analysis import (
     SpecialistAnalysis,
+    SpecialistDerivedObservation,
     SpecialistFactObservation,
     SpecialistInterpretation,
     SpecialistOperationalState,
@@ -178,6 +180,37 @@ def _quantitative_series_facts(
 
 def _render_time(value: datetime | None) -> str:
     return value.isoformat() if value is not None else "none"
+
+
+def _derived_feature_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistDerivedObservation, ...]:
+    """Describe assigned calculations without recomputing or interpreting them."""
+    observations: list[SpecialistDerivedObservation] = []
+    for feature in context.derived_features:
+        parameters = ", ".join(
+            f"{parameter.name}={parameter.value}" for parameter in feature.parameters
+        )
+        parameter_text = f" ({parameters})" if parameters else ""
+        value_text = (
+            f"value={feature.value} {feature.value_unit.value}"
+            if feature.status is FeatureStatus.AVAILABLE
+            else "no value"
+        )
+        quality_text = ",".join(flag.value for flag in feature.quality_flags) or "none"
+        observations.append(
+            SpecialistDerivedObservation(
+                statement=(
+                    f"Derived {feature.feature_type.value}{parameter_text}: {value_text}; "
+                    f"status={feature.status.value}; inputs={feature.input_bar_count}/"
+                    f"{feature.required_bar_count}; method={feature.method_id}@"
+                    f"{feature.method_version}; quality={quality_text}."
+                ),
+                feature_references=(agent.derived_feature_reference(feature),),
+            )
+        )
+    return tuple(observations)
 
 
 def _fundamental_facts(
@@ -488,6 +521,10 @@ class ChartistTechnicianAgent(BaseAgent):
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
         limitations = (
             [
+                "Deterministic derived features remain factual observations; no technical signal, level, stance, or direction was inferred."
+            ]
+            if context.derived_features
+            else [
                 "Historical bars remain descriptive; no indicator, level, signal, or directional methodology was applied."
             ]
             if context.evidence.market_series
@@ -533,6 +570,7 @@ class ChartistTechnicianAgent(BaseAgent):
                 )
             ),
             fact_observations=facts,
+            derived_observations=_derived_feature_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -574,6 +612,10 @@ class OracleQuantAgent(BaseAgent):
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
         limitations = (
             [
+                "Deterministic return/statistical features remain descriptive; no inference, forecast, backtest, probability, or direction was produced."
+            ]
+            if context.derived_features
+            else [
                 "Historical bars remain descriptive; no model inference, statistic, backtest, return, volatility, or probability forecast was run."
             ]
             if context.evidence.market_series
@@ -619,11 +661,19 @@ class OracleQuantAgent(BaseAgent):
                 )
             ),
             fact_observations=facts,
+            derived_observations=_derived_feature_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "No historical sample, model specification, validation window, or backtest was "
-                        "assigned to the quantitative specialist."
+                        (
+                            "Calculated returns or dispersion remain descriptive values with explicit "
+                            "lineage; no model, inference, forecast, or probability was applied."
+                        )
+                        if context.derived_features
+                        else (
+                            "No historical sample, model specification, validation window, or backtest "
+                            "was assigned to the quantitative specialist."
+                        )
                     )
                 ),
             ),

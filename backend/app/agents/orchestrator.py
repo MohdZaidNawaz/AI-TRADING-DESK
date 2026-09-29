@@ -26,9 +26,15 @@ from app.models.schemas import (
 )
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.market_series import NormalizedMarketBar
+from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 from app.services.trade_proposal_workflow import TradeProposalWorkflow, build_evidence_bundle
+from app.services.derived_feature_routing import DerivedFeatureRouter
+from app.services.derived_features import (
+    DEFAULT_DERIVED_FEATURE_REQUESTS,
+    DerivedFeatureService,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,12 +70,22 @@ class FridayCore:
         *,
         evidence_store: EvidenceStore | None = None,
         evidence_router: EvidenceRouter | None = None,
+        derived_feature_service: DerivedFeatureService | None = None,
+        derived_feature_router: DerivedFeatureRouter | None = None,
+        derived_feature_requests: tuple[DerivedFeatureRequest, ...] | None = None,
         trade_proposal_workflow: TradeProposalWorkflow | None = None,
     ) -> None:
         self._specialists = specialists
         self._master = master
         self._evidence_store = evidence_store or EvidenceStore()
         self._evidence_router = evidence_router or EvidenceRouter()
+        self._derived_feature_service = derived_feature_service or DerivedFeatureService()
+        self._derived_feature_router = derived_feature_router or DerivedFeatureRouter()
+        self._derived_feature_requests = (
+            DEFAULT_DERIVED_FEATURE_REQUESTS
+            if derived_feature_requests is None
+            else derived_feature_requests
+        )
         self._trade_proposal_workflow = trade_proposal_workflow or TradeProposalWorkflow(
             master=self._master
         )
@@ -113,11 +129,13 @@ class FridayCore:
     ) -> list[AgentAnalysis]:
         """Run selected specialists and preserve a status for the rest of the desk."""
         evidence_snapshot = snapshot or EvidenceSnapshot()
+        feature_snapshot = self._calculate_derived_features(evidence_snapshot)
         return list(
             self._run_agents_with_artifacts(
                 context,
                 selected_agents,
                 snapshot=evidence_snapshot,
+                feature_snapshot=feature_snapshot,
                 parent_analysis_id="standalone-agent-run",
                 evidence_fingerprint="0" * 64,
                 created_at=build_evidence_bundle(evidence_snapshot).created_at,
@@ -130,6 +148,7 @@ class FridayCore:
         selected_agents: set[str],
         *,
         snapshot: EvidenceSnapshot,
+        feature_snapshot: DerivedFeatureSnapshot,
         parent_analysis_id: str,
         evidence_fingerprint: str,
         created_at: datetime,
@@ -144,6 +163,10 @@ class FridayCore:
                 evidence=self._evidence_router.route(
                     agent_id=agent.agent_id,
                     snapshot=snapshot,
+                ),
+                derived_features=self._derived_feature_router.route(
+                    agent_id=agent.agent_id,
+                    snapshot=feature_snapshot,
                 ),
                 lifecycle=replace(
                     context.lifecycle,
@@ -265,10 +288,12 @@ class FridayCore:
         digest = sha256(f"{request.symbol or ''}\n{request.query}".encode()).hexdigest()[:16]
         analysis_id = f"mock-{digest}"
         evidence_bundle = build_evidence_bundle(snapshot)
+        feature_snapshot = self._calculate_derived_features(snapshot)
         agent_run = self._run_agents_with_artifacts(
             context,
             set(routing.selected_agents),
             snapshot=snapshot,
+            feature_snapshot=feature_snapshot,
             parent_analysis_id=analysis_id,
             evidence_fingerprint=evidence_bundle.fingerprint,
             created_at=evidence_bundle.created_at,
@@ -297,6 +322,16 @@ class FridayCore:
             analysis=analysis,
             specialist_analyses=agent_run.specialist_analyses,
             master_synthesis=master_synthesis,
+        )
+
+    def _calculate_derived_features(
+        self,
+        snapshot: EvidenceSnapshot,
+    ) -> DerivedFeatureSnapshot:
+        """Calculate one immutable feature snapshot for the entire analysis run."""
+        return self._derived_feature_service.calculate_snapshot(
+            snapshot.market_series,
+            self._derived_feature_requests,
         )
 
     def ingest_event(self, event: NormalizedDataEvent) -> AnalyzeResponse:

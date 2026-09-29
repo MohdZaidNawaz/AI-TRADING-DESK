@@ -185,6 +185,52 @@ before calling this boundary. Twelve Data historical-series integration is
 intentionally deferred until its official capability and account entitlement
 are verified; Phase 5A does not call or alter the Twelve Data connector.
 
+## Phase 5B-1 deterministic derived market features
+
+Phase 5B-1 adds a provider-neutral, side-effect-free calculation layer over an
+immutable Phase 5A `MarketSeriesEvidence` snapshot. Derived values are calculated
+once per analysis run, are not persisted in `EvidenceStore` or
+`MarketSeriesStore`, and remain explicitly separate from raw observations:
+
+```text
+immutable EvidenceSnapshot.market_series
+    -> DerivedFeatureService (one calculation snapshot per analysis run)
+    -> DerivedFeatureRouter
+    -> AnalysisContext.derived_features
+    -> Chartist / Oracle structured derived observations
+```
+
+The approved deterministic feature set is: `BAR_RANGE = high - low`;
+`AVERAGE_RANGE(N) = mean(high - low)` over exactly N bars;
+`SIMPLE_RETURN = current_close / previous_close - 1`;
+`LOG_RETURN = ln(current_close / previous_close)`; `SMA(N) = mean(close)` over
+exactly N bars; `ROC(N) = current_close / close_N_periods_ago - 1`; and
+`ROLLING_STD(N)`, the population standard deviation of exactly N contiguous
+simple returns (`ddof=0`, requiring N+1 closes). Parameterized calculations
+require an explicit positive integer `window`; FRIDAY does not silently choose
+a research horizon. The default orchestration requests only the
+non-parameterized range, simple-return, and log-return calculations.
+
+Every feature records a stable ID, method ID and version, canonical parameters,
+input series ID and fingerprint, exact first/last input bar IDs, required and
+actual bar counts, timestamp, unit, quality flags, status, and limitations.
+Only completed bars are eligible. Provisional bars are excluded and reported;
+gaps inside a required window prevent calculation; gaps before the selected
+latest window remain explicit quality metadata. Insufficient history, undefined
+ratio/log domains, and invalid or non-finite input never produce a numeric value.
+
+Chartist receives range, average-range, SMA, and ROC features. Oracle receives
+simple return, log return, rolling return standard deviation, and ROC. The other
+seven specialists receive no derived features. Specialists only describe routed
+calculations and their lineage; they do not recompute values or convert them into
+trade direction, signals, confidence, position sizing, or execution authority.
+Master synthesis retains derived traceability separately from raw evidence.
+Sentinel requirements are unchanged, and Pilot remains disabled.
+
+This phase adds no API route, external request, provider integration, polling,
+database, cache, frontend change, broker connection, MT5 adapter, order
+placement, or automated execution.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:
