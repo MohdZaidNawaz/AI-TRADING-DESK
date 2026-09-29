@@ -25,6 +25,7 @@ from app.models.proposals import (
     VerifiedSentinelApproval,
 )
 from app.models.schemas import AnalyzeResponse
+from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
@@ -319,8 +320,14 @@ class TradeProposalWorkflow:
         analysis: AnalyzeResponse,
         snapshot: EvidenceSnapshot,
         risk_context: RiskContext | None,
+        specialist_analyses: tuple[SpecialistAnalysis, ...] = (),
+        master_synthesis: MasterSpecialistSynthesis | None = None,
     ) -> TradeProposalWorkflowResult:
-        """Use the exact supplied snapshot for draft creation and Sentinel review."""
+        """Use the exact supplied snapshot for draft creation and Sentinel review.
+
+        Structured specialist artifacts are traceability-only in Phase 4.  They
+        do not populate risk-policy signals or alter Sentinel's approval rules.
+        """
         bundle = build_evidence_bundle(snapshot)
         draft = self._master.create_draft_proposal(
             analysis_id=analysis.analysis_id,
@@ -331,6 +338,8 @@ class TradeProposalWorkflow:
             created_at=bundle.created_at,
             specialist_results=analysis.agent_results,
             synthesis=analysis.synthesis,
+            specialist_analyses=specialist_analyses,
+            master_synthesis=master_synthesis,
         )
         pending = draft.model_copy(update={"status": TradeProposalStatus.PENDING_RISK})
         decision = self._sentinel_gate.evaluate(

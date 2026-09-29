@@ -101,6 +101,45 @@ Approved decisions are registered only in a lock-protected, process-local approv
 
 Pilot remains disabled in Phase 3. It verifies a matching registry-issued Sentinel approval and then returns `DISABLED_NO_EXECUTION`; it has no adapter, no execution API route, no MT5 import, no broker connection, no credentials, and no order placement capability.
 
+## Phase 4 structured specialist intelligence
+
+Phase 4 preserves the existing `/api/analyze` response while adding an internal,
+immutable specialist-intelligence layer between the evidence snapshot and the
+Phase 3 proposal workflow:
+
+```text
+immutable EvidenceSnapshot
+    -> specialist-specific AgentEvidence
+    -> public AgentAnalysis + internal SpecialistAnalysis
+    -> F.R.I.D.A.Y. structured specialist synthesis
+    -> non-executable TradeProposal traceability
+    -> Sentinel risk gate
+```
+
+`SpecialistAnalysis` is provider-neutral and contains only safe evidence
+provenance references, deterministic fingerprints, directly observed facts,
+explicitly separate interpretations, limitations, invalidating conditions, and
+an analytical stance. It never contains provider payloads, article bodies,
+trade direction, entry, stop loss, target, sizing, credentials, broker details,
+or execution instructions.
+
+`BULLISH`, `BEARISH`, `NEUTRAL`, `CONFLICTED`, and `INSUFFICIENT_DATA` are
+analytical stances, not trade directions. They are not automatically converted
+to `LONG` or `SHORT`, and they do not populate `RiskContext.specialist_signals`.
+Sentinel's separate explicit policy, portfolio, proposal, and signal
+requirements remain mandatory for every approval.
+
+Current deterministic specialists retain only observations justified by their
+routed evidence. In particular, Chartist records supplied OHLC/timeframe/volume
+facts without inventing technical signals; Oracle records finite numeric values
+without producing probabilities; Capitol and Athena remain `INSUFFICIENT_DATA`
+without positioning or fundamental datasets; Ledger records only current-run
+lifecycle/provenance; and Pilot remains `DISABLED_NO_EXECUTION`.
+
+The artifacts are internal during Phase 4. No API route, public schema,
+provider connector, polling process, broker integration, MT5 adapter, or
+execution capability is added.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

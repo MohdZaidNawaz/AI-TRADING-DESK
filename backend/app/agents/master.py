@@ -12,6 +12,11 @@ from app.models.proposals import (
     TradeProposal,
 )
 from app.models.schemas import AgentAnalysis, Synthesis
+from app.models.specialist_analysis import (
+    MasterSpecialistSynthesis,
+    SpecialistAnalysis,
+    summarize_specialist_analyses,
+)
 
 
 class MasterAgent:
@@ -44,6 +49,20 @@ class MasterAgent:
             ),
         )
 
+    def synthesize_specialist_analyses(
+        self,
+        *,
+        analysis_id: str,
+        evidence_fingerprint: str,
+        specialist_analyses: tuple[SpecialistAnalysis, ...],
+    ) -> MasterSpecialistSynthesis:
+        """Create an internal evidence-linked synthesis without trade inference."""
+        return summarize_specialist_analyses(
+            parent_analysis_id=analysis_id,
+            evidence_fingerprint=evidence_fingerprint,
+            analyses=specialist_analyses,
+        )
+
     def create_draft_proposal(
         self,
         *,
@@ -55,6 +74,8 @@ class MasterAgent:
         created_at: datetime,
         specialist_results: list[AgentAnalysis],
         synthesis: Synthesis,
+        specialist_analyses: tuple[SpecialistAnalysis, ...] = (),
+        master_synthesis: MasterSpecialistSynthesis | None = None,
     ) -> TradeProposal:
         """Create a non-executable research draft without inventing trade inputs.
 
@@ -87,6 +108,23 @@ class MasterAgent:
                 asset_class = evidence.asset_class
                 break
 
+        if master_synthesis is not None and (
+            master_synthesis.analysis_id != analysis_id
+            or master_synthesis.evidence_fingerprint != evidence_fingerprint
+        ):
+            raise ValueError("Master synthesis must reference the proposal analysis snapshot")
+        if master_synthesis is not None and tuple(
+            artifact.analysis_id for artifact in master_synthesis.specialist_analyses
+        ) != tuple(
+            artifact.analysis_id
+            for artifact in sorted(
+                specialist_analyses,
+                key=lambda item: (item.agent_id, item.analysis_id),
+            )
+        ):
+            raise ValueError("Master synthesis must preserve the supplied specialist analyses")
+
+        analyses_by_agent = {analysis.agent_id: analysis for analysis in specialist_analyses}
         specialist_references = tuple(
             SpecialistAnalysisReference(
                 agent_id=result.agent_id,
@@ -95,6 +133,21 @@ class MasterAgent:
                 summary_digest=sha256(
                     f"{result.agent_id}\n{result.status}\n{result.summary}".encode("utf-8")
                 ).hexdigest(),
+                specialist_analysis_id=(
+                    analyses_by_agent[result.agent_id].analysis_id
+                    if result.agent_id in analyses_by_agent
+                    else None
+                ),
+                specialist_analysis_fingerprint=(
+                    analyses_by_agent[result.agent_id].analysis_fingerprint
+                    if result.agent_id in analyses_by_agent
+                    else None
+                ),
+                stance=(
+                    analyses_by_agent[result.agent_id].stance
+                    if result.agent_id in analyses_by_agent
+                    else None
+                ),
             )
             for result in specialist_results
         )

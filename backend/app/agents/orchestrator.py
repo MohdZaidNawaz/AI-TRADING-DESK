@@ -1,5 +1,6 @@
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import datetime
 from hashlib import sha256
 from threading import Lock
 
@@ -20,7 +21,25 @@ from app.models.schemas import (
 )
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
-from app.services.trade_proposal_workflow import TradeProposalWorkflow
+from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
+from app.services.trade_proposal_workflow import TradeProposalWorkflow, build_evidence_bundle
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentRunArtifacts:
+    """Private pairing of API-facing results and internal specialist artifacts."""
+
+    results: tuple[AgentAnalysis, ...]
+    specialist_analyses: tuple[SpecialistAnalysis, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisRun:
+    """Private Phase 4 result; public API responses remain unchanged."""
+
+    analysis: AnalyzeResponse
+    specialist_analyses: tuple[SpecialistAnalysis, ...]
+    master_synthesis: MasterSpecialistSynthesis
 
 
 class FridayCore:
@@ -87,62 +106,117 @@ class FridayCore:
         snapshot: EvidenceSnapshot | None = None,
     ) -> list[AgentAnalysis]:
         """Run selected specialists and preserve a status for the rest of the desk."""
-        results: list[AgentAnalysis] = []
         evidence_snapshot = snapshot or EvidenceSnapshot()
+        return list(
+            self._run_agents_with_artifacts(
+                context,
+                selected_agents,
+                snapshot=evidence_snapshot,
+                parent_analysis_id="standalone-agent-run",
+                evidence_fingerprint="0" * 64,
+                created_at=build_evidence_bundle(evidence_snapshot).created_at,
+            ).results
+        )
+
+    def _run_agents_with_artifacts(
+        self,
+        context: AnalysisContext,
+        selected_agents: set[str],
+        *,
+        snapshot: EvidenceSnapshot,
+        parent_analysis_id: str,
+        evidence_fingerprint: str,
+        created_at: datetime,
+    ) -> _AgentRunArtifacts:
+        """Run all specialists against one supplied snapshot and retain internal artifacts."""
+        results: list[AgentAnalysis] = []
+        specialist_analyses: list[SpecialistAnalysis] = []
 
         for agent in self._specialists:
+            agent_context = replace(
+                context,
+                evidence=self._evidence_router.route(
+                    agent_id=agent.agent_id,
+                    snapshot=snapshot,
+                ),
+                lifecycle=replace(
+                    context.lifecycle,
+                    prior_results=(
+                        tuple(
+                            PriorAgentResult(
+                                agent_id=result.agent_id,
+                                agent_name=result.agent_name,
+                                status=result.status,
+                                summary=result.summary,
+                                confidence=result.confidence,
+                            )
+                            for result in results
+                        )
+                        if agent.agent_id == "ledger_the_book"
+                        else ()
+                    ),
+                ),
+            )
             if agent.agent_id not in selected_agents:
-                results.append(agent.skipped())
+                result = agent.skipped()
+                results.append(result)
+                specialist_analyses.append(
+                    agent.structured_analysis(
+                        agent_context,
+                        parent_analysis_id=parent_analysis_id,
+                        evidence_fingerprint=evidence_fingerprint,
+                        created_at=created_at,
+                        result=result,
+                    )
+                )
                 continue
 
             try:
-                agent_context = replace(
-                    context,
-                    evidence=self._evidence_router.route(
-                        agent_id=agent.agent_id,
-                        snapshot=evidence_snapshot,
-                    ),
-                    lifecycle=replace(
-                        context.lifecycle,
-                        prior_results=(
-                            tuple(
-                                PriorAgentResult(
-                                    agent_id=result.agent_id,
-                                    agent_name=result.agent_name,
-                                    status=result.status,
-                                    summary=result.summary,
-                                    confidence=result.confidence,
-                                )
-                                for result in results
-                            )
-                            if agent.agent_id == "ledger_the_book"
-                            else ()
-                        ),
-                    ),
+                result = agent.analyze(agent_context)
+                results.append(result)
+                specialist_analyses.append(
+                    agent.structured_analysis(
+                        agent_context,
+                        parent_analysis_id=parent_analysis_id,
+                        evidence_fingerprint=evidence_fingerprint,
+                        created_at=created_at,
+                        result=result,
+                    )
                 )
-                results.append(agent.analyze(agent_context))
             except Exception as exc:  # pragma: no cover - defensive adapter boundary
-                results.append(
-                    AgentAnalysis(
-                        agent_id=agent.agent_id,
-                        agent_name=agent.name,
-                        status="error",
-                        summary="Agent analysis failed.",
-                        findings=[],
-                        confidence=0.0,
-                        limitations=[f"Internal agent error: {type(exc).__name__}"],
+                result = AgentAnalysis(
+                    agent_id=agent.agent_id,
+                    agent_name=agent.name,
+                    status="error",
+                    summary="Agent analysis failed.",
+                    findings=[],
+                    confidence=0.0,
+                    limitations=[f"Internal agent error: {type(exc).__name__}"],
+                )
+                results.append(result)
+                specialist_analyses.append(
+                    BaseAgent.structured_analysis(
+                        agent,
+                        agent_context,
+                        parent_analysis_id=parent_analysis_id,
+                        evidence_fingerprint=evidence_fingerprint,
+                        created_at=created_at,
+                        result=result,
                     )
                 )
 
-        return results
+        return _AgentRunArtifacts(
+            results=tuple(results),
+            specialist_analyses=tuple(specialist_analyses),
+        )
 
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResponse:
         """Analyze a query against the current symbol-scoped evidence snapshot."""
-        return self._analyze(
+        return self._analyze_run(
             request,
             snapshot=self._evidence_store.snapshot(symbol=request.symbol),
             lifecycle=AnalysisLifecycle(),
-        )
+        ).analysis
 
     def run_trade_proposal_workflow(
         self,
@@ -156,49 +230,67 @@ class FridayCore:
         specialist analysis, Master draft creation, and Sentinel evaluation.
         """
         snapshot = self._evidence_store.snapshot(symbol=request.symbol)
-        analysis = self._analyze(
+        analysis_run = self._analyze_run(
             request,
             snapshot=snapshot,
             lifecycle=AnalysisLifecycle(),
         )
         return self._trade_proposal_workflow.run(
-            analysis=analysis,
+            analysis=analysis_run.analysis,
             snapshot=snapshot,
             risk_context=risk_context,
+            specialist_analyses=analysis_run.specialist_analyses,
+            master_synthesis=analysis_run.master_synthesis,
         )
 
-    def _analyze(
+    def _analyze_run(
         self,
         request: AnalyzeRequest,
         *,
         snapshot: EvidenceSnapshot,
         lifecycle: AnalysisLifecycle,
-    ) -> AnalyzeResponse:
+    ) -> _AnalysisRun:
         context = AnalysisContext(
             symbol=request.symbol or self._DEFAULT_SUBJECT,
             query=request.query,
             lifecycle=lifecycle,
         )
         routing = self.select_agents(request.query)
-        results = self.run_agents(
+        digest = sha256(f"{request.symbol or ''}\n{request.query}".encode()).hexdigest()[:16]
+        analysis_id = f"mock-{digest}"
+        evidence_bundle = build_evidence_bundle(snapshot)
+        agent_run = self._run_agents_with_artifacts(
             context,
             set(routing.selected_agents),
             snapshot=snapshot,
+            parent_analysis_id=analysis_id,
+            evidence_fingerprint=evidence_bundle.fingerprint,
+            created_at=evidence_bundle.created_at,
         )
 
-        completed_results = [result for result in results if result.status == "completed"]
+        completed_results = [
+            result for result in agent_run.results if result.status == "completed"
+        ]
         synthesis = self._master.synthesize(context, completed_results)
-        digest = sha256(f"{request.symbol or ''}\n{request.query}".encode()).hexdigest()[:16]
-
-        return AnalyzeResponse(
-            analysis_id=f"mock-{digest}",
+        master_synthesis = self._master.synthesize_specialist_analyses(
+            analysis_id=analysis_id,
+            evidence_fingerprint=evidence_bundle.fingerprint,
+            specialist_analyses=agent_run.specialist_analyses,
+        )
+        analysis = AnalyzeResponse(
+            analysis_id=analysis_id,
             mode="deterministic_mock",
             symbol=request.symbol,
             query=request.query,
             selected_agents=routing.selected_agents,
             routing=routing,
-            agent_results=results,
+            agent_results=list(agent_run.results),
             synthesis=synthesis,
+        )
+        return _AnalysisRun(
+            analysis=analysis,
+            specialist_analyses=agent_run.specialist_analyses,
+            master_synthesis=master_synthesis,
         )
 
     def ingest_event(self, event: NormalizedDataEvent) -> AnalyzeResponse:
@@ -216,14 +308,14 @@ class FridayCore:
             f"{event.source.display_name} {event.event} event for {subject}. "
             "Review technical structure, market surveillance, and risk context."
         )
-        return self._analyze(
+        return self._analyze_run(
             AnalyzeRequest(symbol=event.symbol, query=query),
             snapshot=self._evidence_store.snapshot(symbol=event.symbol),
             lifecycle=AnalysisLifecycle(
                 trigger_type="market_event",
                 trigger_event_id=event.event_id,
             ),
-        )
+        ).analysis
 
     def ingest_market_event(self, event: NormalizedDataEvent) -> AnalyzeResponse:
         """Compatibility entry point for the existing market-event integration."""

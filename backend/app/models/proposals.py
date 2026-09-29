@@ -15,6 +15,7 @@ from pydantic import ConfigDict, Field, FiniteFloat, field_validator
 
 from app.models.events import AssetClass, DataDomain
 from app.models.schemas import APIModel, AnalyzeResponse
+from app.models.specialist_analysis import SpecialistStance
 
 
 class ProposalModel(APIModel):
@@ -75,12 +76,23 @@ class EvidenceReference(ProposalModel):
 
 
 class SpecialistAnalysisReference(ProposalModel):
-    """A compact specialist-output reference, not a copy of provider data."""
+    """A compact specialist-output reference, not a copy of provider data.
+
+    The optional Phase 4 fields preserve traceability to the immutable internal
+    artifact.  ``stance`` remains analytical context and is not a trade direction.
+    """
 
     agent_id: str = Field(min_length=1, max_length=80)
     status: Literal["completed", "skipped", "error"]
     confidence: FiniteFloat
     summary_digest: str = Field(min_length=1, max_length=64)
+    specialist_analysis_id: str | None = Field(default=None, min_length=1, max_length=120)
+    specialist_analysis_fingerprint: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    stance: SpecialistStance | None = None
 
 
 class ObservedMarketReference(ProposalModel):

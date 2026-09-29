@@ -1,8 +1,20 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
-from app.evidence.models import AgentEvidence
+from app.evidence.models import AgentEvidence, MarketEvidence, NewsEvidence, canonical_symbol
+from app.models.specialist_analysis import (
+    SpecialistAnalysis,
+    SpecialistAnalysisStatus,
+    SpecialistEvidenceReference,
+    SpecialistFactObservation,
+    SpecialistInterpretation,
+    SpecialistLifecycleObservation,
+    SpecialistOperationalState,
+    SpecialistStance,
+    create_specialist_analysis,
+)
 from app.models.schemas import AgentAnalysis
 
 
@@ -100,4 +112,130 @@ class BaseAgent(ABC):
             findings=findings,
             confidence=confidence,
             limitations=limitations,
+        )
+
+    def structured_analysis(
+        self,
+        context: AnalysisContext,
+        *,
+        parent_analysis_id: str,
+        evidence_fingerprint: str,
+        created_at: datetime,
+        result: AgentAnalysis,
+    ) -> SpecialistAnalysis:
+        """Return an internal artifact without changing the public result contract.
+
+        The default is deliberately conservative: deterministic mock specialists
+        have no basis for a directional stance unless a future adapter overrides
+        this method with directly supported observations.
+        """
+        return self._structured_result(
+            context,
+            parent_analysis_id=parent_analysis_id,
+            evidence_fingerprint=evidence_fingerprint,
+            created_at=created_at,
+            result=result,
+            stance=SpecialistStance.INSUFFICIENT_DATA,
+            thesis=(
+                f"{self.name} has no supported directional conclusion from the assigned "
+                "provider-neutral evidence."
+            ),
+            interpretations=(
+                SpecialistInterpretation(
+                    statement=(
+                        "The deterministic specialist output is a research framework, not a "
+                        "directional market conclusion."
+                    )
+                ),
+            ),
+        )
+
+    def _structured_result(
+        self,
+        context: AnalysisContext,
+        *,
+        parent_analysis_id: str,
+        evidence_fingerprint: str,
+        created_at: datetime,
+        result: AgentAnalysis,
+        stance: SpecialistStance,
+        thesis: str,
+        fact_observations: tuple[SpecialistFactObservation, ...] = (),
+        interpretations: tuple[SpecialistInterpretation, ...] = (),
+        invalidating_conditions: tuple[str, ...] = (),
+        operational_state: SpecialistOperationalState | None = None,
+        lifecycle: SpecialistLifecycleObservation | None = None,
+    ) -> SpecialistAnalysis:
+        """Create one safe artifact tied to this specialist's assigned evidence."""
+        supporting_evidence = self._supporting_evidence(context)
+        timeframes = tuple(
+            evidence.timeframe
+            for evidence in context.evidence.market_evidence
+            if evidence.timeframe
+        )
+        if self.agent_id == "ledger_the_book" and lifecycle is None:
+            lifecycle = SpecialistLifecycleObservation(
+                trigger_type=context.lifecycle.trigger_type,
+                trigger_event_id=context.lifecycle.trigger_event_id,
+                prior_agent_ids=tuple(
+                    result.agent_id for result in context.lifecycle.prior_results
+                ),
+            )
+        if self.agent_id == "pilot_execution" and operational_state is None:
+            operational_state = SpecialistOperationalState.DISABLED_NO_EXECUTION
+
+        return create_specialist_analysis(
+            parent_analysis_id=parent_analysis_id,
+            agent_id=self.agent_id,
+            status=SpecialistAnalysisStatus(result.status),
+            created_at=created_at,
+            evidence_fingerprint=evidence_fingerprint,
+            # No current deterministic specialist has enough validated evidence
+            # to support a directional confidence value.
+            confidence=result.confidence if stance is not SpecialistStance.INSUFFICIENT_DATA else 0.0,
+            stance=stance,
+            thesis=thesis,
+            fact_observations=fact_observations,
+            interpretations=interpretations,
+            supporting_evidence=supporting_evidence,
+            invalidating_conditions=invalidating_conditions,
+            limitations=tuple(result.limitations),
+            timeframes=timeframes,
+            lifecycle=lifecycle,
+            operational_state=operational_state,
+        )
+
+    @staticmethod
+    def market_reference(evidence: MarketEvidence) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.provenance.event_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.provenance.event_timestamp,
+            symbol=canonical_symbol(evidence.symbol),
+        )
+
+    @staticmethod
+    def news_reference(
+        evidence: NewsEvidence,
+        *,
+        symbol: str | None,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.provenance.event_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.provenance.event_timestamp,
+            symbol=canonical_symbol(symbol),
+        )
+
+    def _supporting_evidence(
+        self,
+        context: AnalysisContext,
+    ) -> tuple[SpecialistEvidenceReference, ...]:
+        return tuple(
+            self.market_reference(evidence) for evidence in context.evidence.market_evidence
+        ) + tuple(
+            self.news_reference(evidence, symbol=context.symbol)
+            for evidence in context.evidence.news_evidence
         )
