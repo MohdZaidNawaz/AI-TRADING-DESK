@@ -3,7 +3,11 @@
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
-from app.models.events import NormalizedDataEvent, SourceMetadata
+from app.models.events import (
+    NormalizedDataEvent,
+    NormalizedNewsResearchEvent,
+    SourceMetadata,
+)
 
 
 @runtime_checkable
@@ -28,3 +32,13 @@ class MarketDataClient(Protocol):
 
     async def fetch_snapshot(self, symbol: str) -> Mapping[str, Any]:
         """Return one raw market snapshot for connector normalization."""
+
+
+@runtime_checkable
+class NewsResearchConnector(Protocol):
+    """Converts one provider payload into a normalized news/research event."""
+
+    source: SourceMetadata
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedNewsResearchEvent:
+        """Keep provider-specific parsing outside FRIDAY Core."""

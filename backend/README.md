@@ -61,6 +61,18 @@ source connector -> normalized event -> ingestion service -> FRIDAY Core -> agen
 
 TradingView is a webhook market-data connector. Twelve Data is an API market-data connector using the same provider-neutral flow. Future market-data, financial-news, economic-calendar, fundamental, forex, crypto, commodities, sentiment, or alternative-data integrations should implement `SourceConnector`, normalize their payload into `NormalizedDataEvent`, and send it through `IngestionService`.
 
+## News and research foundation
+
+The backend includes a provider-neutral staging layer for future financial-news and research sources:
+
+```text
+future provider connector -> NormalizedNewsResearchEvent -> NewsResearchIngestionService
+```
+
+`NormalizedNewsResearchEvent` records stable source metadata, provider, title, HTTP(S) URL, timezone-aware timestamp, optional symbols and topics, and either a short summary or content value. `NewsResearchConnector` defines the future provider-adapter boundary, ensuring provider-specific parsing remains outside FRIDAY Core. `NewsResearchIngestionService` keeps a bounded, process-local collection of validated events.
+
+This foundation does not register an API route, scrape or poll websites, call an external provider, require credentials, or change FRIDAY Core and agent behavior. A future provider integration must normalize its payload at the connector boundary before ingestion and must define an explicit, tested Core hand-off separately.
+
 ## Twelve Data market snapshots
 
 Set `TWELVE_DATA_API_KEY` in the backend process environment before starting the API. The process environment takes precedence; for local development only, the backend also reads this single setting from `backend/.env` when the process variable is absent. Keep the value in your operating-system or deployment secret manager; never commit it or place it in a URL, request body, test, or documentation.

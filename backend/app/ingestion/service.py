@@ -1,7 +1,10 @@
 """Shared hand-off from validated source events to FRIDAY Core."""
 
+from collections import deque
+from threading import Lock
+
 from app.ingestion.contracts import EventConsumer, MarketDataClient, SourceConnector
-from app.models.events import NormalizedDataEvent
+from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 
 
 class IngestionService:
@@ -33,3 +36,30 @@ class MarketSnapshotService:
         event = self._connector.normalize(payload)
         self._ingestion.ingest(event)
         return event
+
+
+class NewsResearchIngestionService:
+    """Bounded staging boundary for normalized news/research events."""
+
+    def __init__(self, *, max_events: int = 100) -> None:
+        if max_events < 1:
+            raise ValueError("max_events must be positive")
+        self._recent_events: deque[NormalizedNewsResearchEvent] = deque(
+            maxlen=max_events
+        )
+        self._event_lock = Lock()
+
+    def ingest(
+        self,
+        event: NormalizedNewsResearchEvent,
+    ) -> NormalizedNewsResearchEvent:
+        if not isinstance(event, NormalizedNewsResearchEvent):
+            raise TypeError("event must be a NormalizedNewsResearchEvent")
+        with self._event_lock:
+            self._recent_events.append(event)
+        return event
+
+    @property
+    def recent_events(self) -> tuple[NormalizedNewsResearchEvent, ...]:
+        with self._event_lock:
+            return tuple(self._recent_events)
