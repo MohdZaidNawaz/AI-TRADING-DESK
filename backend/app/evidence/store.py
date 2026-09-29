@@ -7,11 +7,14 @@ from threading import RLock
 from app.evidence.models import (
     EvidenceSnapshot,
     MarketEvidence,
+    MarketSeriesEvidence,
     NewsEvidence,
     canonical_symbol,
     symbols_match,
 )
+from app.evidence.series_store import MarketSeriesStore
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
+from app.models.market_series import NormalizedMarketBar
 
 
 class EvidenceStore:
@@ -26,13 +29,22 @@ class EvidenceStore:
         *,
         max_market_events: int = 100,
         max_news_events: int = 100,
+        max_market_series: int = 20,
+        max_bars_per_series: int = 500,
+        market_series_store: MarketSeriesStore | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
+        _validate_limit(max_market_series, "max_market_series")
+        _validate_limit(max_bars_per_series, "max_bars_per_series")
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
         self._news_events: dict[str, NewsEvidence] = {}
+        self._market_series_store = market_series_store or MarketSeriesStore(
+            max_series=max_market_series,
+            max_bars_per_series=max_bars_per_series,
+        )
         self._lock = RLock()
 
     def ingest_market_event(self, event: NormalizedDataEvent) -> MarketEvidence:
@@ -58,6 +70,14 @@ class EvidenceStore:
             self._trim(self._news_events, self._max_news_events, _news_sort_key)
             return self._news_events.get(evidence.provenance.event_id, evidence)
 
+    def ingest_market_bar(
+        self,
+        bar: NormalizedMarketBar,
+    ) -> MarketSeriesEvidence | None:
+        """Retain one bar in the separate bounded historical-series store."""
+        with self._lock:
+            return self._market_series_store.ingest(bar)
+
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
         requested_symbol = canonical_symbol(symbol)
@@ -82,10 +102,12 @@ class EvidenceStore:
                     key=_news_sort_key,
                 )
             )
+            market_series = self._market_series_store.snapshot(symbol=requested_symbol).series
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
             news_evidence=news_evidence,
+            market_series=market_series,
             symbol=requested_symbol,
         )
 
@@ -98,6 +120,20 @@ class EvidenceStore:
     def news_count(self) -> int:
         with self._lock:
             return len(self._news_events)
+
+    @property
+    def market_series_count(self) -> int:
+        with self._lock:
+            return self._market_series_store.series_count
+
+    @property
+    def market_bar_count(self) -> int:
+        with self._lock:
+            return self._market_series_store.bar_count
+
+    @property
+    def market_series_store(self) -> MarketSeriesStore:
+        return self._market_series_store
 
     @staticmethod
     def _trim(

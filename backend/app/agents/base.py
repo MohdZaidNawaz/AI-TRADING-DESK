@@ -3,7 +3,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-from app.evidence.models import AgentEvidence, MarketEvidence, NewsEvidence, canonical_symbol
+from app.evidence.models import (
+    AgentEvidence,
+    MarketEvidence,
+    MarketSeriesEvidence,
+    NewsEvidence,
+    canonical_symbol,
+)
 from app.models.specialist_analysis import (
     SpecialistAnalysis,
     SpecialistAnalysisStatus,
@@ -78,13 +84,17 @@ class BaseAgent(ABC):
         """Describe only the provider-neutral evidence assigned to this specialist."""
         market_count = len(context.evidence.market_evidence)
         news_count = len(context.evidence.news_evidence)
-        if market_count == 0 and news_count == 0:
+        series_count = len(context.evidence.market_series)
+        if market_count == 0 and news_count == 0 and series_count == 0:
             return []
 
-        findings = [
+        assignment = (
             "Structured evidence assigned for this analysis: "
             f"{market_count} market item(s) and {news_count} news item(s)."
-        ]
+        )
+        if series_count:
+            assignment += f" Historical series assigned: {series_count}."
+        findings = [assignment]
         if context.evidence.provenance:
             findings.append(
                 f"Evidence provenance retained for {len(context.evidence.provenance)} item(s)."
@@ -172,7 +182,7 @@ class BaseAgent(ABC):
             evidence.timeframe
             for evidence in context.evidence.market_evidence
             if evidence.timeframe
-        )
+        ) + tuple(series.timeframe for series in context.evidence.market_series)
         if self.agent_id == "ledger_the_book" and lifecycle is None:
             lifecycle = SpecialistLifecycleObservation(
                 trigger_type=context.lifecycle.trigger_type,
@@ -229,6 +239,23 @@ class BaseAgent(ABC):
             symbol=canonical_symbol(symbol),
         )
 
+    @staticmethod
+    def series_reference(
+        evidence: MarketSeriesEvidence,
+    ) -> SpecialistEvidenceReference:
+        latest_timestamp = (
+            evidence.latest_completed_at
+            if evidence.latest_completed_at is not None
+            else evidence.provenance.latest_received_at
+        )
+        return SpecialistEvidenceReference(
+            event_id=evidence.series_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=latest_timestamp,
+            symbol=canonical_symbol(evidence.symbol),
+        )
+
     def _supporting_evidence(
         self,
         context: AnalysisContext,
@@ -238,4 +265,6 @@ class BaseAgent(ABC):
         ) + tuple(
             self.news_reference(evidence, symbol=context.symbol)
             for evidence in context.evidence.news_evidence
+        ) + tuple(
+            self.series_reference(evidence) for evidence in context.evidence.market_series
         )

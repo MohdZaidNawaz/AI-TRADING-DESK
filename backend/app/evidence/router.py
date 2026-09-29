@@ -43,12 +43,15 @@ class EvidenceRouter:
         if agent_id in _MARKET_AND_NEWS:
             market_evidence = snapshot.market_evidence
             news_evidence = snapshot.news_evidence
+            market_series = ()
         elif agent_id in _CONTEXTUAL_MARKET_AND_NEWS:
             market_evidence = snapshot.market_evidence[:_CONTEXTUAL_MARKET_LIMIT]
             news_evidence = snapshot.news_evidence
+            market_series = ()
         elif agent_id in _MARKET_ONLY:
             market_evidence = snapshot.market_evidence
             news_evidence = ()
+            market_series = snapshot.market_series
         else:  # pragma: no cover - guarded by NINE_SPECIALIST_IDS above
             raise ValueError(f"No evidence policy exists for specialist: {agent_id}")
 
@@ -61,5 +64,6 @@ class EvidenceRouter:
         return AgentEvidence(
             market_evidence=market_evidence,
             news_evidence=news_evidence,
+            market_series=market_series,
             provenance=provenance,
         )

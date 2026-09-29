@@ -12,7 +12,12 @@ from app.agents.base import (
 )
 from app.agents.master import MasterAgent
 from app.agents.specialists import create_specialist_agents
-from app.evidence import EvidenceRouter, EvidenceSnapshot, EvidenceStore
+from app.evidence import (
+    EvidenceRouter,
+    EvidenceSnapshot,
+    EvidenceStore,
+    MarketSeriesEvidence,
+)
 from app.models.schemas import (
     AgentAnalysis,
     AnalyzeRequest,
@@ -20,6 +25,7 @@ from app.models.schemas import (
     RoutingDecision,
 )
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
+from app.models.market_series import NormalizedMarketBar
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 from app.services.trade_proposal_workflow import TradeProposalWorkflow, build_evidence_bundle
@@ -328,6 +334,13 @@ class FridayCore:
         """Stage provider-neutral news evidence without triggering retrieval or execution."""
         self._evidence_store.ingest_news_event(event)
         return event
+
+    def ingest_market_bar(
+        self,
+        bar: NormalizedMarketBar,
+    ) -> MarketSeriesEvidence | None:
+        """Stage a validated bar without triggering analysis or execution."""
+        return self._evidence_store.ingest_market_bar(bar)
 
     @property
     def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:

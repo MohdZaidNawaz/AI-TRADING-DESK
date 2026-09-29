@@ -80,6 +80,23 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(evidence.published_at)
 
+    for series in snapshot.market_series:
+        reference_time = (
+            series.latest_completed_at
+            if series.latest_completed_at is not None
+            else series.provenance.latest_received_at
+        )
+        references.append(
+            EvidenceReference(
+                event_id=series.series_id,
+                source_id=series.provenance.source_id,
+                domain=series.provenance.domain,
+                timestamp=reference_time,
+                symbol=canonical_symbol(series.symbol),
+            )
+        )
+        created_at_values.append(reference_time)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -92,12 +109,24 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
     )
     fingerprint_payload = [reference.model_dump(mode="json") for reference in ordered_references]
-    fingerprint = _fingerprint(
-        {
-            "symbol": canonical_symbol(snapshot.symbol),
-            "references": fingerprint_payload,
-        }
-    )
+    fingerprint_input: dict[str, object] = {
+        "symbol": canonical_symbol(snapshot.symbol),
+        "references": fingerprint_payload,
+    }
+    if snapshot.market_series:
+        fingerprint_input["market_series"] = [
+            {
+                "series_id": series.series_id,
+                "fingerprint": series.fingerprint,
+                "latest_completed_at": (
+                    series.latest_completed_at.isoformat()
+                    if series.latest_completed_at is not None
+                    else None
+                ),
+            }
+            for series in sorted(snapshot.market_series, key=lambda item: item.series_id)
+        ]
+    fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))
     return EvidenceBundle(
         references=ordered_references,

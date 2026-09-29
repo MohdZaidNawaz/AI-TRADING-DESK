@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
+import json
 import math
 import re
 
@@ -20,6 +22,12 @@ from app.models.events import (
     NormalizedNewsResearchEvent,
     SourceMetadata,
     SourceTransport,
+)
+from app.models.market_series import (
+    MarketBarState,
+    MarketSeriesKey,
+    NormalizedMarketBar,
+    VolumeKind,
 )
 
 
@@ -117,6 +125,170 @@ class MarketEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketBarEvidence:
+    """Immutable safe projection of one normalized historical market bar."""
+
+    bar_id: str
+    opened_at: datetime
+    closed_at: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float | None
+    volume_kind: VolumeKind
+    state: MarketBarState
+    received_at: datetime
+    revision: int | None
+
+    @classmethod
+    def from_bar(cls, bar: NormalizedMarketBar) -> "MarketBarEvidence":
+        if not isinstance(bar, NormalizedMarketBar):
+            raise TypeError("bar must be a NormalizedMarketBar")
+        return cls(
+            bar_id=bar.bar_id,
+            opened_at=_as_utc(bar.opened_at),
+            closed_at=_as_utc(bar.closed_at),
+            open=float(bar.open),
+            high=float(bar.high),
+            low=float(bar.low),
+            close=float(bar.close),
+            volume=float(bar.volume) if bar.volume is not None else None,
+            volume_kind=bar.volume_kind,
+            state=bar.state,
+            received_at=_as_utc(bar.received_at),
+            revision=bar.revision,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesGap:
+    """Observed discontinuity; missing intervals are never invented or filled."""
+
+    expected_open_at: datetime
+    actual_open_at: datetime
+    missing_interval_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesContinuity:
+    expected_interval_seconds: int
+    first_opened_at: datetime
+    last_closed_at: datetime
+    is_ordered: bool
+    is_contiguous: bool
+    missing_interval_count: int
+    gaps: tuple[SeriesGap, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MarketSeriesProvenance:
+    source_id: str
+    source_name: str
+    transport: SourceTransport
+    domain: DataDomain
+    first_received_at: datetime
+    latest_received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MarketSeriesEvidence:
+    """Deterministic provider-neutral historical-series evidence."""
+
+    series_id: str
+    key: MarketSeriesKey
+    symbol: str
+    asset_class: AssetClass
+    venue: str | None
+    timeframe: str
+    bars: tuple[MarketBarEvidence, ...]
+    oldest_completed_at: datetime | None
+    latest_completed_at: datetime | None
+    completed_count: int
+    provisional_count: int
+    continuity: SeriesContinuity
+    provenance: MarketSeriesProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_bars(
+        cls,
+        key: MarketSeriesKey,
+        bars: tuple[NormalizedMarketBar, ...],
+    ) -> "MarketSeriesEvidence":
+        if not bars:
+            raise ValueError("market-series evidence requires at least one bar")
+        ordered = tuple(sorted(bars, key=lambda item: (item.opened_at, item.bar_id)))
+        if any(bar.series_key != key for bar in ordered):
+            raise ValueError("all bars must belong to the supplied series key")
+
+        first = ordered[0]
+        if any(bar.asset_class is not first.asset_class for bar in ordered):
+            raise ValueError("a market series cannot mix asset classes")
+        if any(bar.source != first.source for bar in ordered):
+            raise ValueError("a market series cannot mix source metadata")
+
+        projected = tuple(MarketBarEvidence.from_bar(bar) for bar in ordered)
+        completed = tuple(
+            bar for bar in projected if bar.state is MarketBarState.COMPLETED
+        )
+        continuity = _series_continuity(projected, first.timeframe_seconds)
+        provenance = MarketSeriesProvenance(
+            source_id=first.source.source_id,
+            source_name=first.source.display_name,
+            transport=first.source.transport,
+            domain=first.source.domain,
+            first_received_at=min(bar.received_at for bar in projected),
+            latest_received_at=max(bar.received_at for bar in projected),
+        )
+        fingerprint = _series_fingerprint(key, projected)
+        return cls(
+            series_id=key.series_id,
+            key=key,
+            symbol=first.symbol,
+            asset_class=first.asset_class,
+            venue=first.venue,
+            timeframe=first.timeframe,
+            bars=projected,
+            oldest_completed_at=min(
+                (bar.closed_at for bar in completed),
+                default=None,
+            ),
+            latest_completed_at=max(
+                (bar.closed_at for bar in completed),
+                default=None,
+            ),
+            completed_count=len(completed),
+            provisional_count=len(projected) - len(completed),
+            continuity=continuity,
+            provenance=provenance,
+            fingerprint=fingerprint,
+        )
+
+    @property
+    def bar_count(self) -> int:
+        return len(self.bars)
+
+    @property
+    def latest_bar(self) -> MarketBarEvidence:
+        return self.bars[-1]
+
+    @property
+    def latest_completed_bar(self) -> MarketBarEvidence | None:
+        return next(
+            (bar for bar in reversed(self.bars) if bar.state is MarketBarState.COMPLETED),
+            None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MarketSeriesSnapshot:
+    """Bounded immutable output from the dedicated historical-series store."""
+
+    series: tuple[MarketSeriesEvidence, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class NewsEvidence:
     """Safe, immutable projection of one normalized news/research event."""
 
@@ -194,6 +366,7 @@ class EvidenceSnapshot:
 
     market_evidence: tuple[MarketEvidence, ...] = ()
     news_evidence: tuple[NewsEvidence, ...] = ()
+    market_series: tuple[MarketSeriesEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -203,6 +376,7 @@ class AgentEvidence:
 
     market_evidence: tuple[MarketEvidence, ...] = ()
     news_evidence: tuple[NewsEvidence, ...] = ()
+    market_series: tuple[MarketSeriesEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -271,3 +445,65 @@ def _finite_indicator_values(
         if normalized is not None:
             projected.append((key, normalized))
     return tuple(projected)
+
+
+def _series_continuity(
+    bars: tuple[MarketBarEvidence, ...],
+    expected_seconds: int,
+) -> SeriesContinuity:
+    gaps: list[SeriesGap] = []
+    missing_count = 0
+    for previous, current in zip(bars, bars[1:], strict=False):
+        expected_open = previous.opened_at + (previous.closed_at - previous.opened_at)
+        if current.opened_at == expected_open:
+            continue
+        delta_seconds = (current.opened_at - previous.opened_at).total_seconds()
+        missing = max(0, math.ceil(delta_seconds / expected_seconds) - 1)
+        missing_count += missing
+        gaps.append(
+            SeriesGap(
+                expected_open_at=expected_open,
+                actual_open_at=current.opened_at,
+                missing_interval_count=missing,
+            )
+        )
+    return SeriesContinuity(
+        expected_interval_seconds=expected_seconds,
+        first_opened_at=bars[0].opened_at,
+        last_closed_at=bars[-1].closed_at,
+        is_ordered=all(
+            previous.opened_at < current.opened_at
+            for previous, current in zip(bars, bars[1:], strict=False)
+        ),
+        is_contiguous=not gaps,
+        missing_interval_count=missing_count,
+        gaps=tuple(gaps),
+    )
+
+
+def _series_fingerprint(
+    key: MarketSeriesKey,
+    bars: tuple[MarketBarEvidence, ...],
+) -> str:
+    payload = {
+        "series_id": key.series_id,
+        "bars": [
+            {
+                "bar_id": bar.bar_id,
+                "opened_at": bar.opened_at.isoformat(),
+                "closed_at": bar.closed_at.isoformat(),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "volume_kind": bar.volume_kind.value,
+                "state": bar.state.value,
+                "received_at": bar.received_at.isoformat(),
+                "revision": bar.revision,
+            }
+            for bar in bars
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()

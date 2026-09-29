@@ -8,6 +8,7 @@ from app.models.events import (
     NormalizedNewsResearchEvent,
     SourceMetadata,
 )
+from app.models.market_series import NormalizedMarketBar
 
 
 @runtime_checkable
@@ -32,6 +33,14 @@ class NewsEvidenceConsumer(Protocol):
 
     def ingest_news_event(self, event: NormalizedNewsResearchEvent) -> object:
         """Pass a normalized news item to the shared evidence layer."""
+
+
+@runtime_checkable
+class MarketBarConsumer(Protocol):
+    """Stages validated historical bars without provider-specific behavior."""
+
+    def ingest_market_bar(self, bar: NormalizedMarketBar) -> object:
+        """Pass one normalized bar to the dedicated series evidence store."""
 
 
 class MarketDataClient(Protocol):

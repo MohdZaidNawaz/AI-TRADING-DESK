@@ -112,6 +112,74 @@ def _quantitative_facts(
     return tuple(facts)
 
 
+def _technical_series_facts(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistFactObservation, ...]:
+    """Describe validated bars and continuity without deriving indicators."""
+    facts: list[SpecialistFactObservation] = []
+    for series in context.evidence.market_series:
+        latest = series.latest_completed_bar
+        latest_values = (
+            (
+                f"latest completed OHLC open={latest.open}, high={latest.high}, "
+                f"low={latest.low}, close={latest.close}; volume={latest.volume} "
+                f"({latest.volume_kind.value})"
+            )
+            if latest is not None
+            else "no completed bar is present"
+        )
+        facts.append(
+            SpecialistFactObservation(
+                statement=(
+                    f"Observed {series.bar_count} validated {series.timeframe} bar(s) for "
+                    f"{series.symbol}: completed={series.completed_count}, "
+                    f"provisional={series.provisional_count}, "
+                    f"oldest_completed={_render_time(series.oldest_completed_at)}, "
+                    f"latest_completed={_render_time(series.latest_completed_at)}, "
+                    f"missing_intervals={series.continuity.missing_interval_count}; "
+                    f"{latest_values}."
+                ),
+                evidence_references=(agent.series_reference(series),),
+            )
+        )
+    return tuple(facts)
+
+
+def _quantitative_series_facts(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistFactObservation, ...]:
+    """Expose direct finite bar values without statistical calculations."""
+    facts: list[SpecialistFactObservation] = []
+    for series in context.evidence.market_series:
+        latest = series.latest_completed_bar
+        values = (
+            (
+                f"open={latest.open}, high={latest.high}, low={latest.low}, "
+                f"close={latest.close}, volume={latest.volume}"
+            )
+            if latest is not None
+            else "no completed OHLCV values"
+        )
+        facts.append(
+            SpecialistFactObservation(
+                statement=(
+                    f"Observed direct finite values from {series.bar_count} ordered "
+                    f"{series.timeframe} bar(s): {values}; completed={series.completed_count}, "
+                    f"provisional={series.provisional_count}, "
+                    f"missing_intervals={series.continuity.missing_interval_count}."
+                ),
+                evidence_references=(agent.series_reference(series),),
+            )
+        )
+    return tuple(facts)
+
+
+def _render_time(value: datetime | None) -> str:
+    return value.isoformat() if value is not None else "none"
+
+
 def _fundamental_facts(
     agent: BaseAgent,
     context: AnalysisContext,
@@ -418,6 +486,13 @@ class ChartistTechnicianAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        limitations = (
+            [
+                "Historical bars remain descriptive; no indicator, level, signal, or directional methodology was applied."
+            ]
+            if context.evidence.market_series
+            else ["No chart, candle, volume, indicator, or live price data was analyzed."]
+        )
         return self.result(
             summary=f"Built a mock technical review plan for {context.symbol}.",
             findings=[
@@ -425,7 +500,7 @@ class ChartistTechnicianAgent(BaseAgent):
                 "Require alignment between structure and momentum before treating a setup as actionable research.",
                 *self.evidence_findings(context),
             ],
-            limitations=["No chart, candle, volume, indicator, or live price data was analyzed."],
+            limitations=limitations,
             confidence=0.55,
         )
 
@@ -438,7 +513,7 @@ class ChartistTechnicianAgent(BaseAgent):
         created_at: datetime,
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
-        facts = _technical_facts(self, context)
+        facts = _technical_facts(self, context) + _technical_series_facts(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -447,15 +522,29 @@ class ChartistTechnicianAgent(BaseAgent):
             result=result,
             stance=SpecialistStance.INSUFFICIENT_DATA,
             thesis=(
-                "Assigned market observations do not provide a validated historical sample for trend, "
-                "momentum, support, resistance, or a directional technical conclusion."
+                (
+                    "Assigned market observations and validated bars do not by themselves establish "
+                    "trend, momentum, levels, or a directional technical conclusion."
+                )
+                if context.evidence.market_series
+                else (
+                    "Assigned market observations do not provide a validated historical sample for trend, "
+                    "momentum, support, resistance, or a directional technical conclusion."
+                )
             ),
             fact_observations=facts,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "Observed OHLC, volume, timeframe, and indicator values are recorded without "
-                        "deriving unsupported technical signals."
+                        (
+                            "Observed OHLC, volume, timeframe, and continuity values are recorded "
+                            "without deriving unsupported technical signals."
+                        )
+                        if context.evidence.market_series
+                        else (
+                            "Observed OHLC, volume, timeframe, and indicator values are recorded without "
+                            "deriving unsupported technical signals."
+                        )
                     ),
                     evidence_references=tuple(
                         reference
@@ -483,6 +572,13 @@ class OracleQuantAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        limitations = (
+            [
+                "Historical bars remain descriptive; no model inference, statistic, backtest, return, volatility, or probability forecast was run."
+            ]
+            if context.evidence.market_series
+            else ["No historical dataset, model inference, backtest, or probability forecast was run."]
+        )
         return self.result(
             summary=f"Defined a mock quantitative validation plan for {context.symbol}.",
             findings=[
@@ -490,7 +586,7 @@ class OracleQuantAgent(BaseAgent):
                 "Separate in-sample observations from out-of-sample validation before assigning probabilities.",
                 *self.evidence_findings(context),
             ],
-            limitations=["No historical dataset, model inference, backtest, or probability forecast was run."],
+            limitations=limitations,
             confidence=0.52,
         )
 
@@ -503,7 +599,7 @@ class OracleQuantAgent(BaseAgent):
         created_at: datetime,
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
-        facts = _quantitative_facts(self, context)
+        facts = _quantitative_facts(self, context) + _quantitative_series_facts(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -512,8 +608,15 @@ class OracleQuantAgent(BaseAgent):
             result=result,
             stance=SpecialistStance.INSUFFICIENT_DATA,
             thesis=(
-                "Finite numerical observations are available only as isolated evidence and do not "
-                "support a statistical forecast, probability, model result, or directional conclusion."
+                (
+                    "Finite numerical observations and validated bars are descriptive evidence only and "
+                    "do not support a statistic, forecast, probability, model result, or direction."
+                )
+                if context.evidence.market_series
+                else (
+                    "Finite numerical observations are available only as isolated evidence and do not "
+                    "support a statistical forecast, probability, model result, or directional conclusion."
+                )
             ),
             fact_observations=facts,
             interpretations=(

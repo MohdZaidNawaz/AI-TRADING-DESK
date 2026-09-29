@@ -140,6 +140,51 @@ The artifacts are internal during Phase 4. No API route, public schema,
 provider connector, polling process, broker integration, MT5 adapter, or
 execution capability is added.
 
+## Phase 5A historical market-series foundation
+
+Phase 5A adds a separate provider-neutral path for validated historical OHLCV
+bars. It coexists with point-in-time market events and news evidence instead of
+changing either contract:
+
+```text
+NormalizedMarketBar
+    -> bounded process-local MarketSeriesStore
+    -> immutable MarketSeriesEvidence in EvidenceSnapshot
+    -> EvidenceRouter
+    -> Chartist Technician and Oracle Quant only
+```
+
+`NormalizedMarketBar` requires canonical symbol and timeframe values,
+timezone-aware UTC-normalized timestamps, finite OHLC values with valid high
+and low bounds, exact positive bar timing, explicit completed/provisional state,
+and explicit volume semantics (`unknown`, `real`, `exchange`, `tick`, or
+`unavailable`). A semantic bar ID is derived from source, symbol, venue,
+timeframe, and opening timestamp; revisions keep that identity and are resolved
+deterministically by explicit revision number or receipt time.
+
+`MarketSeriesStore` is thread-safe, bounded by both series count and bars per
+series, and process-local. It orders bars chronologically, deduplicates semantic
+bar identities, records continuity gaps without filling or inventing bars, and
+returns immutable snapshots with stable fingerprints and source provenance.
+The store is cleared whenever the backend process restarts.
+
+Historical series are routed only to Chartist Technician and Oracle Quant.
+Chartist may record direct bar counts, timeframe, timestamps, OHLCV values,
+volume kind, and continuity metadata. Oracle may record the same finite numeric
+observations. Phase 5A does not calculate indicators, returns, volatility,
+probabilities, trend labels, levels, breakouts, or trade direction. Series
+fingerprints and latest completed-bar references participate in proposal
+traceability, but they do not weaken or satisfy any existing Sentinel approval
+requirement.
+
+This phase provides an internal ingestion service only. It adds no API route,
+provider client, live request, polling job, database, cache, frontend change,
+MT5 or broker adapter, order placement, or execution authority. Future provider
+adapters must normalize their own history payloads into `NormalizedMarketBar`
+before calling this boundary. Twelve Data historical-series integration is
+intentionally deferred until its official capability and account entitlement
+are verified; Phase 5A does not call or alter the Twelve Data connector.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:
