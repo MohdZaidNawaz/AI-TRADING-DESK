@@ -19,6 +19,7 @@ from app.connectors.alpha_vantage import (
 )
 from app.ingestion.contracts import NewsResearchConnector
 from app.models.events import EventType, NormalizedNewsResearchEvent, SourceTransport
+from app.services.alpha_vantage_news import AlphaVantageNewsResearchService
 
 
 def _article_payload() -> dict[str, Any]:
@@ -66,6 +67,62 @@ def _mock_client(handler: Any, api_key: str) -> AlphaVantageNewsClient:
     )
 
 
+def _news_payload(
+    index: int,
+    *,
+    title: str,
+    summary: str,
+    time_published: str | None = None,
+    topics: list[dict[str, str]] | None = None,
+    provider: str = "Example Research Wire",
+    category: str = "Macro",
+    symbol_sentiment: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    payload = _article_payload()
+    payload.update(
+        {
+            "title": title,
+            "url": f"https://news.example.com/articles/{index}",
+            "time_published": time_published or f"20260929T12{index:02d}00",
+            "summary": summary,
+            "source": provider,
+            "category_within_source": category,
+            "topics": topics or [],
+            "ticker_sentiment": symbol_sentiment or [],
+        }
+    )
+    return payload
+
+
+def _research_service(
+    feed: list[Mapping[str, Any]],
+    *,
+    request_assertion: Any | None = None,
+) -> AlphaVantageNewsResearchService:
+    api_key = secrets.token_urlsafe(32)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["function"] == "NEWS_SENTIMENT"
+        assert request.url.params["tickers"] == "FOREX:USD"
+        assert request.url.params["limit"] == "50"
+        if request_assertion is not None:
+            request_assertion(request)
+        return httpx.Response(200, json={"feed": feed})
+
+    return AlphaVantageNewsResearchService(_mock_client(handler, api_key))
+
+
+def _gold_feed(count: int = 50) -> list[dict[str, Any]]:
+    return [
+        _news_payload(
+            index,
+            title=f"Gold market update {index}",
+            summary="Precious-metal markets remain active.",
+        )
+        for index in range(count)
+    ]
+
+
 @pytest.fixture(autouse=True)
 def block_accidental_live_alpha_vantage_requests(monkeypatch: Any) -> None:
     async def fail_on_live_request(*args: Any, **kwargs: Any) -> httpx.Response:
@@ -89,7 +146,7 @@ def test_alpha_vantage_client_supports_documented_news_query_parameters() -> Non
         assert request.url.params["time_from"] == "20260928T1200"
         assert request.url.params["time_to"] == "20260929T1200"
         assert request.url.params["sort"] == "RELEVANCE"
-        assert request.url.params["limit"] == "100"
+        assert request.url.params["limit"] == "50"
         assert secrets.compare_digest(request.url.params["apikey"], api_key)
         return httpx.Response(200, json={"items": "1", "feed": [_article_payload()]})
 
@@ -100,12 +157,709 @@ def test_alpha_vantage_client_supports_documented_news_query_parameters() -> Non
             time_from=datetime(2026, 9, 28, 12, 0, tzinfo=UTC),
             time_to="20260929T1200",
             sort="relevance",
-            limit=100,
         )
     )
 
     assert len(records) == 1
     assert records[0]["title"] == _article_payload()["title"]
+
+
+def test_xau_research_accepts_a_fifty_article_provider_page() -> None:
+    events = _run(
+        _research_service(_gold_feed()).research_xau_usd(requested_count=50)
+    )
+
+    assert len(events) == 50
+
+
+def test_xau_research_returns_requested_count_after_provider_page() -> None:
+    events = _run(
+        _research_service(_gold_feed()).research_xau_usd(requested_count=3)
+    )
+
+    assert len(events) == 3
+
+
+@pytest.mark.parametrize("requested_count", [True, 0, 51, 3.0, "3"])
+def test_xau_research_rejects_invalid_requested_count(
+    requested_count: Any,
+) -> None:
+    with pytest.raises(ValueError, match="requested_count must be"):
+        _run(
+            _research_service([]).research_xau_usd(
+                requested_count=requested_count,
+            )
+        )
+
+
+def test_xau_research_filters_irrelevant_usd_articles_below_gold_articles() -> None:
+    feed = [
+        _news_payload(
+            0,
+            title="Technology company reports quarterly revenue",
+            summary="The company reported its results in US dollars.",
+            time_published="20260929T130000",
+        ),
+        _news_payload(
+            1,
+            title="Gold strengthens against the dollar",
+            summary="Bullion advanced during the session.",
+            time_published="20260929T120000",
+        ),
+    ]
+
+    events = _run(
+        _research_service(feed).research_xau_usd(
+            requested_count=2,
+            sort="LATEST",
+        )
+    )
+
+    assert [event.title for event in events] == [
+        "Gold strengthens against the dollar"
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _news_payload(
+            0,
+            title="GoLd demand increases",
+            summary="Metals remained active.",
+        ),
+        _news_payload(
+            1,
+            title="Metals market update",
+            summary="xAu moved during the session.",
+        ),
+        _news_payload(
+            2,
+            title="Commodities market update",
+            summary="Markets remained active.",
+            topics=[{"topic": "BULLION", "relevance_score": "0.90"}],
+        ),
+        _news_payload(
+            3,
+            title="Commodities market update",
+            summary="Markets remained active.",
+            category="PRECIOUS METALS",
+        ),
+    ],
+)
+def test_xau_research_matches_gold_concepts_case_insensitively(
+    payload: Mapping[str, Any],
+) -> None:
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+def test_xau_research_keeps_fed_usd_context_without_gold_wording() -> None:
+    payload = _news_payload(
+        0,
+        title="Federal Reserve decision lifts the US dollar",
+        summary="The Fed kept interest rates unchanged after its policy meeting.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert [event.title for event in events] == [payload["title"]]
+
+
+def test_xau_research_keeps_inflation_context() -> None:
+    payload = _news_payload(
+        0,
+        title="Inflation cools faster than economists expected",
+        summary="The price report changed the monetary-policy outlook.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+def test_xau_research_keeps_real_yield_context() -> None:
+    payload = _news_payload(
+        0,
+        title="Real yields climb after the latest economic data",
+        summary="Real interest rates moved higher during the session.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+def test_xau_research_keeps_treasury_yield_context() -> None:
+    payload = _news_payload(
+        0,
+        title="Treasury yields rise across the curve",
+        summary="US Treasuries weakened after the economic release.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+def test_xau_research_keeps_geopolitical_risk_off_context() -> None:
+    payload = _news_payload(
+        0,
+        title="Geopolitical tensions trigger a risk-off move",
+        summary="The military escalation increased safe-haven demand.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Athlete wins gold medal in championship final",
+        "Company describes its platform as the gold standard",
+    ],
+)
+def test_xau_research_rejects_obvious_nonfinancial_gold_phrases(title: str) -> None:
+    payload = _news_payload(
+        0,
+        title=title,
+        summary="The story is unrelated to financial markets.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert events == ()
+
+
+def test_xau_research_accepts_financial_gold_standard_coverage() -> None:
+    payload = _news_payload(
+        0,
+        title="Economists revisit the historical gold standard",
+        summary=(
+            "The monetary system linked currency convertibility to reserve assets."
+        ),
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert [event.title for event in events] == [payload["title"]]
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "precious metal",
+        "precious metals",
+        "precious-metal",
+        "precious-metals",
+    ],
+)
+def test_xau_research_accepts_precious_metal_variants(phrase: str) -> None:
+    payload = _news_payload(
+        0,
+        title=f"{phrase} prices strengthen",
+        summary="Commodity markets remained active.",
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    ("title", "summary"),
+    [
+        (
+            "The animals were well fed throughout winter",
+            "The agricultural report focused on livestock nutrition.",
+        ),
+        (
+            "Retailers begin a commercial price war",
+            "Competing stores announced discounts on consumer electronics.",
+        ),
+        (
+            "Balloon inflation instructions updated for the festival",
+            "Organizers published guidance for event volunteers.",
+        ),
+        (
+            "Sports organization sanctions a player",
+            "The disciplinary decision followed a rules violation.",
+        ),
+    ],
+)
+def test_xau_research_rejects_unrelated_context_phrases(
+    title: str,
+    summary: str,
+) -> None:
+    payload = _news_payload(0, title=title, summary=summary)
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert events == ()
+
+
+@pytest.mark.parametrize(
+    ("provider", "publisher_domain"),
+    [
+        ("Gold Research Wire", "news.example.com"),
+        ("Example Research Wire", "gold-research.example.com"),
+    ],
+)
+def test_xau_research_rejects_publisher_only_gold_match(
+    provider: str,
+    publisher_domain: str,
+) -> None:
+    payload = _news_payload(
+        0,
+        title="Technology company releases a new product",
+        summary="The announcement covers product availability.",
+        provider=provider,
+    )
+    payload["source_domain"] = publisher_domain
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert events == ()
+
+
+def test_xau_research_uses_publisher_metadata_only_as_a_ranking_boost() -> None:
+    ordinary_publisher = _news_payload(
+        0,
+        title="Gold market outlook",
+        summary="Bullion demand remained steady.",
+        time_published="20260929T120000",
+    )
+    specialist_publisher = _news_payload(
+        1,
+        title="Gold market outlook",
+        summary="Bullion demand remained steady.",
+        time_published="20260929T120000",
+        provider="Gold Research Wire",
+    )
+
+    events = _run(
+        _research_service(
+            [ordinary_publisher, specialist_publisher]
+        ).research_xau_usd(
+            requested_count=2,
+            sort="RELEVANCE",
+        )
+    )
+
+    assert [event.provider for event in events] == [
+        "Gold Research Wire",
+        "Example Research Wire",
+    ]
+
+
+def test_xau_research_accepts_a_gold_related_ticker_signal() -> None:
+    payload = _news_payload(
+        0,
+        title="Commodity fund positioning changes",
+        summary="The fund recorded a change in institutional flows.",
+        symbol_sentiment=[
+            {
+                "ticker": "GLD",
+                "relevance_score": "0.96",
+                "ticker_sentiment_score": "0.20",
+                "ticker_sentiment_label": "Somewhat-Bullish",
+            }
+        ],
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+    assert events[0].symbols == ["GLD"]
+
+
+def test_xau_research_accepts_canonicalized_alpha_usd_signal() -> None:
+    payload = _news_payload(
+        0,
+        title="Markets await the next session",
+        summary="Cross-asset positioning changed during quiet trading.",
+        symbol_sentiment=[
+            {
+                "ticker": "FOREX:USD",
+                "relevance_score": "0.92",
+                "ticker_sentiment_score": "0.10",
+                "ticker_sentiment_label": "Neutral",
+            }
+        ],
+    )
+
+    events = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )
+
+    assert len(events) == 1
+    assert events[0].symbols == ["USD"]
+    assert events[0].symbol_sentiment[0].symbol == "USD"
+
+
+def test_xau_research_deduplicates_existing_event_ids() -> None:
+    first = _news_payload(
+        0,
+        title="Gold market update",
+        summary="Bullion advanced.",
+    )
+    second = dict(first)
+    first["url"] = "https://news.example.com/gold-story#first"
+    second["url"] = "https://news.example.com/gold-story#second"
+
+    events = _run(
+        _research_service([first, second]).research_xau_usd(requested_count=2)
+    )
+
+    assert len(events) == 1
+
+
+def test_xau_research_returns_empty_when_no_articles_are_relevant() -> None:
+    feed = [
+        _news_payload(
+            index,
+            title=f"Consumer technology update {index}",
+            summary="The company announced a new device and software release.",
+        )
+        for index in range(5)
+    ]
+
+    events = _run(
+        _research_service(feed).research_xau_usd(requested_count=3)
+    )
+
+    assert events == ()
+
+
+def test_xau_research_applies_recency_boundaries_locally_and_upstream() -> None:
+    feed = [
+        _news_payload(
+            0,
+            title="Older gold article",
+            summary="Gold market context.",
+            time_published="20260927T120000",
+        ),
+        _news_payload(
+            1,
+            title="Current gold article",
+            summary="Gold market context.",
+            time_published="20260929T120000",
+        ),
+    ]
+
+    def assert_request(request: httpx.Request) -> None:
+        assert request.url.params["time_from"] == "20260928T0000"
+        assert request.url.params["time_to"] == "20260929T2359"
+
+    events = _run(
+        _research_service(feed, request_assertion=assert_request).research_xau_usd(
+            requested_count=3,
+            time_from="20260928T0000",
+            time_to="20260929T2359",
+        )
+    )
+
+    assert [event.title for event in events] == ["Current gold article"]
+
+
+def test_xau_research_supports_relevance_and_latest_local_sorting() -> None:
+    older_relevant = _news_payload(
+        0,
+        title="Gold XAU bullion and precious metals outlook",
+        summary="A detailed commodities assessment.",
+        time_published="20260928T120000",
+    )
+    latest_relevant = _news_payload(
+        1,
+        title="Latest commodities update",
+        summary="Gold moved during the latest session.",
+        time_published="20260929T120000",
+    )
+    feed = [older_relevant, latest_relevant]
+
+    def assert_relevance_request(request: httpx.Request) -> None:
+        assert request.url.params["sort"] == "RELEVANCE"
+
+    def assert_latest_request(request: httpx.Request) -> None:
+        assert request.url.params["sort"] == "LATEST"
+
+    relevance_events = _run(
+        _research_service(
+            feed,
+            request_assertion=assert_relevance_request,
+        ).research_xau_usd(
+            requested_count=2,
+            sort="RELEVANCE",
+        )
+    )
+    latest_events = _run(
+        _research_service(
+            feed,
+            request_assertion=assert_latest_request,
+        ).research_xau_usd(
+            requested_count=2,
+            sort="LATEST",
+        )
+    )
+
+    assert [event.title for event in relevance_events] == [
+        "Gold XAU bullion and precious metals outlook",
+        "Latest commodities update",
+    ]
+    assert [event.title for event in latest_events] == [
+        "Latest commodities update",
+        "Gold XAU bullion and precious metals outlook",
+    ]
+
+
+def test_xau_research_ranks_direct_gold_above_contextual_macro_news() -> None:
+    direct = _news_payload(
+        0,
+        title="Gold demand strengthens",
+        summary="Bullion buying increased during the session.",
+        time_published="20260929T110000",
+    )
+    contextual = _news_payload(
+        1,
+        title="Federal Reserve updates its policy outlook",
+        summary="The Fed discussed interest rates and inflation.",
+        time_published="20260929T130000",
+    )
+
+    events = _run(
+        _research_service([contextual, direct]).research_xau_usd(
+            requested_count=2,
+            sort="RELEVANCE",
+        )
+    )
+
+    assert [event.title for event in events] == [direct["title"], contextual["title"]]
+
+
+def test_xau_research_rejects_invalid_time_range_before_provider_call() -> None:
+    provider_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(200, json={"feed": []})
+
+    service = AlphaVantageNewsResearchService(
+        _mock_client(handler, secrets.token_urlsafe(32))
+    )
+
+    with pytest.raises(ValueError, match="time_from must not be after time_to"):
+        _run(
+            service.research_xau_usd(
+                time_from="20260930T0000",
+                time_to="20260929T0000",
+            )
+        )
+
+    assert provider_calls == 0
+
+
+def test_xau_research_rejects_inverted_same_minute_datetimes_before_call() -> None:
+    provider_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(200, json={"feed": []})
+
+    service = AlphaVantageNewsResearchService(
+        _mock_client(handler, secrets.token_urlsafe(32))
+    )
+
+    with pytest.raises(ValueError, match="time_from must not be after time_to"):
+        _run(
+            service.research_xau_usd(
+                time_from=datetime(2026, 9, 29, 12, 0, 50, tzinfo=UTC),
+                time_to=datetime(2026, 9, 29, 12, 0, 10, tzinfo=UTC),
+            )
+        )
+
+    assert provider_calls == 0
+
+
+def test_xau_research_applies_exact_second_bounds_locally() -> None:
+    feed = [
+        _news_payload(
+            index,
+            title=f"Gold boundary article {second}",
+            summary="Bullion market context.",
+            time_published=f"20260929T1200{second:02d}",
+        )
+        for index, second in enumerate((9, 10, 30, 50, 51))
+    ]
+
+    def assert_request(request: httpx.Request) -> None:
+        assert request.url.params["time_from"] == "20260929T1200"
+        assert request.url.params["time_to"] == "20260929T1200"
+
+    events = _run(
+        _research_service(feed, request_assertion=assert_request).research_xau_usd(
+            requested_count=5,
+            time_from=datetime(2026, 9, 29, 12, 0, 10, tzinfo=UTC),
+            time_to=datetime(2026, 9, 29, 12, 0, 50, tzinfo=UTC),
+            sort="LATEST",
+        )
+    )
+
+    assert [event.timestamp.second for event in events] == [50, 30, 10]
+
+
+def test_xau_research_latest_prefers_newest_duplicate() -> None:
+    older = _news_payload(
+        0,
+        title="Gold XAU bullion outlook",
+        summary="Precious metals remained active.",
+        time_published="20260928T120000",
+    )
+    newer = _news_payload(
+        1,
+        title="Federal Reserve policy update",
+        summary="Interest rates remained unchanged.",
+        time_published="20260929T120000",
+    )
+    older["url"] = "https://news.example.com/shared-story#older"
+    newer["url"] = "https://news.example.com/shared-story#newer"
+
+    events = _run(
+        _research_service([older, newer]).research_xau_usd(
+            requested_count=2,
+            sort="LATEST",
+        )
+    )
+
+    assert [event.title for event in events] == [newer["title"]]
+
+
+def test_xau_research_relevance_prefers_stronger_duplicate() -> None:
+    stronger = _news_payload(
+        0,
+        title="Gold XAU bullion and precious metals outlook",
+        summary="Bullion demand strengthened.",
+        time_published="20260928T120000",
+    )
+    newer_context = _news_payload(
+        1,
+        title="Federal Reserve policy update",
+        summary="Interest rates remained unchanged.",
+        time_published="20260929T120000",
+    )
+    stronger["url"] = "https://news.example.com/shared-story#stronger"
+    newer_context["url"] = "https://news.example.com/shared-story#newer"
+
+    events = _run(
+        _research_service([newer_context, stronger]).research_xau_usd(
+            requested_count=2,
+            sort="RELEVANCE",
+        )
+    )
+
+    assert [event.title for event in events] == [stronger["title"]]
+
+
+@pytest.mark.parametrize("sort", ["RELEVANCE", "LATEST"])
+def test_xau_research_tie_order_is_independent_of_provider_order(
+    sort: str,
+) -> None:
+    first = _news_payload(
+        0,
+        title="Gold market outlook alpha",
+        summary="Bullion demand remained steady.",
+        time_published="20260929T120000",
+    )
+    second = _news_payload(
+        1,
+        title="Gold market outlook bravo",
+        summary="Bullion demand remained steady.",
+        time_published="20260929T120000",
+    )
+
+    forward = _run(
+        _research_service([first, second]).research_xau_usd(
+            requested_count=2,
+            sort=sort,
+        )
+    )
+    reversed_events = _run(
+        _research_service([second, first]).research_xau_usd(
+            requested_count=2,
+            sort=sort,
+        )
+    )
+
+    assert [event.event_id for event in forward] == [
+        event.event_id for event in reversed_events
+    ]
+
+
+def test_xau_research_result_count_is_applied_after_relevance_filtering() -> None:
+    feed = [
+        _news_payload(
+            index,
+            title=(
+                f"Gold update {index}"
+                if index < 2
+                else f"Technology update {index}"
+            ),
+            summary="General reporting context.",
+        )
+        for index in range(50)
+    ]
+
+    events = _run(
+        _research_service(feed).research_xau_usd(requested_count=3)
+    )
+
+    assert len(events) == 2
+    assert all("Gold" in event.title for event in events)
+
+
+def test_xau_research_preserves_normalized_sentiment_and_relevance() -> None:
+    payload = _article_payload()
+
+    event = _run(
+        _research_service([payload]).research_xau_usd(requested_count=1)
+    )[0]
+
+    assert event.overall_sentiment is not None
+    assert event.overall_sentiment.score == 0.21
+    assert event.overall_sentiment.label == "Somewhat-Bullish"
+    assert event.topic_relevance[0].relevance_score == 0.95
+    assert event.symbol_sentiment[0].symbol == "USD"
+    assert event.symbol_sentiment[0].relevance_score == 0.91
+    assert event.symbol_sentiment[0].sentiment_score == 0.18
+    assert event.content is None
 
 
 def test_alpha_vantage_api_key_never_reaches_httpx_or_debug_logs(
@@ -170,11 +924,11 @@ def test_alpha_vantage_connector_normalizes_topics_and_symbol_sentiment() -> Non
 
     assert event.topics == ["Economy - Monetary", "Financial Markets"]
     assert [item.relevance_score for item in event.topic_relevance] == [0.95, 0.8]
-    assert event.symbols == ["FOREX:USD", "GLD"]
+    assert event.symbols == ["USD", "GLD"]
     assert event.overall_sentiment is not None
     assert event.overall_sentiment.score == 0.21
     assert event.overall_sentiment.label == "Somewhat-Bullish"
-    assert event.symbol_sentiment[0].symbol == "FOREX:USD"
+    assert event.symbol_sentiment[0].symbol == "USD"
     assert event.symbol_sentiment[0].relevance_score == 0.91
     assert event.symbol_sentiment[0].sentiment_score == 0.18
     assert event.symbol_sentiment[0].sentiment_label == "Somewhat-Bullish"
@@ -431,14 +1185,6 @@ def test_alpha_vantage_client_rejects_invalid_sort(invalid_sort: str) -> None:
 
     with pytest.raises(ValueError, match="sort must be"):
         _run(client.fetch_news(sort=invalid_sort))
-
-
-@pytest.mark.parametrize("invalid_limit", [True, 0, -1, 50.0, "50", 1_001])
-def test_alpha_vantage_client_rejects_invalid_limit(invalid_limit: Any) -> None:
-    client = _mock_client(lambda request: httpx.Response(200), "dummy-key")
-
-    with pytest.raises(ValueError, match="limit must be"):
-        _run(client.fetch_news(limit=invalid_limit))
 
 
 def test_alpha_vantage_client_rejects_naive_query_datetimes() -> None:

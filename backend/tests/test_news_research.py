@@ -18,6 +18,7 @@ from app.models.events import (
     SymbolSentiment,
     TopicRelevance,
 )
+from app.services.news_research import XauUsdNewsRelevanceService
 
 NEWS_SOURCE = SourceMetadata(
     source_id="test_news_feed",
@@ -285,6 +286,29 @@ def test_news_research_connector_contract_keeps_parsing_at_the_boundary() -> Non
     assert isinstance(connector, NewsResearchConnector)
     assert event.title == "Policy outlook updated"
     assert event.topics == ["Macro"]
+
+
+def test_xau_usd_selector_accepts_a_non_alpha_normalized_news_source() -> None:
+    event = NormalizedNewsResearchEvent(
+        event_id="synthetic-fed-news",
+        source=NEWS_SOURCE,
+        provider="Synthetic Macro Wire",
+        title="Federal Reserve updates its interest-rate outlook",
+        url="https://example.com/news/fed-rate-outlook",
+        timestamp=datetime(2026, 9, 29, 12, 0, tzinfo=UTC),
+        symbols=["USD"],
+        topics=["Monetary Policy"],
+        summary="The Fed discussed inflation and the future path of interest rates.",
+    )
+
+    selected = XauUsdNewsRelevanceService().select(
+        [event],
+        requested_count=1,
+        sort="RELEVANCE",
+    )
+
+    assert selected == (event,)
+    assert selected[0].source.source_id == "test_news_feed"
 
 
 def test_news_research_ingestion_is_bounded_and_does_not_change_friday_core() -> None:

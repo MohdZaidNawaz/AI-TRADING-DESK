@@ -31,6 +31,11 @@ ALPHA_VANTAGE_NEWS_SOURCE = SourceMetadata(
 AlphaVantageNewsSort = Literal["LATEST", "EARLIEST", "RELEVANCE"]
 
 _ALLOWED_SORTS = {"LATEST", "EARLIEST", "RELEVANCE"}
+ALPHA_VANTAGE_NEWS_PAGE_SIZE = 50
+_ALPHA_VANTAGE_SYMBOL_ALIASES = {
+    "FOREX:USD": "USD",
+    "FOREX:XAU": "XAU",
+}
 _NEWS_TIMESTAMP_PATTERN = re.compile(r"^\d{8}T\d{6}$")
 _PROVIDER_DIAGNOSTIC_FIELDS = ("Error Message", "message", "Note", "Information")
 _PROVIDER_DIAGNOSTIC_MAX_LENGTH = 500
@@ -151,7 +156,6 @@ class AlphaVantageNewsClient:
         time_from: datetime | str | None = None,
         time_to: datetime | str | None = None,
         sort: AlphaVantageNewsSort | str = "LATEST",
-        limit: int = 50,
     ) -> tuple[Mapping[str, Any], ...]:
         """Return raw article records after safe response-envelope validation."""
         params = _build_query_params(
@@ -160,7 +164,6 @@ class AlphaVantageNewsClient:
             time_from=time_from,
             time_to=time_to,
             sort=sort,
-            limit=limit,
         )
         try:
             async with httpx.AsyncClient(
@@ -267,15 +270,7 @@ def _build_query_params(
     time_from: datetime | str | None,
     time_to: datetime | str | None,
     sort: AlphaVantageNewsSort | str,
-    limit: int,
 ) -> dict[str, str]:
-    if (
-        isinstance(limit, bool)
-        or not isinstance(limit, int)
-        or not 1 <= limit <= 1_000
-    ):
-        raise ValueError("limit must be between 1 and 1000.")
-
     normalized_sort = str(sort).strip().upper()
     if normalized_sort not in _ALLOWED_SORTS:
         raise ValueError("sort must be LATEST, EARLIEST, or RELEVANCE.")
@@ -283,7 +278,7 @@ def _build_query_params(
     params = {
         "function": "NEWS_SENTIMENT",
         "sort": normalized_sort,
-        "limit": str(limit),
+        "limit": str(ALPHA_VANTAGE_NEWS_PAGE_SIZE),
     }
     optional_params = {
         "tickers": _normalize_csv_filter(tickers, "tickers"),
@@ -462,7 +457,7 @@ def _normalize_symbol_sentiment(value: Any) -> list[dict[str, Any]]:
     records = _mapping_list(value)
     return [
         {
-            "symbol": _required_text(record.get("ticker"), "ticker"),
+            "symbol": _normalize_provider_symbol(record.get("ticker")),
             "relevance_score": record.get("relevance_score"),
             "sentiment_score": record.get("ticker_sentiment_score"),
             "sentiment_label": _required_text(
@@ -472,6 +467,11 @@ def _normalize_symbol_sentiment(value: Any) -> list[dict[str, Any]]:
         }
         for record in records
     ]
+
+
+def _normalize_provider_symbol(value: Any) -> str:
+    symbol = _required_text(value, "ticker").upper()
+    return _ALPHA_VANTAGE_SYMBOL_ALIASES.get(symbol, symbol)
 
 
 def _mapping_list(value: Any) -> list[Mapping[str, Any]]:
