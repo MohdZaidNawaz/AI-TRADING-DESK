@@ -5,11 +5,12 @@ from app.ingestion.service import (
     MarketSnapshotService,
     NewsResearchIngestionService,
 )
-from app.ingestion.contracts import NewsEvidenceConsumer
+from app.ingestion.contracts import EconomicEventConsumer, NewsEvidenceConsumer
 
 __all__ = [
     "IngestionService",
     "MarketSnapshotService",
     "NewsResearchIngestionService",
     "NewsEvidenceConsumer",
+    "EconomicEventConsumer",
 ]

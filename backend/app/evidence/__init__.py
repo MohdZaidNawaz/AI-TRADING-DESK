@@ -2,6 +2,8 @@
 
 from app.evidence.models import (
     AgentEvidence,
+    EconomicEventEvidence,
+    EconomicEventSnapshot,
     EvidenceProvenance,
     EvidenceSnapshot,
     MarketEvidence,
@@ -18,12 +20,16 @@ from app.evidence.models import (
     canonical_symbol,
     symbols_match,
 )
+from app.evidence.economic_store import EconomicEventStore, latest_economic_versions
 from app.evidence.router import EvidenceRouter, NINE_SPECIALIST_IDS
 from app.evidence.store import EvidenceStore
 from app.evidence.series_store import MarketSeriesStore
 
 __all__ = [
     "AgentEvidence",
+    "EconomicEventEvidence",
+    "EconomicEventSnapshot",
+    "EconomicEventStore",
     "EvidenceProvenance",
     "EvidenceRouter",
     "EvidenceSnapshot",
@@ -43,4 +49,5 @@ __all__ = [
     "SeriesGap",
     "canonical_symbol",
     "symbols_match",
+    "latest_economic_versions",
 ]

@@ -231,6 +231,52 @@ This phase adds no API route, external request, provider integration, polling,
 database, cache, frontend change, broker connection, MT5 adapter, order
 placement, or automated execution.
 
+## Phase 5B-2 structured economic-event evidence
+
+Phase 5B-2 adds an internal provider-neutral boundary for discrete economic
+calendar and release events. No live economic provider is connected:
+
+```text
+future provider connector
+    -> immutable NormalizedEconomicEvent
+    -> safe EconomicEventEvidence
+    -> bounded EconomicEventStore
+    -> immutable EvidenceSnapshot.economic_events
+    -> EvidenceRouter
+    -> Atlas / Scout / Sentinel / Ledger structured artifacts
+```
+
+Economic values use finite decimals with explicit units and scales; FRIDAY does
+not silently convert them. Each immutable lifecycle version is one of
+`scheduled`, `released`, `revised`, `delayed`, `cancelled`, or `unknown`.
+Versions from the same provider occurrence retain a stable occurrence ID, a
+positive release version, deterministic content fingerprint, and deterministic
+event ID. Receipt-time noise is excluded from content identity. Exact
+duplicates collapse, conflicting content for the same provider occurrence and
+version is rejected, and provider occurrences are not reconciled automatically.
+
+The process-local `EconomicEventStore` is thread-safe, bounded, deterministically
+ordered, and non-persistent. It preserves retained lifecycle history and can
+select the current version for each provider occurrence. Economic evidence is
+kept separate from point-in-time market events, news, and historical market
+series. The orchestrator captures one immutable snapshot for an analysis run;
+specialists do not read mutable store state independently.
+
+Atlas receives current scheduled, released, and revised macro evidence. Scout
+also receives delayed and cancelled catalyst lifecycle context. Sentinel sees
+only event identity, timing, status, expected impact, and provenance context;
+economic values are withheld from its specialist input. Ledger retains the full
+bounded lifecycle and revision history. The other five specialists receive no
+economic-event evidence.
+
+Forecast, previous, revised-previous, and actual values remain separate typed
+fields. This phase performs no economic surprise calculation, creates no
+automatic stance or trade direction, derives no entry, stop, target, or sizing,
+and does not satisfy Sentinel's market-evidence requirements. It creates no
+Sentinel approval, and Pilot remains disabled. There is no new public API route,
+frontend change, credential, polling process, persistence layer, broker/MT5
+adapter, order placement, or execution authority.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

@@ -9,6 +9,7 @@ from app.models.events import (
     SourceMetadata,
 )
 from app.models.market_series import NormalizedMarketBar
+from app.models.economic_events import NormalizedEconomicEvent
 
 
 @runtime_checkable
@@ -41,6 +42,14 @@ class MarketBarConsumer(Protocol):
 
     def ingest_market_bar(self, bar: NormalizedMarketBar) -> object:
         """Pass one normalized bar to the dedicated series evidence store."""
+
+
+@runtime_checkable
+class EconomicEventConsumer(Protocol):
+    """Stages normalized economic events without provider-specific behavior."""
+
+    def ingest_economic_event(self, event: NormalizedEconomicEvent) -> object:
+        """Pass one immutable lifecycle version to the economic evidence store."""
 
 
 class MarketDataClient(Protocol):

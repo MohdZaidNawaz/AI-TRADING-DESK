@@ -97,6 +97,19 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(reference_time)
 
+    for event in snapshot.economic_events:
+        reference_time = event.released_at or event.scheduled_at
+        references.append(
+            EvidenceReference(
+                event_id=event.event_id,
+                source_id=event.provenance.source_id,
+                domain=event.provenance.domain,
+                timestamp=reference_time,
+                symbol=None,
+            )
+        )
+        created_at_values.append(event.released_at or event.received_at)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -125,6 +138,15 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 ),
             }
             for series in sorted(snapshot.market_series, key=lambda item: item.series_id)
+        ]
+    if snapshot.economic_events:
+        fingerprint_input["economic_events"] = [
+            {
+                "event_id": event.event_id,
+                "fingerprint": event.fingerprint,
+                "release_version": event.release_version,
+            }
+            for event in snapshot.economic_events
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))

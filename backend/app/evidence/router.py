@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from app.evidence.economic_store import latest_economic_versions
 from app.evidence.models import AgentEvidence, EvidenceProvenance, EvidenceSnapshot
+from app.models.economic_events import EconomicReleaseStatus
 
 
 NINE_SPECIALIST_IDS: tuple[str, ...] = (
@@ -31,6 +35,22 @@ _CONTEXTUAL_MARKET_AND_NEWS = frozenset(
 )
 _MARKET_ONLY = frozenset({"chartist_technician", "oracle_quant"})
 _CONTEXTUAL_MARKET_LIMIT = 3
+_ATLAS_ECONOMIC_STATUSES = frozenset(
+    {
+        EconomicReleaseStatus.SCHEDULED,
+        EconomicReleaseStatus.RELEASED,
+        EconomicReleaseStatus.REVISED,
+    }
+)
+_SCOUT_ECONOMIC_STATUSES = frozenset(
+    {
+        EconomicReleaseStatus.SCHEDULED,
+        EconomicReleaseStatus.RELEASED,
+        EconomicReleaseStatus.REVISED,
+        EconomicReleaseStatus.DELAYED,
+        EconomicReleaseStatus.CANCELLED,
+    }
+)
 
 
 class EvidenceRouter:
@@ -55,15 +75,47 @@ class EvidenceRouter:
         else:  # pragma: no cover - guarded by NINE_SPECIALIST_IDS above
             raise ValueError(f"No evidence policy exists for specialist: {agent_id}")
 
+        current_economic_events = latest_economic_versions(snapshot.economic_events)
+        if agent_id == "atlas_macro":
+            economic_events = tuple(
+                event
+                for event in current_economic_events
+                if event.release_status in _ATLAS_ECONOMIC_STATUSES
+            )
+        elif agent_id == "scout_recon":
+            economic_events = tuple(
+                event
+                for event in current_economic_events
+                if event.release_status in _SCOUT_ECONOMIC_STATUSES
+            )
+        elif agent_id == "sentinel_risk_officer":
+            economic_events = tuple(
+                replace(
+                    event,
+                    previous=None,
+                    revised_previous=None,
+                    forecast=None,
+                    actual=None,
+                )
+                for event in current_economic_events
+            )
+        elif agent_id == "ledger_the_book":
+            economic_events = snapshot.economic_events
+        else:
+            economic_events = ()
+
         provenance: tuple[EvidenceProvenance, ...] = ()
         if agent_id == "ledger_the_book":
             provenance = tuple(
                 evidence.provenance for evidence in market_evidence
-            ) + tuple(evidence.provenance for evidence in news_evidence)
+            ) + tuple(evidence.provenance for evidence in news_evidence) + tuple(
+                evidence.provenance for evidence in economic_events
+            )
 
         return AgentEvidence(
             market_evidence=market_evidence,
             news_evidence=news_evidence,
             market_series=market_series,
+            economic_events=economic_events,
             provenance=provenance,
         )

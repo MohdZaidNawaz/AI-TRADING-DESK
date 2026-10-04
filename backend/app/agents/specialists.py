@@ -8,6 +8,7 @@ from app.models.derived_features import FeatureStatus
 from app.models.specialist_analysis import (
     SpecialistAnalysis,
     SpecialistDerivedObservation,
+    SpecialistEconomicObservation,
     SpecialistFactObservation,
     SpecialistInterpretation,
     SpecialistOperationalState,
@@ -47,6 +48,39 @@ def _news_context_facts(
             evidence_references=(agent.news_reference(evidence, symbol=context.symbol),),
         )
         for evidence in context.evidence.news_evidence
+    )
+
+
+def _economic_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+    *,
+    include_values: bool = True,
+) -> tuple[SpecialistEconomicObservation, ...]:
+    """Preserve typed releases without calculating surprises or direction."""
+    return tuple(
+        SpecialistEconomicObservation(
+            event_id=evidence.event_id,
+            occurrence_id=evidence.occurrence_id,
+            event_name=evidence.event_name,
+            indicator_id=evidence.indicator_id,
+            country=evidence.country,
+            region=evidence.region,
+            currency=evidence.currency,
+            reference_period=evidence.reference_period,
+            scheduled_at=evidence.scheduled_at,
+            released_at=evidence.released_at,
+            release_status=evidence.release_status,
+            expected_impact=evidence.expected_impact,
+            previous=evidence.previous if include_values else None,
+            revised_previous=evidence.revised_previous if include_values else None,
+            forecast=evidence.forecast if include_values else None,
+            actual=evidence.actual if include_values else None,
+            release_version=evidence.release_version,
+            revision_of_event_id=evidence.revision_of_event_id,
+            evidence_reference=agent.economic_reference(evidence),
+        )
+        for evidence in context.evidence.economic_events
     )
 
 
@@ -302,6 +336,7 @@ class AtlasMacroAgent(BaseAgent):
             ),
             fact_observations=_market_context_facts(self, context)
             + _news_context_facts(self, context),
+            economic_observations=_economic_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -430,6 +465,7 @@ class ScoutReconAgent(BaseAgent):
             ),
             fact_observations=_market_context_facts(self, context)
             + _news_context_facts(self, context),
+            economic_observations=_economic_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -725,6 +761,11 @@ class SentinelRiskOfficerAgent(BaseAgent):
                 "approval, rejection, or portfolio-risk conclusion is produced here."
             ),
             fact_observations=facts,
+            economic_observations=_economic_observations(
+                self,
+                context,
+                include_values=False,
+            ),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -834,6 +875,7 @@ class LedgerTheBookAgent(BaseAgent):
                 "historical memory in this phase."
             ),
             fact_observations=_ledger_facts(self, context),
+            economic_observations=_economic_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(

@@ -5,6 +5,7 @@ from typing import Literal
 
 from app.evidence.models import (
     AgentEvidence,
+    EconomicEventEvidence,
     MarketEvidence,
     MarketSeriesEvidence,
     NewsEvidence,
@@ -16,6 +17,7 @@ from app.models.specialist_analysis import (
     SpecialistAnalysisStatus,
     SpecialistDerivedFeatureReference,
     SpecialistDerivedObservation,
+    SpecialistEconomicObservation,
     SpecialistEvidenceReference,
     SpecialistFactObservation,
     SpecialistInterpretation,
@@ -89,7 +91,8 @@ class BaseAgent(ABC):
         market_count = len(context.evidence.market_evidence)
         news_count = len(context.evidence.news_evidence)
         series_count = len(context.evidence.market_series)
-        if market_count == 0 and news_count == 0 and series_count == 0:
+        economic_count = len(context.evidence.economic_events)
+        if market_count == 0 and news_count == 0 and series_count == 0 and economic_count == 0:
             return []
 
         assignment = (
@@ -98,6 +101,8 @@ class BaseAgent(ABC):
         )
         if series_count:
             assignment += f" Historical series assigned: {series_count}."
+        if economic_count:
+            assignment += f" Economic events assigned: {economic_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -177,6 +182,7 @@ class BaseAgent(ABC):
         fact_observations: tuple[SpecialistFactObservation, ...] = (),
         interpretations: tuple[SpecialistInterpretation, ...] = (),
         derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
+        economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -217,6 +223,7 @@ class BaseAgent(ABC):
             fact_observations=fact_observations,
             interpretations=interpretations,
             derived_observations=derived_observations,
+            economic_observations=economic_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -268,6 +275,18 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
+    def economic_reference(
+        evidence: EconomicEventEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.event_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.released_at or evidence.scheduled_at,
+            symbol=None,
+        )
+
+    @staticmethod
     def derived_feature_reference(
         feature: DerivedMarketFeature,
     ) -> SpecialistDerivedFeatureReference:
@@ -285,4 +304,7 @@ class BaseAgent(ABC):
             for evidence in context.evidence.news_evidence
         ) + tuple(
             self.series_reference(evidence) for evidence in context.evidence.market_series
+        ) + tuple(
+            self.economic_reference(evidence)
+            for evidence in context.evidence.economic_events
         )

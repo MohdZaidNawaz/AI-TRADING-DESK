@@ -26,6 +26,7 @@ from app.models.schemas import (
 )
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.market_series import NormalizedMarketBar
+from app.models.economic_events import NormalizedEconomicEvent
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
@@ -376,6 +377,10 @@ class FridayCore:
     ) -> MarketSeriesEvidence | None:
         """Stage a validated bar without triggering analysis or execution."""
         return self._evidence_store.ingest_market_bar(bar)
+
+    def ingest_economic_event(self, event: NormalizedEconomicEvent) -> object:
+        """Stage a normalized economic lifecycle version without analysis or execution."""
+        return self._evidence_store.ingest_economic_event(event)
 
     @property
     def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:

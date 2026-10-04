@@ -23,6 +23,13 @@ from app.models.events import (
     SourceMetadata,
     SourceTransport,
 )
+from app.models.economic_events import (
+    EconomicEventSource,
+    EconomicImpact,
+    EconomicReleaseStatus,
+    EconomicValue,
+    NormalizedEconomicEvent,
+)
 from app.models.market_series import (
     MarketBarState,
     MarketSeriesKey,
@@ -42,6 +49,69 @@ class EvidenceProvenance:
     domain: DataDomain
     event_timestamp: datetime
     received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EconomicEventEvidence:
+    """Safe immutable projection of one economic-event lifecycle version."""
+
+    occurrence_id: str
+    event_id: str
+    event_name: str
+    indicator_id: str | None
+    country: str | None
+    region: str | None
+    currency: str | None
+    reference_period: str | None
+    scheduled_at: datetime
+    released_at: datetime | None
+    release_status: EconomicReleaseStatus
+    expected_impact: EconomicImpact
+    previous: EconomicValue | None
+    revised_previous: EconomicValue | None
+    forecast: EconomicValue | None
+    actual: EconomicValue | None
+    release_version: int
+    revision_of_event_id: str | None
+    provenance: EvidenceProvenance
+    received_at: datetime
+    fingerprint: str
+
+    @classmethod
+    def from_event(cls, event: NormalizedEconomicEvent) -> "EconomicEventEvidence":
+        if not isinstance(event, NormalizedEconomicEvent):
+            raise TypeError("event must be a NormalizedEconomicEvent")
+        event_timestamp = event.released_at or event.scheduled_at
+        return cls(
+            occurrence_id=event.occurrence_id,
+            event_id=event.event_id,
+            event_name=event.event_name,
+            indicator_id=event.indicator_id,
+            country=event.country,
+            region=event.region,
+            currency=event.currency,
+            reference_period=event.reference_period,
+            scheduled_at=_as_utc(event.scheduled_at),
+            released_at=(
+                _as_utc(event.released_at) if event.released_at is not None else None
+            ),
+            release_status=event.release_status,
+            expected_impact=event.expected_impact,
+            previous=event.previous,
+            revised_previous=event.revised_previous,
+            forecast=event.forecast,
+            actual=event.actual,
+            release_version=event.release_version,
+            revision_of_event_id=event.revision_of_event_id,
+            provenance=_provenance_from_source(
+                event_id=event.event_id,
+                source=event.source,
+                event_timestamp=event_timestamp,
+                received_at=event.received_at,
+            ),
+            received_at=_as_utc(event.received_at),
+            fingerprint=event.fingerprint,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +359,14 @@ class MarketSeriesSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class EconomicEventSnapshot:
+    """Bounded immutable output from the economic-event store."""
+
+    events: tuple[EconomicEventEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class NewsEvidence:
     """Safe, immutable projection of one normalized news/research event."""
 
@@ -367,6 +445,7 @@ class EvidenceSnapshot:
     market_evidence: tuple[MarketEvidence, ...] = ()
     news_evidence: tuple[NewsEvidence, ...] = ()
     market_series: tuple[MarketSeriesEvidence, ...] = ()
+    economic_events: tuple[EconomicEventEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -377,6 +456,7 @@ class AgentEvidence:
     market_evidence: tuple[MarketEvidence, ...] = ()
     news_evidence: tuple[NewsEvidence, ...] = ()
     market_series: tuple[MarketSeriesEvidence, ...] = ()
+    economic_events: tuple[EconomicEventEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -407,7 +487,7 @@ def symbols_match(left: str | None, right: str | None) -> bool:
 def _provenance_from_source(
     *,
     event_id: str,
-    source: SourceMetadata,
+    source: SourceMetadata | EconomicEventSource,
     event_timestamp: datetime,
     received_at: datetime,
 ) -> EvidenceProvenance:

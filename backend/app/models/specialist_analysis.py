@@ -25,6 +25,11 @@ from app.models.derived_features import (
     FeatureValueUnit,
 )
 from app.models.events import DataDomain
+from app.models.economic_events import (
+    EconomicImpact,
+    EconomicReleaseStatus,
+    EconomicValue,
+)
 from app.models.schemas import APIModel
 
 
@@ -234,6 +239,50 @@ class SpecialistDerivedObservation(SpecialistAnalysisModel):
         return _ordered_feature_references(values)
 
 
+class SpecialistEconomicObservation(SpecialistAnalysisModel):
+    """Typed economic evidence with estimates kept separate from observations."""
+
+    event_id: str = Field(min_length=1, max_length=160)
+    occurrence_id: str = Field(min_length=1, max_length=160)
+    event_name: str = Field(min_length=1, max_length=240)
+    indicator_id: str | None = Field(default=None, max_length=160)
+    country: str | None = Field(default=None, max_length=80)
+    region: str | None = Field(default=None, max_length=120)
+    currency: str | None = Field(default=None, max_length=12)
+    reference_period: str | None = Field(default=None, max_length=120)
+    scheduled_at: datetime
+    released_at: datetime | None = None
+    release_status: EconomicReleaseStatus
+    expected_impact: EconomicImpact
+    previous: EconomicValue | None = None
+    revised_previous: EconomicValue | None = None
+    forecast: EconomicValue | None = None
+    actual: EconomicValue | None = None
+    release_version: int = Field(ge=1)
+    revision_of_event_id: str | None = Field(default=None, max_length=160)
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("scheduled_at", "released_at")
+    @classmethod
+    def normalize_economic_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("economic observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "SpecialistEconomicObservation":
+        if self.evidence_reference.domain is not DataDomain.ECONOMIC_DATA:
+            raise ValueError("economic observations require economic_data evidence")
+        if self.evidence_reference.event_id != self.event_id:
+            raise ValueError("economic observation event identity must match its reference")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -272,6 +321,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     derived_observations: tuple[SpecialistDerivedObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    economic_observations: tuple[SpecialistEconomicObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -320,6 +373,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
     ) -> tuple[SpecialistDerivedObservation, ...]:
         return tuple(sorted(dict.fromkeys(values), key=_derived_observation_sort_key))
 
+    @field_validator("economic_observations")
+    @classmethod
+    def order_economic_observations(
+        cls,
+        values: tuple[SpecialistEconomicObservation, ...],
+    ) -> tuple[SpecialistEconomicObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.scheduled_at,
+                    item.evidence_reference.source_id,
+                    item.occurrence_id,
+                    item.release_version,
+                    item.event_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -352,6 +424,11 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         )
         if any(_reference_key(reference) not in supporting_keys for reference in observation_references):
             raise ValueError("observations must reference assigned supporting evidence")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.economic_observations
+        ):
+            raise ValueError("economic observations must reference assigned supporting evidence")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -444,6 +521,7 @@ def create_specialist_analysis(
     fact_observations: tuple[SpecialistFactObservation, ...] = (),
     interpretations: tuple[SpecialistInterpretation, ...] = (),
     derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
+    economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -466,6 +544,7 @@ def create_specialist_analysis(
         fact_observations=fact_observations,
         interpretations=interpretations,
         derived_observations=derived_observations,
+        economic_observations=economic_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from threading import RLock
 
 from app.evidence.models import (
+    EconomicEventEvidence,
     EvidenceSnapshot,
     MarketEvidence,
     MarketSeriesEvidence,
@@ -12,9 +13,11 @@ from app.evidence.models import (
     canonical_symbol,
     symbols_match,
 )
+from app.evidence.economic_store import EconomicEventStore
 from app.evidence.series_store import MarketSeriesStore
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.market_series import NormalizedMarketBar
+from app.models.economic_events import NormalizedEconomicEvent
 
 
 class EvidenceStore:
@@ -29,18 +32,24 @@ class EvidenceStore:
         *,
         max_market_events: int = 100,
         max_news_events: int = 100,
+        max_economic_events: int = 500,
         max_market_series: int = 20,
         max_bars_per_series: int = 500,
         market_series_store: MarketSeriesStore | None = None,
+        economic_event_store: EconomicEventStore | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
+        _validate_limit(max_economic_events, "max_economic_events")
         _validate_limit(max_market_series, "max_market_series")
         _validate_limit(max_bars_per_series, "max_bars_per_series")
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
         self._news_events: dict[str, NewsEvidence] = {}
+        self._economic_event_store = economic_event_store or EconomicEventStore(
+            max_events=max_economic_events
+        )
         self._market_series_store = market_series_store or MarketSeriesStore(
             max_series=max_market_series,
             max_bars_per_series=max_bars_per_series,
@@ -78,6 +87,14 @@ class EvidenceStore:
         with self._lock:
             return self._market_series_store.ingest(bar)
 
+    def ingest_economic_event(
+        self,
+        event: NormalizedEconomicEvent,
+    ) -> EconomicEventEvidence:
+        """Retain one version in the separate economic-event store."""
+        with self._lock:
+            return self._economic_event_store.ingest(event)
+
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
         requested_symbol = canonical_symbol(symbol)
@@ -103,11 +120,13 @@ class EvidenceStore:
                 )
             )
             market_series = self._market_series_store.snapshot(symbol=requested_symbol).series
+            economic_events = self._economic_event_store.snapshot().events
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
             news_evidence=news_evidence,
             market_series=market_series,
+            economic_events=economic_events,
             symbol=requested_symbol,
         )
 
@@ -134,6 +153,15 @@ class EvidenceStore:
     @property
     def market_series_store(self) -> MarketSeriesStore:
         return self._market_series_store
+
+    @property
+    def economic_count(self) -> int:
+        with self._lock:
+            return self._economic_event_store.event_count
+
+    @property
+    def economic_event_store(self) -> EconomicEventStore:
+        return self._economic_event_store
 
     @staticmethod
     def _trim(
