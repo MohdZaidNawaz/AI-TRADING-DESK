@@ -10,6 +10,7 @@ from app.models.events import (
 )
 from app.models.market_series import NormalizedMarketBar
 from app.models.economic_events import NormalizedEconomicEvent
+from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservation
 
 
 @runtime_checkable
@@ -52,6 +53,14 @@ class EconomicEventConsumer(Protocol):
         """Pass one immutable lifecycle version to the economic evidence store."""
 
 
+@runtime_checkable
+class MacroObservationConsumer(Protocol):
+    """Stages normalized macro observations without provider-specific parsing."""
+
+    def ingest_macro_observation(self, observation: NormalizedMacroObservation) -> object:
+        """Pass one immutable macro observation to the dedicated series store."""
+
+
 class MarketDataClient(Protocol):
     """Retrieves a provider payload without exposing provider details downstream."""
 
@@ -67,3 +76,13 @@ class NewsResearchConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedNewsResearchEvent:
         """Keep provider-specific parsing outside FRIDAY Core."""
+
+
+@runtime_checkable
+class MacroSeriesConnector(Protocol):
+    """Future connector boundary for one normalized macro observation."""
+
+    source: MacroSeriesSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedMacroObservation:
+        """Keep source parsing outside the macro evidence and agent layers."""

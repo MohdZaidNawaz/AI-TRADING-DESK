@@ -9,15 +9,18 @@ from app.evidence.models import (
     EvidenceSnapshot,
     MarketEvidence,
     MarketSeriesEvidence,
+    MacroSeriesEvidence,
     NewsEvidence,
     canonical_symbol,
     symbols_match,
 )
 from app.evidence.economic_store import EconomicEventStore
+from app.evidence.macro_store import MacroSeriesStore
 from app.evidence.series_store import MarketSeriesStore
 from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.market_series import NormalizedMarketBar
 from app.models.economic_events import NormalizedEconomicEvent
+from app.models.macro_series import NormalizedMacroObservation
 
 
 class EvidenceStore:
@@ -35,14 +38,21 @@ class EvidenceStore:
         max_economic_events: int = 500,
         max_market_series: int = 20,
         max_bars_per_series: int = 500,
+        max_macro_series: int = 20,
+        max_macro_occurrences_per_series: int = 500,
+        max_macro_vintages_per_occurrence: int = 5,
         market_series_store: MarketSeriesStore | None = None,
         economic_event_store: EconomicEventStore | None = None,
+        macro_series_store: MacroSeriesStore | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
         _validate_limit(max_economic_events, "max_economic_events")
         _validate_limit(max_market_series, "max_market_series")
         _validate_limit(max_bars_per_series, "max_bars_per_series")
+        _validate_limit(max_macro_series, "max_macro_series")
+        _validate_limit(max_macro_occurrences_per_series, "max_macro_occurrences_per_series")
+        _validate_limit(max_macro_vintages_per_occurrence, "max_macro_vintages_per_occurrence")
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
@@ -53,6 +63,11 @@ class EvidenceStore:
         self._market_series_store = market_series_store or MarketSeriesStore(
             max_series=max_market_series,
             max_bars_per_series=max_bars_per_series,
+        )
+        self._macro_series_store = macro_series_store or MacroSeriesStore(
+            max_series=max_macro_series,
+            max_occurrences_per_series=max_macro_occurrences_per_series,
+            max_vintages_per_occurrence=max_macro_vintages_per_occurrence,
         )
         self._lock = RLock()
 
@@ -95,6 +110,14 @@ class EvidenceStore:
         with self._lock:
             return self._economic_event_store.ingest(event)
 
+    def ingest_macro_observation(
+        self,
+        observation: NormalizedMacroObservation,
+    ) -> MacroSeriesEvidence | None:
+        """Retain one macro observation in its dedicated bounded store."""
+        with self._lock:
+            return self._macro_series_store.ingest(observation)
+
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
         requested_symbol = canonical_symbol(symbol)
@@ -121,12 +144,14 @@ class EvidenceStore:
             )
             market_series = self._market_series_store.snapshot(symbol=requested_symbol).series
             economic_events = self._economic_event_store.snapshot().events
+            macro_series = self._macro_series_store.snapshot().series
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
             news_evidence=news_evidence,
             market_series=market_series,
             economic_events=economic_events,
+            macro_series=macro_series,
             symbol=requested_symbol,
         )
 
@@ -162,6 +187,20 @@ class EvidenceStore:
     @property
     def economic_event_store(self) -> EconomicEventStore:
         return self._economic_event_store
+
+    @property
+    def macro_series_count(self) -> int:
+        with self._lock:
+            return self._macro_series_store.series_count
+
+    @property
+    def macro_observation_count(self) -> int:
+        with self._lock:
+            return self._macro_series_store.observation_count
+
+    @property
+    def macro_series_store(self) -> MacroSeriesStore:
+        return self._macro_series_store
 
     @staticmethod
     def _trim(

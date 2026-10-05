@@ -30,6 +30,7 @@ from app.models.economic_events import (
     EconomicReleaseStatus,
     EconomicValue,
 )
+from app.models.macro_series import MacroReferencePeriod, MacroSeriesKey
 from app.models.schemas import APIModel
 
 
@@ -283,6 +284,60 @@ class SpecialistEconomicObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistMacroObservation(SpecialistAnalysisModel):
+    """Typed raw macro evidence retained by Atlas without a market conclusion."""
+
+    observation_id: str = Field(min_length=1, max_length=160)
+    series_id: str = Field(min_length=1, max_length=120)
+    series_key: MacroSeriesKey
+    reference_period: MacroReferencePeriod
+    value: EconomicValue
+    observation_version: int = Field(ge=1)
+    revision_of_observation_id: str | None = Field(default=None, max_length=160)
+    observed_at: datetime | None = None
+    effective_at: datetime | None = None
+    published_at: datetime | None = None
+    vintage_at: datetime | None = None
+    received_at: datetime
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator(
+        "observed_at",
+        "effective_at",
+        "published_at",
+        "vintage_at",
+        "received_at",
+    )
+    @classmethod
+    def normalize_macro_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("macro observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_macro_reference(self) -> "SpecialistMacroObservation":
+        if self.series_id != self.series_key.series_id:
+            raise ValueError("macro observation series identity must match its series key")
+        if self.value.unit is not self.series_key.value_unit:
+            raise ValueError("macro observation value unit must match its series key")
+        if self.value.scale is not self.series_key.value_scale:
+            raise ValueError("macro observation value scale must match its series key")
+        if self.observation_version == 1 and self.revision_of_observation_id is not None:
+            raise ValueError("version-one macro observations cannot declare a revision link")
+        if self.observation_version > 1 and self.revision_of_observation_id is None:
+            raise ValueError("revised macro observations require revision_of_observation_id")
+        if self.evidence_reference.domain is not DataDomain.ECONOMIC_DATA:
+            raise ValueError("macro observations require economic_data evidence")
+        if self.evidence_reference.event_id != self.observation_id:
+            raise ValueError("macro observation identity must match its evidence reference")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -325,6 +380,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     economic_observations: tuple[SpecialistEconomicObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    macro_observations: tuple[SpecialistMacroObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -392,6 +451,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("macro_observations")
+    @classmethod
+    def order_macro_observations(
+        cls,
+        values: tuple[SpecialistMacroObservation, ...],
+    ) -> tuple[SpecialistMacroObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.series_id,
+                    item.reference_period.start_date,
+                    item.reference_period.end_date,
+                    item.observation_version,
+                    item.observation_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -429,6 +507,11 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             for observation in self.economic_observations
         ):
             raise ValueError("economic observations must reference assigned supporting evidence")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.macro_observations
+        ):
+            raise ValueError("macro observations must reference assigned supporting evidence")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -522,6 +605,7 @@ def create_specialist_analysis(
     interpretations: tuple[SpecialistInterpretation, ...] = (),
     derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
     economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
+    macro_observations: tuple[SpecialistMacroObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -545,6 +629,7 @@ def create_specialist_analysis(
         interpretations=interpretations,
         derived_observations=derived_observations,
         economic_observations=economic_observations,
+        macro_observations=macro_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

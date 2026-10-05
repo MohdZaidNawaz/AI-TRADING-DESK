@@ -277,6 +277,52 @@ Sentinel approval, and Pilot remains disabled. There is no new public API route,
 frontend change, credential, polling process, persistence layer, broker/MT5
 adapter, order placement, or execution authority.
 
+## Phase 5B-3 provider-neutral macro-series evidence
+
+Phase 5B-3 adds a distinct internal path for persistent observed macroeconomic
+series. It remains separate from point-in-time market events, OHLCV
+`MarketSeriesEvidence`, and discrete `EconomicEventEvidence` lifecycle records:
+
+```text
+future macro connector
+    -> immutable NormalizedMacroObservation
+    -> bounded process-local MacroSeriesStore
+    -> immutable MacroSeriesEvidence in EvidenceSnapshot.macro_series
+    -> EvidenceRouter
+    -> Atlas Macro structured observations
+    -> F.R.I.D.A.Y. internal specialist synthesis
+```
+
+Macro observations use the existing finite-`Decimal` `EconomicValue` contract
+with explicit unit and scale. Their source-scoped series identity includes the
+source series identifier, FRIDAY indicator identifier, geography, currency,
+maturity, frequency, seasonal-adjustment status, and value unit/scale. This
+keeps, for example, US 2Y/10Y nominal yields, explicitly maturitied real yields,
+and a broad dollar index distinct. Providers are never reconciled automatically.
+
+Each observation preserves a structured reference period separately from
+`observed_at`, `effective_at`, `published_at`, `vintage_at`, and `received_at`.
+This supports daily yields, monthly CPI, quarterly GDP, and policy-rate levels
+without forcing them into fixed-second market-bar semantics. `received_at` is
+provenance only; there are no freshness thresholds or stale-data policy rules.
+
+The process-local store is thread-safe and bounded by series, reference-period
+occurrences, and retained vintages. It preserves retained revision history,
+selects the highest retained version as current, collapses exact duplicates, and
+rejects conflicting content for an identical source/series/reference-period/
+version identity. Its separate conflict-fingerprint registry is also bounded;
+post-eviction conflict detection therefore has a documented deterministic
+retention horizon and retains no provider payloads or full historical records.
+
+Only Atlas receives macro-series values in Phase 5B-3. Ledger receives only
+provenance references. The remaining specialists, including Sentinel and Pilot,
+receive no macro-series evidence. Macro evidence cannot satisfy Sentinel's
+market-evidence requirements, populate risk signals, create approvals, or enable
+execution. Atlas remains `INSUFFICIENT_DATA`; this phase adds no macro-derived
+calculations, macro stance policy, signals, trade decisions, providers,
+persistence, polling, API route, credentials, frontend changes, broker/MT5
+adapter, or order placement.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

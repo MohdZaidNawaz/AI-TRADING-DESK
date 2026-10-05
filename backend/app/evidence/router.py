@@ -75,6 +75,11 @@ class EvidenceRouter:
         else:  # pragma: no cover - guarded by NINE_SPECIALIST_IDS above
             raise ValueError(f"No evidence policy exists for specialist: {agent_id}")
 
+        # Macro series are raw, persistent economic observations rather than
+        # market bars or discrete economic events.  Atlas alone receives their
+        # values in Phase 5B-3; Ledger receives provenance references below.
+        macro_series = snapshot.macro_series if agent_id == "atlas_macro" else ()
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -110,6 +115,10 @@ class EvidenceRouter:
                 evidence.provenance for evidence in market_evidence
             ) + tuple(evidence.provenance for evidence in news_evidence) + tuple(
                 evidence.provenance for evidence in economic_events
+            ) + tuple(
+                observation.provenance
+                for series in snapshot.macro_series
+                for observation in series.observations
             )
 
         return AgentEvidence(
@@ -117,5 +126,6 @@ class EvidenceRouter:
             news_evidence=news_evidence,
             market_series=market_series,
             economic_events=economic_events,
+            macro_series=macro_series,
             provenance=provenance,
         )

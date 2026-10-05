@@ -11,6 +11,7 @@ from app.models.specialist_analysis import (
     SpecialistEconomicObservation,
     SpecialistFactObservation,
     SpecialistInterpretation,
+    SpecialistMacroObservation,
     SpecialistOperationalState,
     SpecialistStance,
 )
@@ -81,6 +82,32 @@ def _economic_observations(
             evidence_reference=agent.economic_reference(evidence),
         )
         for evidence in context.evidence.economic_events
+    )
+
+
+def _macro_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistMacroObservation, ...]:
+    """Preserve raw macro values and vintages without deriving a macro signal."""
+    return tuple(
+        SpecialistMacroObservation(
+            observation_id=observation.observation_id,
+            series_id=series.series_id,
+            series_key=series.key,
+            reference_period=observation.reference_period,
+            value=observation.value,
+            observation_version=observation.observation_version,
+            revision_of_observation_id=observation.revision_of_observation_id,
+            observed_at=observation.observed_at,
+            effective_at=observation.effective_at,
+            published_at=observation.published_at,
+            vintage_at=observation.vintage_at,
+            received_at=observation.received_at,
+            evidence_reference=agent.macro_reference(observation),
+        )
+        for series in context.evidence.macro_series
+        for observation in series.observations
     )
 
 
@@ -337,6 +364,7 @@ class AtlasMacroAgent(BaseAgent):
             fact_observations=_market_context_facts(self, context)
             + _news_context_facts(self, context),
             economic_observations=_economic_observations(self, context),
+            macro_observations=_macro_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(

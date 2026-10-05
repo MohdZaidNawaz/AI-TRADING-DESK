@@ -6,8 +6,11 @@ from typing import Literal
 from app.evidence.models import (
     AgentEvidence,
     EconomicEventEvidence,
+    EvidenceProvenance,
     MarketEvidence,
     MarketSeriesEvidence,
+    MacroObservationEvidence,
+    MacroSeriesEvidence,
     NewsEvidence,
     canonical_symbol,
 )
@@ -22,6 +25,7 @@ from app.models.specialist_analysis import (
     SpecialistFactObservation,
     SpecialistInterpretation,
     SpecialistLifecycleObservation,
+    SpecialistMacroObservation,
     SpecialistOperationalState,
     SpecialistStance,
     create_specialist_analysis,
@@ -92,7 +96,14 @@ class BaseAgent(ABC):
         news_count = len(context.evidence.news_evidence)
         series_count = len(context.evidence.market_series)
         economic_count = len(context.evidence.economic_events)
-        if market_count == 0 and news_count == 0 and series_count == 0 and economic_count == 0:
+        macro_count = len(context.evidence.macro_series)
+        if (
+            market_count == 0
+            and news_count == 0
+            and series_count == 0
+            and economic_count == 0
+            and macro_count == 0
+        ):
             return []
 
         assignment = (
@@ -103,6 +114,8 @@ class BaseAgent(ABC):
             assignment += f" Historical series assigned: {series_count}."
         if economic_count:
             assignment += f" Economic events assigned: {economic_count}."
+        if macro_count:
+            assignment += f" Macro series assigned: {macro_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -183,6 +196,7 @@ class BaseAgent(ABC):
         interpretations: tuple[SpecialistInterpretation, ...] = (),
         derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
         economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
+        macro_observations: tuple[SpecialistMacroObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -224,6 +238,7 @@ class BaseAgent(ABC):
             interpretations=interpretations,
             derived_observations=derived_observations,
             economic_observations=economic_observations,
+            macro_observations=macro_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -287,6 +302,41 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
+    def macro_reference(
+        evidence: MacroObservationEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.observation_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=(
+                evidence.published_at
+                or evidence.observed_at
+                or evidence.effective_at
+                or evidence.received_at
+            ),
+            symbol=None,
+        )
+
+    @staticmethod
+    def macro_series_references(
+        evidence: MacroSeriesEvidence,
+    ) -> tuple[SpecialistEvidenceReference, ...]:
+        return tuple(BaseAgent.macro_reference(item) for item in evidence.observations)
+
+    @staticmethod
+    def provenance_reference(
+        evidence: EvidenceProvenance,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.event_id,
+            source_id=evidence.source_id,
+            domain=evidence.domain,
+            timestamp=evidence.event_timestamp,
+            symbol=None,
+        )
+
+    @staticmethod
     def derived_feature_reference(
         feature: DerivedMarketFeature,
     ) -> SpecialistDerivedFeatureReference:
@@ -307,4 +357,11 @@ class BaseAgent(ABC):
         ) + tuple(
             self.economic_reference(evidence)
             for evidence in context.evidence.economic_events
+        ) + tuple(
+            reference
+            for evidence in context.evidence.macro_series
+            for reference in self.macro_series_references(evidence)
+        ) + tuple(
+            self.provenance_reference(evidence)
+            for evidence in context.evidence.provenance
         )

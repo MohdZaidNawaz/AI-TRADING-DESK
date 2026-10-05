@@ -8,7 +8,7 @@ remain at their ingestion boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from hashlib import sha256
 import json
 import math
@@ -35,6 +35,11 @@ from app.models.market_series import (
     MarketSeriesKey,
     NormalizedMarketBar,
     VolumeKind,
+)
+from app.models.macro_series import (
+    MacroReferencePeriod,
+    MacroSeriesKey,
+    NormalizedMacroObservation,
 )
 
 
@@ -112,6 +117,162 @@ class EconomicEventEvidence:
             received_at=_as_utc(event.received_at),
             fingerprint=event.fingerprint,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class MacroObservationEvidence:
+    """Safe immutable projection of one macro observation or retained vintage."""
+
+    observation_id: str
+    series_id: str
+    reference_period: MacroReferencePeriod
+    value: EconomicValue
+    observation_version: int
+    revision_of_observation_id: str | None
+    observed_at: datetime | None
+    effective_at: datetime | None
+    published_at: datetime | None
+    vintage_at: datetime | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observation(
+        cls,
+        observation: NormalizedMacroObservation,
+    ) -> "MacroObservationEvidence":
+        if not isinstance(observation, NormalizedMacroObservation):
+            raise TypeError("observation must be a NormalizedMacroObservation")
+        reference_time = (
+            observation.published_at
+            or observation.observed_at
+            or observation.effective_at
+            or observation.received_at
+        )
+        return cls(
+            observation_id=observation.observation_id,
+            series_id=observation.series_key.series_id,
+            reference_period=observation.reference_period,
+            value=observation.value,
+            observation_version=observation.observation_version,
+            revision_of_observation_id=observation.revision_of_observation_id,
+            observed_at=(
+                _as_utc(observation.observed_at)
+                if observation.observed_at is not None
+                else None
+            ),
+            effective_at=(
+                _as_utc(observation.effective_at)
+                if observation.effective_at is not None
+                else None
+            ),
+            published_at=(
+                _as_utc(observation.published_at)
+                if observation.published_at is not None
+                else None
+            ),
+            vintage_at=(
+                _as_utc(observation.vintage_at)
+                if observation.vintage_at is not None
+                else None
+            ),
+            received_at=_as_utc(observation.received_at),
+            provenance=_provenance_from_source(
+                event_id=observation.observation_id,
+                source=observation.source,
+                event_timestamp=reference_time,
+                received_at=observation.received_at,
+            ),
+            fingerprint=observation.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MacroSeriesProvenance:
+    """Source and receipt metadata for a bounded macro-series snapshot."""
+
+    source_id: str
+    source_name: str
+    transport: SourceTransport
+    domain: DataDomain
+    origin_id: str | None
+    origin_name: str | None
+    first_received_at: datetime
+    latest_received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MacroSeriesEvidence:
+    """Deterministic provider-neutral evidence for one persistent macro series."""
+
+    series_id: str
+    key: MacroSeriesKey
+    observations: tuple[MacroObservationEvidence, ...]
+    current_observations: tuple[MacroObservationEvidence, ...]
+    latest_reference_period_end: date
+    latest_observed_at: datetime | None
+    latest_effective_at: datetime | None
+    latest_published_at: datetime | None
+    latest_vintage_at: datetime | None
+    provenance: MacroSeriesProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observations(
+        cls,
+        key: MacroSeriesKey,
+        observations: tuple[NormalizedMacroObservation, ...],
+    ) -> "MacroSeriesEvidence":
+        if not observations:
+            raise ValueError("macro-series evidence requires at least one observation")
+        ordered_source = tuple(sorted(observations, key=_macro_observation_sort_key))
+        if any(item.series_key != key for item in ordered_source):
+            raise ValueError("all observations must belong to the supplied macro series key")
+        first = ordered_source[0]
+        if any(item.source != first.source for item in ordered_source):
+            raise ValueError("a macro series cannot mix source metadata")
+
+        projected = tuple(MacroObservationEvidence.from_observation(item) for item in ordered_source)
+        current_by_period: dict[str, MacroObservationEvidence] = {}
+        for item in projected:
+            period_id = item.reference_period.period_id
+            existing = current_by_period.get(period_id)
+            if existing is None or _macro_current_rank(item) > _macro_current_rank(existing):
+                current_by_period[period_id] = item
+        current = tuple(sorted(current_by_period.values(), key=_macro_evidence_sort_key))
+        latest = max(current, key=_macro_evidence_sort_key)
+        provenance = MacroSeriesProvenance(
+            source_id=first.source.source_id,
+            source_name=first.source.display_name,
+            transport=first.source.transport,
+            domain=first.source.domain,
+            origin_id=first.source.origin_id,
+            origin_name=first.source.origin_name,
+            first_received_at=min(item.received_at for item in projected),
+            latest_received_at=max(item.received_at for item in projected),
+        )
+        return cls(
+            series_id=key.series_id,
+            key=key,
+            observations=projected,
+            current_observations=current,
+            latest_reference_period_end=latest.reference_period.end_date,
+            latest_observed_at=latest.observed_at,
+            latest_effective_at=latest.effective_at,
+            latest_published_at=latest.published_at,
+            latest_vintage_at=latest.vintage_at,
+            provenance=provenance,
+            fingerprint=_macro_series_fingerprint(key, projected),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MacroSeriesSnapshot:
+    """Bounded immutable output from the dedicated macro-series store."""
+
+    series: tuple[MacroSeriesEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +607,7 @@ class EvidenceSnapshot:
     news_evidence: tuple[NewsEvidence, ...] = ()
     market_series: tuple[MarketSeriesEvidence, ...] = ()
     economic_events: tuple[EconomicEventEvidence, ...] = ()
+    macro_series: tuple[MacroSeriesEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -457,6 +619,7 @@ class AgentEvidence:
     news_evidence: tuple[NewsEvidence, ...] = ()
     market_series: tuple[MarketSeriesEvidence, ...] = ()
     economic_events: tuple[EconomicEventEvidence, ...] = ()
+    macro_series: tuple[MacroSeriesEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -583,6 +746,60 @@ def _series_fingerprint(
                 "revision": bar.revision,
             }
             for bar in bars
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _macro_observation_sort_key(
+    observation: NormalizedMacroObservation,
+) -> tuple[date, date, str, int, str]:
+    return (
+        observation.reference_period.start_date,
+        observation.reference_period.end_date,
+        observation.reference_period.period_id,
+        observation.observation_version,
+        observation.observation_id,
+    )
+
+
+def _macro_evidence_sort_key(
+    evidence: MacroObservationEvidence,
+) -> tuple[date, date, str, int, str]:
+    return (
+        evidence.reference_period.start_date,
+        evidence.reference_period.end_date,
+        evidence.reference_period.period_id,
+        evidence.observation_version,
+        evidence.observation_id,
+    )
+
+
+def _macro_current_rank(
+    evidence: MacroObservationEvidence,
+) -> tuple[int, datetime, str]:
+    return (
+        evidence.observation_version,
+        evidence.vintage_at or evidence.published_at or evidence.received_at,
+        evidence.observation_id,
+    )
+
+
+def _macro_series_fingerprint(
+    key: MacroSeriesKey,
+    observations: tuple[MacroObservationEvidence, ...],
+) -> str:
+    payload = {
+        "series_id": key.series_id,
+        "observations": [
+            {
+                "observation_id": item.observation_id,
+                "fingerprint": item.fingerprint,
+                "reference_period_id": item.reference_period.period_id,
+                "observation_version": item.observation_version,
+            }
+            for item in observations
         ],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
