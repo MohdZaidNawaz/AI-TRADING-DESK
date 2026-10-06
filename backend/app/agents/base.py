@@ -7,6 +7,8 @@ from app.evidence.models import (
     AgentEvidence,
     EconomicEventEvidence,
     EvidenceProvenance,
+    EstimateObservationEvidence,
+    EstimateSeriesEvidence,
     FundamentalObservationEvidence,
     FundamentalSeriesEvidence,
     MarketEvidence,
@@ -28,6 +30,7 @@ from app.models.specialist_analysis import (
     SpecialistEvidenceReference,
     SpecialistFactObservation,
     SpecialistFundamentalObservation,
+    SpecialistEstimateObservation,
     SpecialistInterpretation,
     SpecialistLifecycleObservation,
     SpecialistMacroObservation,
@@ -109,6 +112,9 @@ class BaseAgent(ABC):
         fundamental_count = sum(
             len(series.observations) for series in context.evidence.fundamental_series
         )
+        estimate_count = sum(
+            len(series.observations) for series in context.evidence.estimate_series
+        )
         if (
             market_count == 0
             and news_count == 0
@@ -117,6 +123,7 @@ class BaseAgent(ABC):
             and macro_count == 0
             and positioning_count == 0
             and fundamental_count == 0
+            and estimate_count == 0
         ):
             return []
 
@@ -134,6 +141,8 @@ class BaseAgent(ABC):
             assignment += f" Positioning observations assigned: {positioning_count}."
         if fundamental_count:
             assignment += f" Fundamental observations assigned: {fundamental_count}."
+        if estimate_count:
+            assignment += f" Estimate observations assigned: {estimate_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -217,6 +226,7 @@ class BaseAgent(ABC):
         macro_observations: tuple[SpecialistMacroObservation, ...] = (),
         positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
         fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
+        estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -261,6 +271,7 @@ class BaseAgent(ABC):
             macro_observations=macro_observations,
             positioning_observations=positioning_observations,
             fundamental_observations=fundamental_observations,
+            estimate_observations=estimate_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -394,6 +405,24 @@ class BaseAgent(ABC):
         return tuple(BaseAgent.fundamental_reference(item) for item in evidence.observations)
 
     @staticmethod
+    def estimate_reference(
+        evidence: EstimateObservationEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.observation_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.published_at or evidence.vintage_at or evidence.as_of,
+            symbol=None,
+        )
+
+    @staticmethod
+    def estimate_series_references(
+        evidence: EstimateSeriesEvidence,
+    ) -> tuple[SpecialistEvidenceReference, ...]:
+        return tuple(BaseAgent.estimate_reference(item) for item in evidence.observations)
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -438,6 +467,10 @@ class BaseAgent(ABC):
             reference
             for evidence in context.evidence.fundamental_series
             for reference in self.fundamental_series_references(evidence)
+        ) + tuple(
+            reference
+            for evidence in context.evidence.estimate_series
+            for reference in self.estimate_series_references(evidence)
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

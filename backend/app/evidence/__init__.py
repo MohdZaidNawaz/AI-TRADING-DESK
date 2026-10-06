@@ -6,6 +6,10 @@ from app.evidence.models import (
     EconomicEventSnapshot,
     EvidenceProvenance,
     EvidenceSnapshot,
+    EstimateObservationEvidence,
+    EstimateSeriesEvidence,
+    EstimateSeriesProvenance,
+    EstimateSeriesSnapshot,
     FundamentalObservationEvidence,
     FundamentalSeriesEvidence,
     FundamentalSeriesProvenance,
@@ -34,6 +38,7 @@ from app.evidence.models import (
 )
 from app.evidence.economic_store import EconomicEventStore, latest_economic_versions
 from app.evidence.fundamental_store import FundamentalStore
+from app.evidence.estimate_store import EstimateStore
 from app.evidence.macro_store import MacroSeriesStore
 from app.evidence.positioning_store import PositioningStore
 from app.evidence.router import EvidenceRouter, NINE_SPECIALIST_IDS
@@ -49,6 +54,11 @@ __all__ = [
     "EvidenceRouter",
     "EvidenceSnapshot",
     "EvidenceStore",
+    "EstimateObservationEvidence",
+    "EstimateSeriesEvidence",
+    "EstimateSeriesProvenance",
+    "EstimateSeriesSnapshot",
+    "EstimateStore",
     "FundamentalObservationEvidence",
     "FundamentalSeriesEvidence",
     "FundamentalSeriesProvenance",

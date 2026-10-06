@@ -416,6 +416,53 @@ create approval authority. Pilot remains `DISABLED_NO_EXECUTION`. The public
 `/api/analyze` schema is unchanged. This phase adds no frontend work, MT5 or
 broker adapter, order placement, or execution authority.
 
+## Phase 5B-6 provider-neutral analyst-estimate evidence
+
+Phase 5B-6 adds a distinct internal path for source-reported analyst estimates.
+It is separate from reported financial statements, price events, OHLCV bars,
+derived features, economic releases, macro series, positioning, valuations,
+comparables, recommendations, ratings, and price targets:
+
+```text
+future estimate connector
+    -> immutable NormalizedEstimateObservation
+    -> bounded process-local EstimateStore
+    -> immutable EvidenceSnapshot.estimate_series
+    -> EvidenceRouter
+    -> Athena Analyst structured estimate observations
+    -> F.R.I.D.A.Y. internal specialist synthesis
+```
+
+Each observation retains a source-scoped issuer and series identity, an explicit
+target fiscal or point-in-time period, permitted source-reported statistic
+(`consensus_mean`, `median`, `high`, `low`, or `analyst_count`), finite typed
+value, `as_of` time, optional publication/vintage times, and immutable revision
+metadata. The target period is not the estimate vintage. Connector-specific
+issuer and metric labels must be mapped before ingestion; FRIDAY does not
+reconcile issuers across providers or infer aliases. Raw provider payloads are
+excluded from contracts, snapshots, specialist artifacts, and proposal traces.
+
+The process-local store is thread-safe and bounded by series, target-period
+occurrences, retained vintages, and a separate bounded conflict-fingerprint
+registry. Exact duplicates collapse. Conflicting content for the same source,
+series, target period, and version is rejected while its deterministic
+metadata-retention horizon remains. No provider, polling job, API route,
+database, cache, or credential is added.
+
+Only Athena receives typed estimate values, with a deterministic per-agent
+observation limit. Ledger retains provenance references only. Atlas, Capitol,
+Scout, Chartist, Oracle, Sentinel, and Pilot receive no estimate values. Athena
+remains `INSUFFICIENT_DATA`: source-reported expectations are factual context
+only and do not create a FRIDAY forecast, valuation, ratio, probability,
+direction, entry, stop, target, or sizing instruction.
+
+Estimate provenance participates in internal proposal traceability only. It is
+not market evidence, cannot satisfy Sentinel freshness, portfolio, sizing,
+risk-context, or specialist-agreement requirements, and does not populate risk
+signals or create approval authority. Pilot remains `DISABLED_NO_EXECUTION`.
+The public `/api/analyze` schema is unchanged. This phase adds no frontend work,
+MT5 or broker adapter, order placement, or execution authority.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

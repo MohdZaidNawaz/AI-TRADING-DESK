@@ -6,6 +6,7 @@ from threading import RLock
 
 from app.evidence.models import (
     EconomicEventEvidence,
+    EstimateSeriesEvidence,
     EvidenceSnapshot,
     FundamentalSeriesEvidence,
     MarketEvidence,
@@ -18,6 +19,7 @@ from app.evidence.models import (
 )
 from app.evidence.economic_store import EconomicEventStore
 from app.evidence.fundamental_store import FundamentalStore
+from app.evidence.estimate_store import EstimateStore
 from app.evidence.macro_store import MacroSeriesStore
 from app.evidence.positioning_store import PositioningStore
 from app.evidence.series_store import MarketSeriesStore
@@ -27,6 +29,7 @@ from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import NormalizedMacroObservation
 from app.models.positioning import NormalizedPositioningObservation
 from app.models.fundamentals import NormalizedFundamentalObservation
+from app.models.estimates import NormalizedEstimateObservation
 
 
 class EvidenceStore:
@@ -53,11 +56,15 @@ class EvidenceStore:
         max_fundamental_series: int = 20,
         max_fundamental_occurrences_per_series: int = 500,
         max_fundamental_vintages_per_occurrence: int = 5,
+        max_estimate_series: int = 20,
+        max_estimate_occurrences_per_series: int = 500,
+        max_estimate_vintages_per_occurrence: int = 5,
         market_series_store: MarketSeriesStore | None = None,
         economic_event_store: EconomicEventStore | None = None,
         macro_series_store: MacroSeriesStore | None = None,
         positioning_store: PositioningStore | None = None,
         fundamental_store: FundamentalStore | None = None,
+        estimate_store: EstimateStore | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
@@ -85,6 +92,15 @@ class EvidenceStore:
             max_fundamental_vintages_per_occurrence,
             "max_fundamental_vintages_per_occurrence",
         )
+        _validate_limit(max_estimate_series, "max_estimate_series")
+        _validate_limit(
+            max_estimate_occurrences_per_series,
+            "max_estimate_occurrences_per_series",
+        )
+        _validate_limit(
+            max_estimate_vintages_per_occurrence,
+            "max_estimate_vintages_per_occurrence",
+        )
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
@@ -110,6 +126,11 @@ class EvidenceStore:
             max_series=max_fundamental_series,
             max_occurrences_per_series=max_fundamental_occurrences_per_series,
             max_vintages_per_occurrence=max_fundamental_vintages_per_occurrence,
+        )
+        self._estimate_store = estimate_store or EstimateStore(
+            max_series=max_estimate_series,
+            max_occurrences_per_series=max_estimate_occurrences_per_series,
+            max_vintages_per_occurrence=max_estimate_vintages_per_occurrence,
         )
         self._lock = RLock()
 
@@ -176,6 +197,14 @@ class EvidenceStore:
         with self._lock:
             return self._fundamental_store.ingest(observation)
 
+    def ingest_estimate_observation(
+        self,
+        observation: NormalizedEstimateObservation,
+    ) -> EstimateSeriesEvidence | None:
+        """Retain one source-reported estimate in its dedicated bounded store."""
+        with self._lock:
+            return self._estimate_store.ingest(observation)
+
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
         requested_symbol = canonical_symbol(symbol)
@@ -205,6 +234,7 @@ class EvidenceStore:
             macro_series = self._macro_series_store.snapshot().series
             positioning_series = self._positioning_store.snapshot(symbol=requested_symbol).series
             fundamental_series = self._fundamental_store.snapshot(symbol=requested_symbol).series
+            estimate_series = self._estimate_store.snapshot(symbol=requested_symbol).series
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
@@ -214,6 +244,7 @@ class EvidenceStore:
             macro_series=macro_series,
             positioning_series=positioning_series,
             fundamental_series=fundamental_series,
+            estimate_series=estimate_series,
             symbol=requested_symbol,
         )
 
@@ -291,6 +322,20 @@ class EvidenceStore:
     @property
     def fundamental_store(self) -> FundamentalStore:
         return self._fundamental_store
+
+    @property
+    def estimate_series_count(self) -> int:
+        with self._lock:
+            return self._estimate_store.series_count
+
+    @property
+    def estimate_observation_count(self) -> int:
+        with self._lock:
+            return self._estimate_store.observation_count
+
+    @property
+    def estimate_store(self) -> EstimateStore:
+        return self._estimate_store
 
     @staticmethod
     def _trim(

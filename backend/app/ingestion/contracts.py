@@ -13,6 +13,7 @@ from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservation
 from app.models.positioning import PositioningSource, NormalizedPositioningObservation
 from app.models.fundamentals import FundamentalSource, NormalizedFundamentalObservation
+from app.models.estimates import EstimateSource, NormalizedEstimateObservation
 
 
 @runtime_checkable
@@ -130,3 +131,24 @@ class FundamentalSeriesConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedFundamentalObservation:
         """Keep source parsing outside fundamental evidence and agent layers."""
+
+
+@runtime_checkable
+class EstimateObservationConsumer(Protocol):
+    """Stages source-reported estimates without provider-specific parsing."""
+
+    def ingest_estimate_observation(
+        self,
+        observation: NormalizedEstimateObservation,
+    ) -> object:
+        """Pass one immutable estimate observation to the dedicated estimate store."""
+
+
+@runtime_checkable
+class EstimateSeriesConnector(Protocol):
+    """Future connector boundary for one normalized estimate observation."""
+
+    source: EstimateSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedEstimateObservation:
+        """Keep source parsing outside estimate evidence and agent layers."""

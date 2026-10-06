@@ -33,6 +33,7 @@ from app.models.economic_events import (
 from app.models.macro_series import MacroReferencePeriod, MacroSeriesKey
 from app.models.positioning import PositioningReferencePeriod, PositioningSeriesKey
 from app.models.fundamentals import FundamentalReferencePeriod, FundamentalSeriesKey
+from app.models.estimates import EstimateReferencePeriod, EstimateSeriesKey
 from app.models.schemas import APIModel
 
 
@@ -441,6 +442,53 @@ class SpecialistFundamentalObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistEstimateObservation(SpecialistAnalysisModel):
+    """Typed source-reported estimate evidence retained by Athena without inference."""
+
+    observation_id: str = Field(min_length=1, max_length=160)
+    series_id: str = Field(min_length=1, max_length=120)
+    series_key: EstimateSeriesKey
+    reference_period: EstimateReferencePeriod
+    value: EconomicValue
+    as_of: datetime
+    observation_version: int = Field(ge=1)
+    revision_of_observation_id: str | None = Field(default=None, max_length=160)
+    published_at: datetime | None = None
+    vintage_at: datetime | None = None
+    received_at: datetime
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("as_of", "published_at", "vintage_at", "received_at")
+    @classmethod
+    def normalize_estimate_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("estimate observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_estimate_reference(self) -> "SpecialistEstimateObservation":
+        if self.series_id != self.series_key.series_id:
+            raise ValueError("estimate observation series identity must match its series key")
+        if self.value.unit is not self.series_key.value_unit:
+            raise ValueError("estimate observation value unit must match the series key")
+        if self.value.scale is not self.series_key.value_scale:
+            raise ValueError("estimate observation value scale must match the series key")
+        if self.observation_version == 1 and self.revision_of_observation_id is not None:
+            raise ValueError("version-one estimate observations cannot declare a revision link")
+        if self.observation_version > 1 and self.revision_of_observation_id is None:
+            raise ValueError("revised estimate observations require revision_of_observation_id")
+        if self.evidence_reference.domain is not DataDomain.FUNDAMENTAL_DATA:
+            raise ValueError("estimate observations require fundamental_data evidence")
+        if self.evidence_reference.event_id != self.observation_id:
+            raise ValueError("estimate observation identity must match its evidence reference")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -495,6 +543,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    estimate_observations: tuple[SpecialistEstimateObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -619,6 +671,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("estimate_observations")
+    @classmethod
+    def order_estimate_observations(
+        cls,
+        values: tuple[SpecialistEstimateObservation, ...],
+    ) -> tuple[SpecialistEstimateObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.series_id,
+                    item.reference_period.start_date,
+                    item.reference_period.end_date,
+                    item.observation_version,
+                    item.observation_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -675,6 +746,13 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             raise ValueError("fundamental observations must reference assigned supporting evidence")
         if self.agent_id != "athena_analyst" and self.fundamental_observations:
             raise ValueError("only Athena Analyst may retain fundamental observations")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.estimate_observations
+        ):
+            raise ValueError("estimate observations must reference assigned supporting evidence")
+        if self.agent_id != "athena_analyst" and self.estimate_observations:
+            raise ValueError("only Athena Analyst may retain estimate observations")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -771,6 +849,7 @@ def create_specialist_analysis(
     macro_observations: tuple[SpecialistMacroObservation, ...] = (),
     positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
     fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
+    estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -797,6 +876,7 @@ def create_specialist_analysis(
         macro_observations=macro_observations,
         positioning_observations=positioning_observations,
         fundamental_observations=fundamental_observations,
+        estimate_observations=estimate_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

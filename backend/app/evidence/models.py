@@ -53,6 +53,12 @@ from app.models.fundamentals import (
     FundamentalSource,
     NormalizedFundamentalObservation,
 )
+from app.models.estimates import (
+    EstimateReferencePeriod,
+    EstimateSeriesKey,
+    EstimateSource,
+    NormalizedEstimateObservation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +476,175 @@ class FundamentalSeriesSnapshot:
     """Bounded immutable output from the dedicated fundamental-series store."""
 
     series: tuple[FundamentalSeriesEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class EstimateObservationEvidence:
+    """Safe immutable projection of one source-reported estimate observation."""
+
+    observation_id: str
+    series_id: str
+    reference_period: EstimateReferencePeriod
+    value: EconomicValue
+    as_of: datetime
+    observation_version: int
+    revision_of_observation_id: str | None
+    published_at: datetime | None
+    vintage_at: datetime | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observation(
+        cls,
+        observation: NormalizedEstimateObservation,
+    ) -> "EstimateObservationEvidence":
+        if not isinstance(observation, NormalizedEstimateObservation):
+            raise TypeError("observation must be a NormalizedEstimateObservation")
+        reference_time = observation.published_at or observation.vintage_at or observation.as_of
+        return cls(
+            observation_id=observation.observation_id,
+            series_id=observation.series_key.series_id,
+            reference_period=observation.reference_period,
+            value=observation.value,
+            as_of=_as_utc(observation.as_of),
+            observation_version=observation.observation_version,
+            revision_of_observation_id=observation.revision_of_observation_id,
+            published_at=(
+                _as_utc(observation.published_at)
+                if observation.published_at is not None
+                else None
+            ),
+            vintage_at=(
+                _as_utc(observation.vintage_at)
+                if observation.vintage_at is not None
+                else None
+            ),
+            received_at=_as_utc(observation.received_at),
+            provenance=_provenance_from_source(
+                event_id=observation.observation_id,
+                source=observation.source,
+                event_timestamp=reference_time,
+                received_at=observation.received_at,
+            ),
+            fingerprint=observation.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EstimateSeriesProvenance:
+    """Source and receipt metadata for a bounded estimate-series snapshot."""
+
+    source_id: str
+    source_name: str
+    transport: SourceTransport
+    domain: DataDomain
+    origin_id: str | None
+    origin_name: str | None
+    first_received_at: datetime
+    latest_received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EstimateSeriesEvidence:
+    """Deterministic provider-neutral evidence for one source-reported estimate series."""
+
+    series_id: str
+    key: EstimateSeriesKey
+    observations: tuple[EstimateObservationEvidence, ...]
+    current_observations: tuple[EstimateObservationEvidence, ...]
+    latest_reference_period_end: date
+    latest_as_of: datetime
+    latest_published_at: datetime | None
+    latest_vintage_at: datetime | None
+    provenance: EstimateSeriesProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observations(
+        cls,
+        key: EstimateSeriesKey,
+        observations: tuple[NormalizedEstimateObservation, ...],
+    ) -> "EstimateSeriesEvidence":
+        if not observations:
+            raise ValueError("estimate-series evidence requires at least one observation")
+        ordered_source = tuple(sorted(observations, key=_estimate_observation_sort_key))
+        if any(item.series_key != key for item in ordered_source):
+            raise ValueError("all observations must belong to the supplied estimate series key")
+        first = ordered_source[0]
+        if any(item.source != first.source for item in ordered_source):
+            raise ValueError("an estimate series cannot mix source metadata")
+        projected = tuple(EstimateObservationEvidence.from_observation(item) for item in ordered_source)
+        return cls._from_projected(key, projected, first.source)
+
+    @classmethod
+    def _from_projected(
+        cls,
+        key: EstimateSeriesKey,
+        projected: tuple[EstimateObservationEvidence, ...],
+        source: EstimateSource,
+    ) -> "EstimateSeriesEvidence":
+        if not projected:
+            raise ValueError("estimate-series evidence requires at least one observation")
+        current_by_period: dict[str, EstimateObservationEvidence] = {}
+        for item in projected:
+            period_id = item.reference_period.period_id
+            existing = current_by_period.get(period_id)
+            if existing is None or _estimate_current_rank(item) > _estimate_current_rank(existing):
+                current_by_period[period_id] = item
+        current = tuple(sorted(current_by_period.values(), key=_estimate_evidence_sort_key))
+        latest = max(current, key=_estimate_evidence_sort_key)
+        provenance = EstimateSeriesProvenance(
+            source_id=source.source_id,
+            source_name=source.display_name,
+            transport=source.transport,
+            domain=source.domain,
+            origin_id=source.origin_id,
+            origin_name=source.origin_name,
+            first_received_at=min(item.received_at for item in projected),
+            latest_received_at=max(item.received_at for item in projected),
+        )
+        return cls(
+            series_id=key.series_id,
+            key=key,
+            observations=projected,
+            current_observations=current,
+            latest_reference_period_end=latest.reference_period.end_date,
+            latest_as_of=latest.as_of,
+            latest_published_at=latest.published_at,
+            latest_vintage_at=latest.vintage_at,
+            provenance=provenance,
+            fingerprint=_estimate_series_fingerprint(key, projected),
+        )
+
+    def restricted_to(
+        self,
+        observation_ids: frozenset[str],
+    ) -> "EstimateSeriesEvidence":
+        """Return a safe immutable projection for deterministic agent routing."""
+        selected = tuple(
+            item for item in self.observations if item.observation_id in observation_ids
+        )
+        if not selected:
+            raise ValueError("restricted estimate evidence requires an observation")
+        source = EstimateSource(
+            source_id=self.provenance.source_id,
+            display_name=self.provenance.source_name,
+            transport=self.provenance.transport,
+            domain=self.provenance.domain,
+            origin_id=self.provenance.origin_id,
+            origin_name=self.provenance.origin_name,
+        )
+        return self._from_projected(self.key, selected, source)
+
+
+@dataclass(frozen=True, slots=True)
+class EstimateSeriesSnapshot:
+    """Bounded immutable output from the dedicated estimate-series store."""
+
+    series: tuple[EstimateSeriesEvidence, ...] = ()
     fingerprint: str = sha256(b"[]").hexdigest()
 
 
@@ -989,6 +1164,7 @@ class EvidenceSnapshot:
     macro_series: tuple[MacroSeriesEvidence, ...] = ()
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
+    estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -1003,6 +1179,7 @@ class AgentEvidence:
     macro_series: tuple[MacroSeriesEvidence, ...] = ()
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
+    estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -1033,7 +1210,13 @@ def symbols_match(left: str | None, right: str | None) -> bool:
 def _provenance_from_source(
     *,
     event_id: str,
-    source: SourceMetadata | EconomicEventSource | FundamentalSource | PositioningSource,
+    source: (
+        SourceMetadata
+        | EconomicEventSource
+        | FundamentalSource
+        | EstimateSource
+        | PositioningSource
+    ),
     event_timestamp: datetime,
     received_at: datetime,
 ) -> EvidenceProvenance:
@@ -1230,6 +1413,60 @@ def _fundamental_current_rank(
 def _fundamental_series_fingerprint(
     key: FundamentalSeriesKey,
     observations: tuple[FundamentalObservationEvidence, ...],
+) -> str:
+    payload = {
+        "series_id": key.series_id,
+        "observations": [
+            {
+                "observation_id": item.observation_id,
+                "fingerprint": item.fingerprint,
+                "reference_period_id": item.reference_period.period_id,
+                "observation_version": item.observation_version,
+            }
+            for item in observations
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _estimate_observation_sort_key(
+    observation: NormalizedEstimateObservation,
+) -> tuple[date, date, str, int, str]:
+    return (
+        observation.reference_period.start_date,
+        observation.reference_period.end_date,
+        observation.reference_period.period_id,
+        observation.observation_version,
+        observation.observation_id,
+    )
+
+
+def _estimate_evidence_sort_key(
+    evidence: EstimateObservationEvidence,
+) -> tuple[date, date, str, int, str]:
+    return (
+        evidence.reference_period.start_date,
+        evidence.reference_period.end_date,
+        evidence.reference_period.period_id,
+        evidence.observation_version,
+        evidence.observation_id,
+    )
+
+
+def _estimate_current_rank(
+    evidence: EstimateObservationEvidence,
+) -> tuple[int, datetime, str]:
+    return (
+        evidence.observation_version,
+        evidence.vintage_at or evidence.published_at or evidence.as_of,
+        evidence.observation_id,
+    )
+
+
+def _estimate_series_fingerprint(
+    key: EstimateSeriesKey,
+    observations: tuple[EstimateObservationEvidence, ...],
 ) -> str:
     payload = {
         "series_id": key.series_id,

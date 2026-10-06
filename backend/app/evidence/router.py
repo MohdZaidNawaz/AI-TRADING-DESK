@@ -11,6 +11,8 @@ from app.evidence.models import (
     EvidenceSnapshot,
     FundamentalObservationEvidence,
     FundamentalSeriesEvidence,
+    EstimateObservationEvidence,
+    EstimateSeriesEvidence,
     PositioningObservationEvidence,
     PositioningSeriesEvidence,
 )
@@ -45,6 +47,7 @@ _MARKET_ONLY = frozenset({"chartist_technician", "oracle_quant"})
 _CONTEXTUAL_MARKET_LIMIT = 3
 _CAPITOL_POSITIONING_OBSERVATION_LIMIT = 100
 _ATHENA_FUNDAMENTAL_OBSERVATION_LIMIT = 100
+_ATHENA_ESTIMATE_OBSERVATION_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -113,6 +116,15 @@ class EvidenceRouter:
             routed_fundamentals if agent_id == "athena_analyst" else ()
         )
 
+        # Source-reported estimates are deliberately distinct from reported
+        # financial statements. Athena alone receives typed estimate values;
+        # Ledger retains provenance references below.
+        routed_estimates = _bounded_estimate_series(
+            snapshot.estimate_series,
+            limit=_ATHENA_ESTIMATE_OBSERVATION_LIMIT,
+        )
+        estimate_series = routed_estimates if agent_id == "athena_analyst" else ()
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -160,6 +172,10 @@ class EvidenceRouter:
                 observation.provenance
                 for series in routed_fundamentals
                 for observation in series.observations
+            ) + tuple(
+                observation.provenance
+                for series in routed_estimates
+                for observation in series.observations
             )
 
         return AgentEvidence(
@@ -170,6 +186,7 @@ class EvidenceRouter:
             macro_series=macro_series,
             positioning_series=positioning_series,
             fundamental_series=fundamental_series,
+            estimate_series=estimate_series,
             provenance=provenance,
         )
 
@@ -258,6 +275,47 @@ def _fundamental_route_key(
         or observation.vintage_at
         or observation.received_at
     )
+    return (
+        -observation.reference_period.end_date.toordinal(),
+        -observation.observation_version,
+        -timestamp.timestamp(),
+        series.series_id,
+        observation.observation_id,
+    )
+
+
+def _bounded_estimate_series(
+    series: tuple[EstimateSeriesEvidence, ...],
+    *,
+    limit: int,
+) -> tuple[EstimateSeriesEvidence, ...]:
+    """Select recent source-reported estimates deterministically for Athena bounds."""
+    if limit < 1:  # pragma: no cover - module constant guard
+        raise ValueError("estimate routing limit must be positive")
+
+    candidates = sorted(
+        (
+            (item, observation)
+            for item in series
+            for observation in item.observations
+        ),
+        key=lambda item: _estimate_route_key(item[0], item[1]),
+    )[:limit]
+    selected_ids: dict[str, set[str]] = {}
+    for item, observation in candidates:
+        selected_ids.setdefault(item.series_id, set()).add(observation.observation_id)
+    return tuple(
+        item.restricted_to(frozenset(selected_ids[item.series_id]))
+        for item in series
+        if item.series_id in selected_ids
+    )
+
+
+def _estimate_route_key(
+    series: EstimateSeriesEvidence,
+    observation: EstimateObservationEvidence,
+) -> tuple[int, int, float, str, str]:
+    timestamp = observation.published_at or observation.vintage_at or observation.as_of
     return (
         -observation.reference_period.end_date.toordinal(),
         -observation.observation_version,
