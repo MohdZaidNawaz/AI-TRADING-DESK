@@ -11,6 +11,7 @@ from app.models.events import (
 from app.models.market_series import NormalizedMarketBar
 from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservation
+from app.models.positioning import PositioningSource, NormalizedPositioningObservation
 
 
 @runtime_checkable
@@ -61,6 +62,17 @@ class MacroObservationConsumer(Protocol):
         """Pass one immutable macro observation to the dedicated series store."""
 
 
+@runtime_checkable
+class PositioningObservationConsumer(Protocol):
+    """Stages reported positioning evidence without provider-specific parsing."""
+
+    def ingest_positioning_observation(
+        self,
+        observation: NormalizedPositioningObservation,
+    ) -> object:
+        """Pass one immutable observation to the positioning evidence store."""
+
+
 class MarketDataClient(Protocol):
     """Retrieves a provider payload without exposing provider details downstream."""
 
@@ -86,3 +98,13 @@ class MacroSeriesConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedMacroObservation:
         """Keep source parsing outside the macro evidence and agent layers."""
+
+
+@runtime_checkable
+class PositioningConnector(Protocol):
+    """Future connector boundary for one normalized positioning observation."""
+
+    source: PositioningSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedPositioningObservation:
+        """Keep source parsing outside positioning evidence and agent layers."""

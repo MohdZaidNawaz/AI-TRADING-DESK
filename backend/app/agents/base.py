@@ -12,6 +12,8 @@ from app.evidence.models import (
     MacroObservationEvidence,
     MacroSeriesEvidence,
     NewsEvidence,
+    PositioningObservationEvidence,
+    PositioningSeriesEvidence,
     canonical_symbol,
 )
 from app.models.derived_features import DerivedMarketFeature
@@ -27,6 +29,7 @@ from app.models.specialist_analysis import (
     SpecialistLifecycleObservation,
     SpecialistMacroObservation,
     SpecialistOperationalState,
+    SpecialistPositioningObservation,
     SpecialistStance,
     create_specialist_analysis,
 )
@@ -97,12 +100,16 @@ class BaseAgent(ABC):
         series_count = len(context.evidence.market_series)
         economic_count = len(context.evidence.economic_events)
         macro_count = len(context.evidence.macro_series)
+        positioning_count = sum(
+            len(series.observations) for series in context.evidence.positioning_series
+        )
         if (
             market_count == 0
             and news_count == 0
             and series_count == 0
             and economic_count == 0
             and macro_count == 0
+            and positioning_count == 0
         ):
             return []
 
@@ -116,6 +123,8 @@ class BaseAgent(ABC):
             assignment += f" Economic events assigned: {economic_count}."
         if macro_count:
             assignment += f" Macro series assigned: {macro_count}."
+        if positioning_count:
+            assignment += f" Positioning observations assigned: {positioning_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -197,6 +206,7 @@ class BaseAgent(ABC):
         derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
         economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
         macro_observations: tuple[SpecialistMacroObservation, ...] = (),
+        positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -239,6 +249,7 @@ class BaseAgent(ABC):
             derived_observations=derived_observations,
             economic_observations=economic_observations,
             macro_observations=macro_observations,
+            positioning_observations=positioning_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -325,6 +336,29 @@ class BaseAgent(ABC):
         return tuple(BaseAgent.macro_reference(item) for item in evidence.observations)
 
     @staticmethod
+    def positioning_reference(
+        evidence: PositioningObservationEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.observation_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=(
+                evidence.published_at
+                or evidence.observed_at
+                or evidence.vintage_at
+                or evidence.received_at
+            ),
+            symbol=None,
+        )
+
+    @staticmethod
+    def positioning_series_references(
+        evidence: PositioningSeriesEvidence,
+    ) -> tuple[SpecialistEvidenceReference, ...]:
+        return tuple(BaseAgent.positioning_reference(item) for item in evidence.observations)
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -361,6 +395,10 @@ class BaseAgent(ABC):
             reference
             for evidence in context.evidence.macro_series
             for reference in self.macro_series_references(evidence)
+        ) + tuple(
+            reference
+            for evidence in context.evidence.positioning_series
+            for reference in self.positioning_series_references(evidence)
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

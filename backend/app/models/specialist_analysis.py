@@ -31,6 +31,7 @@ from app.models.economic_events import (
     EconomicValue,
 )
 from app.models.macro_series import MacroReferencePeriod, MacroSeriesKey
+from app.models.positioning import PositioningReferencePeriod, PositioningSeriesKey
 from app.models.schemas import APIModel
 
 
@@ -338,6 +339,53 @@ class SpecialistMacroObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistPositioningObservation(SpecialistAnalysisModel):
+    """Typed reported positioning evidence retained by Capitol without inference."""
+
+    observation_id: str = Field(min_length=1, max_length=160)
+    series_id: str = Field(min_length=1, max_length=120)
+    series_key: PositioningSeriesKey
+    reference_period: PositioningReferencePeriod
+    value: EconomicValue
+    observation_version: int = Field(ge=1)
+    revision_of_observation_id: str | None = Field(default=None, max_length=160)
+    observed_at: datetime | None = None
+    published_at: datetime | None = None
+    vintage_at: datetime | None = None
+    received_at: datetime
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("observed_at", "published_at", "vintage_at", "received_at")
+    @classmethod
+    def normalize_positioning_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("positioning observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_positioning_reference(self) -> "SpecialistPositioningObservation":
+        if self.series_id != self.series_key.series_id:
+            raise ValueError("positioning observation series identity must match its series key")
+        if self.value.unit is not self.series_key.value_unit:
+            raise ValueError("positioning observation value unit must match its series key")
+        if self.value.scale is not self.series_key.value_scale:
+            raise ValueError("positioning observation value scale must match its series key")
+        if self.observation_version == 1 and self.revision_of_observation_id is not None:
+            raise ValueError("version-one positioning observations cannot declare a revision link")
+        if self.observation_version > 1 and self.revision_of_observation_id is None:
+            raise ValueError("revised positioning observations require revision_of_observation_id")
+        if self.evidence_reference.domain is not DataDomain.POSITIONING_DATA:
+            raise ValueError("positioning observations require positioning_data evidence")
+        if self.evidence_reference.event_id != self.observation_id:
+            raise ValueError("positioning observation identity must match its evidence reference")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -384,6 +432,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     macro_observations: tuple[SpecialistMacroObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    positioning_observations: tuple[SpecialistPositioningObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -470,6 +522,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("positioning_observations")
+    @classmethod
+    def order_positioning_observations(
+        cls,
+        values: tuple[SpecialistPositioningObservation, ...],
+    ) -> tuple[SpecialistPositioningObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.series_id,
+                    item.reference_period.start_date,
+                    item.reference_period.end_date,
+                    item.observation_version,
+                    item.observation_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -512,6 +583,13 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             for observation in self.macro_observations
         ):
             raise ValueError("macro observations must reference assigned supporting evidence")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.positioning_observations
+        ):
+            raise ValueError("positioning observations must reference assigned supporting evidence")
+        if self.agent_id != "capitol_smart_money" and self.positioning_observations:
+            raise ValueError("only Capitol Smart Money may retain positioning observations")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -606,6 +684,7 @@ def create_specialist_analysis(
     derived_observations: tuple[SpecialistDerivedObservation, ...] = (),
     economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
     macro_observations: tuple[SpecialistMacroObservation, ...] = (),
+    positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -630,6 +709,7 @@ def create_specialist_analysis(
         derived_observations=derived_observations,
         economic_observations=economic_observations,
         macro_observations=macro_observations,
+        positioning_observations=positioning_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

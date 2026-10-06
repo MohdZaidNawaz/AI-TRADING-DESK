@@ -21,6 +21,7 @@ class DataDomain(str, Enum):
     FINANCIAL_NEWS = "financial_news"
     ECONOMIC_DATA = "economic_data"
     FUNDAMENTAL_DATA = "fundamental_data"
+    POSITIONING_DATA = "positioning_data"
     SENTIMENT = "sentiment"
     ALTERNATIVE_DATA = "alternative_data"
 

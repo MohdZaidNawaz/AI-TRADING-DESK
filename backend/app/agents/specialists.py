@@ -13,6 +13,7 @@ from app.models.specialist_analysis import (
     SpecialistInterpretation,
     SpecialistMacroObservation,
     SpecialistOperationalState,
+    SpecialistPositioningObservation,
     SpecialistStance,
 )
 from app.models.schemas import AgentAnalysis
@@ -107,6 +108,31 @@ def _macro_observations(
             evidence_reference=agent.macro_reference(observation),
         )
         for series in context.evidence.macro_series
+        for observation in series.observations
+    )
+
+
+def _positioning_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistPositioningObservation, ...]:
+    """Preserve reported values without inferring intent, exposure, or direction."""
+    return tuple(
+        SpecialistPositioningObservation(
+            observation_id=observation.observation_id,
+            series_id=series.series_id,
+            series_key=series.key,
+            reference_period=observation.reference_period,
+            value=observation.value,
+            observation_version=observation.observation_version,
+            revision_of_observation_id=observation.revision_of_observation_id,
+            observed_at=observation.observed_at,
+            published_at=observation.published_at,
+            vintage_at=observation.vintage_at,
+            received_at=observation.received_at,
+            evidence_reference=agent.positioning_reference(observation),
+        )
+        for series in context.evidence.positioning_series
         for observation in series.observations
     )
 
@@ -388,6 +414,7 @@ class CapitolSmartMoneyAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        has_positioning = bool(context.evidence.positioning_series)
         return self.result(
             summary=f"Prepared a mock institutional-participation framework for {context.symbol}.",
             findings=[
@@ -396,7 +423,12 @@ class CapitolSmartMoneyAgent(BaseAgent):
                 *self.evidence_findings(context),
             ],
             limitations=[
-                "No positioning, order-flow, holdings, fund-flow, or institutional dataset was accessed."
+                (
+                    "Reported positioning evidence is descriptive only; no institutional intent, "
+                    "net exposure, signal, probability, or trade direction was inferred."
+                    if has_positioning
+                    else "No positioning, order-flow, holdings, fund-flow, or institutional dataset was accessed."
+                )
             ],
             confidence=0.5,
         )
@@ -418,13 +450,22 @@ class CapitolSmartMoneyAgent(BaseAgent):
             result=result,
             stance=SpecialistStance.INSUFFICIENT_DATA,
             thesis=(
-                "No normalized positioning, participation, holdings, or capital-flow evidence is "
-                "available for a smart-money assessment."
+                (
+                    "Reported positioning observations are retained as factual context only and do "
+                    "not establish institutional intent, net exposure, or a directional conclusion."
+                    if context.evidence.positioning_series
+                    else "No normalized positioning, participation, holdings, or capital-flow evidence is "
+                    "available for a smart-money assessment."
+                )
             ),
+            positioning_observations=_positioning_observations(self, context),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "Market and news context alone must not be treated as evidence of institutional "
+                        "Reported positioning values must not be converted into institutional intent, "
+                        "net exposure, probability, trade direction, or trade parameters."
+                        if context.evidence.positioning_series
+                        else "Market and news context alone must not be treated as evidence of institutional "
                         "positioning or flow."
                     )
                 ),

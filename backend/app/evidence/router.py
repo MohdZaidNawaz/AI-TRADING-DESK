@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import replace
 
 from app.evidence.economic_store import latest_economic_versions
-from app.evidence.models import AgentEvidence, EvidenceProvenance, EvidenceSnapshot
+from app.evidence.models import (
+    AgentEvidence,
+    EvidenceProvenance,
+    EvidenceSnapshot,
+    PositioningObservationEvidence,
+    PositioningSeriesEvidence,
+)
 from app.models.economic_events import EconomicReleaseStatus
 
 
@@ -35,6 +41,7 @@ _CONTEXTUAL_MARKET_AND_NEWS = frozenset(
 )
 _MARKET_ONLY = frozenset({"chartist_technician", "oracle_quant"})
 _CONTEXTUAL_MARKET_LIMIT = 3
+_CAPITOL_POSITIONING_OBSERVATION_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -80,6 +87,18 @@ class EvidenceRouter:
         # values in Phase 5B-3; Ledger receives provenance references below.
         macro_series = snapshot.macro_series if agent_id == "atlas_macro" else ()
 
+        # Positioning is a dedicated reported-participation domain. Capitol is
+        # the sole consumer of typed values; Ledger receives provenance only.
+        # The route cap protects immutable specialist-artifact bounds without
+        # changing what the bounded store retains.
+        routed_positioning = _bounded_positioning_series(
+            snapshot.positioning_series,
+            limit=_CAPITOL_POSITIONING_OBSERVATION_LIMIT,
+        )
+        positioning_series = (
+            routed_positioning if agent_id == "capitol_smart_money" else ()
+        )
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -119,6 +138,10 @@ class EvidenceRouter:
                 observation.provenance
                 for series in snapshot.macro_series
                 for observation in series.observations
+            ) + tuple(
+                observation.provenance
+                for series in routed_positioning
+                for observation in series.observations
             )
 
         return AgentEvidence(
@@ -127,5 +150,52 @@ class EvidenceRouter:
             market_series=market_series,
             economic_events=economic_events,
             macro_series=macro_series,
+            positioning_series=positioning_series,
             provenance=provenance,
         )
+
+
+def _bounded_positioning_series(
+    series: tuple[PositioningSeriesEvidence, ...],
+    *,
+    limit: int,
+) -> tuple[PositioningSeriesEvidence, ...]:
+    """Select recent reported observations deterministically for agent bounds."""
+    if limit < 1:  # pragma: no cover - module constant guard
+        raise ValueError("positioning routing limit must be positive")
+
+    candidates = sorted(
+        (
+            (item, observation)
+            for item in series
+            for observation in item.observations
+        ),
+        key=lambda item: _positioning_route_key(item[0], item[1]),
+    )[:limit]
+    selected_ids: dict[str, set[str]] = {}
+    for item, observation in candidates:
+        selected_ids.setdefault(item.series_id, set()).add(observation.observation_id)
+    return tuple(
+        item.restricted_to(frozenset(selected_ids[item.series_id]))
+        for item in series
+        if item.series_id in selected_ids
+    )
+
+
+def _positioning_route_key(
+    series: PositioningSeriesEvidence,
+    observation: PositioningObservationEvidence,
+) -> tuple[int, int, float, str, str]:
+    timestamp = (
+        observation.published_at
+        or observation.observed_at
+        or observation.vintage_at
+        or observation.received_at
+    )
+    return (
+        -observation.reference_period.end_date.toordinal(),
+        -observation.observation_version,
+        -timestamp.timestamp(),
+        series.series_id,
+        observation.observation_id,
+    )

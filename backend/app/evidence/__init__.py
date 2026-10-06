@@ -17,6 +17,10 @@ from app.evidence.models import (
     MacroSeriesSnapshot,
     NewsEvidence,
     OverallSentimentEvidence,
+    PositioningObservationEvidence,
+    PositioningSeriesEvidence,
+    PositioningSeriesProvenance,
+    PositioningSeriesSnapshot,
     SymbolSentimentEvidence,
     TopicRelevanceEvidence,
     SeriesContinuity,
@@ -26,6 +30,7 @@ from app.evidence.models import (
 )
 from app.evidence.economic_store import EconomicEventStore, latest_economic_versions
 from app.evidence.macro_store import MacroSeriesStore
+from app.evidence.positioning_store import PositioningStore
 from app.evidence.router import EvidenceRouter, NINE_SPECIALIST_IDS
 from app.evidence.store import EvidenceStore
 from app.evidence.series_store import MarketSeriesStore
@@ -53,6 +58,11 @@ __all__ = [
     "NINE_SPECIALIST_IDS",
     "NewsEvidence",
     "OverallSentimentEvidence",
+    "PositioningObservationEvidence",
+    "PositioningSeriesEvidence",
+    "PositioningSeriesProvenance",
+    "PositioningSeriesSnapshot",
+    "PositioningStore",
     "SymbolSentimentEvidence",
     "TopicRelevanceEvidence",
     "SeriesContinuity",

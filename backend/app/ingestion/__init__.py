@@ -10,6 +10,8 @@ from app.ingestion.contracts import (
     MacroObservationConsumer,
     MacroSeriesConnector,
     NewsEvidenceConsumer,
+    PositioningConnector,
+    PositioningObservationConsumer,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "EconomicEventConsumer",
     "MacroObservationConsumer",
     "MacroSeriesConnector",
+    "PositioningConnector",
+    "PositioningObservationConsumer",
 ]

@@ -28,6 +28,7 @@ from app.models.events import NormalizedDataEvent, NormalizedNewsResearchEvent
 from app.models.market_series import NormalizedMarketBar
 from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import NormalizedMacroObservation
+from app.models.positioning import NormalizedPositioningObservation
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
@@ -386,6 +387,13 @@ class FridayCore:
     def ingest_macro_observation(self, observation: NormalizedMacroObservation) -> object:
         """Stage a normalized macro observation without analysis or execution."""
         return self._evidence_store.ingest_macro_observation(observation)
+
+    def ingest_positioning_observation(
+        self,
+        observation: NormalizedPositioningObservation,
+    ) -> object:
+        """Stage reported positioning evidence without analysis or execution."""
+        return self._evidence_store.ingest_positioning_observation(observation)
 
     @property
     def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:

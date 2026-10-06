@@ -323,6 +323,53 @@ calculations, macro stance policy, signals, trade decisions, providers,
 persistence, polling, API route, credentials, frontend changes, broker/MT5
 adapter, or order placement.
 
+## Phase 5B-4 provider-neutral positioning evidence
+
+Phase 5B-4 adds a distinct internal path for reported positioning,
+participation, holdings, open-interest, and capital-flow observations. It is
+separate from price events, OHLCV bars, derived features, economic releases,
+and macroeconomic series:
+
+```text
+future positioning connector
+    -> immutable NormalizedPositioningObservation
+    -> bounded process-local PositioningStore
+    -> immutable EvidenceSnapshot.positioning_series
+    -> EvidenceRouter
+    -> Capitol Smart Money structured observations
+    -> F.R.I.D.A.Y. internal specialist synthesis
+```
+
+Each observation has a source-scoped series identity, instrument identifier,
+optional symbol and venue, participant category, measure, frequency, explicit
+finite value unit/scale, reported reference period, and revision/vintage
+metadata. A connector must map its own labels into these provider-neutral
+contracts before ingestion; no instrument aliases or provider payloads are
+accepted by FRIDAY's evidence or agent layers.
+
+The process-local store is thread-safe and bounded by series, reference-period
+occurrences, retained vintages, and a separate bounded conflict-fingerprint
+registry. Exact duplicates collapse. Conflicting content for the same source,
+series, reference period, and version is rejected, including after full-record
+eviction while the documented deterministic metadata-retention horizon remains.
+There is no provider reconciliation, persistence, cache, polling job, or live
+positioning connector in this phase.
+
+Only Capitol receives typed positioning values, with a deterministic per-agent
+observation limit that protects specialist-artifact bounds. Ledger receives
+provenance references only. Atlas, Scout, Athena, Chartist, Oracle, Sentinel,
+and Pilot receive no positioning evidence. Capitol retains factual observations
+but remains `INSUFFICIENT_DATA`: FRIDAY does not infer institutional intent or
+net exposure, calculate signals/probabilities, create a stance or trade
+direction, or create trade parameters from positioning data.
+
+Positioning provenance participates in internal proposal traceability only. It
+is not market evidence, does not populate `RiskContext.specialist_signals`, and
+does not alter Sentinel policy, approval criteria, or Pilot's disabled state.
+The public `/api/analyze` schema is unchanged. This phase adds no API route,
+frontend work, credentials, broker/MT5 adapter, order placement, or execution
+authority.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

@@ -110,6 +110,27 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(event.released_at or event.received_at)
 
+    # Positioning evidence is traceability-only. It remains distinct from
+    # market evidence and is never considered by Sentinel's approval policy.
+    for series in snapshot.positioning_series:
+        for observation in series.observations:
+            reference_time = (
+                observation.published_at
+                or observation.observed_at
+                or observation.vintage_at
+                or observation.received_at
+            )
+            references.append(
+                EvidenceReference(
+                    event_id=observation.observation_id,
+                    source_id=observation.provenance.source_id,
+                    domain=observation.provenance.domain,
+                    timestamp=reference_time,
+                    symbol=canonical_symbol(series.key.symbol),
+                )
+            )
+            created_at_values.append(reference_time)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -147,6 +168,15 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 "release_version": event.release_version,
             }
             for event in snapshot.economic_events
+        ]
+    if snapshot.positioning_series:
+        fingerprint_input["positioning_series"] = [
+            {
+                "series_id": series.series_id,
+                "fingerprint": series.fingerprint,
+                "latest_reference_period_end": series.latest_reference_period_end.isoformat(),
+            }
+            for series in sorted(snapshot.positioning_series, key=lambda item: item.series_id)
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))
