@@ -644,7 +644,7 @@ stop, target, execution authority, provider integration, API route, or frontend
 change. Ledger receives no unrestricted metric values, Pilot remains
 `DISABLED_NO_EXECUTION`, and the public `/api/analyze` contract is unchanged.
 
-## Phase 6A-1 Master Decision Thesis Foundation
+## Phase 6A — Master Decision Thesis + Explicit Proposal Assembly
 
 Phase 6A-1 inserts one immutable `MasterTradeThesis` into FRIDAY's internal
 analysis flow:
@@ -677,7 +677,7 @@ traceability. Sentinel remains the sole approval gate and Pilot remains
 `DISABLED_NO_EXECUTION`. No provider, API route, frontend, broker, MT5,
 credential, or execution change is included.
 
-## Phase 6A-2 explicit proposal assembly
+### Explicit proposal assembly
 
 `ExplicitTradeProposalInput` is an internal, provider-neutral boundary for a
 human or future external capability to supply a direction, reference price,
