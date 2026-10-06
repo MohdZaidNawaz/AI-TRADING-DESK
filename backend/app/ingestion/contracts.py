@@ -15,6 +15,10 @@ from app.models.positioning import PositioningSource, NormalizedPositioningObser
 from app.models.fundamentals import FundamentalSource, NormalizedFundamentalObservation
 from app.models.estimates import EstimateSource, NormalizedEstimateObservation
 from app.models.corporate_actions import CorporateActionSource, NormalizedCorporateAction
+from app.models.issuer_reference import (
+    IssuerReferenceSource,
+    NormalizedIssuerInstrumentReference,
+)
 
 
 @runtime_checkable
@@ -171,3 +175,24 @@ class CorporateActionConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedCorporateAction:
         """Keep source parsing outside corporate-action evidence and agents."""
+
+
+@runtime_checkable
+class IssuerReferenceConsumer(Protocol):
+    """Stages immutable issuer/reference profiles without provider-specific parsing."""
+
+    def ingest_issuer_reference(
+        self,
+        profile: NormalizedIssuerInstrumentReference,
+    ) -> object:
+        """Pass one profile version to the dedicated reference evidence store."""
+
+
+@runtime_checkable
+class IssuerReferenceConnector(Protocol):
+    """Future connector boundary for one normalized issuer/reference profile."""
+
+    source: IssuerReferenceSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedIssuerInstrumentReference:
+        """Keep source parsing outside reference evidence and specialist layers."""

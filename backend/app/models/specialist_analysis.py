@@ -24,7 +24,7 @@ from app.models.derived_features import (
     FeatureType,
     FeatureValueUnit,
 )
-from app.models.events import DataDomain
+from app.models.events import AssetClass, DataDomain
 from app.models.economic_events import (
     EconomicImpact,
     EconomicReleaseStatus,
@@ -40,6 +40,12 @@ from app.models.corporate_actions import (
     CorporateActionLifecycle,
     CorporateActionType,
     ShareAdjustmentTerms,
+)
+from app.models.issuer_reference import (
+    InstrumentKind,
+    IssuerClassification,
+    IssuerInstrumentReferenceKey,
+    IssuerReferenceStatus,
 )
 from app.models.schemas import APIModel
 
@@ -541,6 +547,53 @@ class SpecialistCorporateActionObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistIssuerReferenceObservation(SpecialistAnalysisModel):
+    """Typed source-reported issuer/listing context without valuation inference."""
+
+    profile_id: str = Field(min_length=1, max_length=160)
+    instrument: IssuerInstrumentReferenceKey
+    source_profile_id: str = Field(min_length=1, max_length=160)
+    issuer_display_name: str = Field(min_length=1, max_length=240)
+    issuer_legal_name: str | None = Field(default=None, max_length=240)
+    instrument_display_name: str | None = Field(default=None, max_length=240)
+    asset_class: AssetClass
+    instrument_kind: InstrumentKind
+    status: IssuerReferenceStatus
+    classification: IssuerClassification | None = None
+    country: str | None = Field(default=None, max_length=80)
+    domicile_country: str | None = Field(default=None, max_length=80)
+    reference_currency: str | None = Field(default=None, max_length=12)
+    as_of: datetime
+    published_at: datetime | None = None
+    profile_version: int = Field(ge=1)
+    revision_of_profile_id: str | None = Field(default=None, max_length=160)
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("as_of", "published_at")
+    @classmethod
+    def normalize_issuer_reference_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("issuer-reference observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_issuer_reference(self) -> "SpecialistIssuerReferenceObservation":
+        if self.evidence_reference.domain is not DataDomain.FUNDAMENTAL_DATA:
+            raise ValueError("issuer references require fundamental_data evidence")
+        if self.evidence_reference.event_id != self.profile_id:
+            raise ValueError("issuer-reference identity must match its evidence reference")
+        if self.profile_version == 1 and self.revision_of_profile_id is not None:
+            raise ValueError("version-one issuer references cannot declare a revision link")
+        if self.profile_version > 1 and self.revision_of_profile_id is None:
+            raise ValueError("revised issuer references require revision_of_profile_id")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -603,6 +656,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -765,6 +822,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("issuer_reference_observations")
+    @classmethod
+    def order_issuer_reference_observations(
+        cls,
+        values: tuple[SpecialistIssuerReferenceObservation, ...],
+    ) -> tuple[SpecialistIssuerReferenceObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.instrument.instrument_id,
+                    item.source_profile_id,
+                    item.as_of,
+                    item.profile_version,
+                    item.profile_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -845,6 +921,13 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             for observation in self.corporate_action_observations
         ) and self.agent_id == "chartist_technician":
             raise ValueError("Chartist may retain split corporate actions only")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.issuer_reference_observations
+        ):
+            raise ValueError("issuer-reference observations must reference assigned supporting evidence")
+        if self.agent_id not in {"athena_analyst", "scout_recon"} and self.issuer_reference_observations:
+            raise ValueError("only Athena and Scout may retain issuer-reference observations")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -943,6 +1026,7 @@ def create_specialist_analysis(
     fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
     estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
     corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
+    issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -971,6 +1055,7 @@ def create_specialist_analysis(
         fundamental_observations=fundamental_observations,
         estimate_observations=estimate_observations,
         corporate_action_observations=corporate_action_observations,
+        issuer_reference_observations=issuer_reference_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

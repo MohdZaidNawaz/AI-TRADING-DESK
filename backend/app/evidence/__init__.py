@@ -16,6 +16,8 @@ from app.evidence.models import (
     FundamentalSeriesEvidence,
     FundamentalSeriesProvenance,
     FundamentalSeriesSnapshot,
+    IssuerReferenceEvidence,
+    IssuerReferenceSnapshot,
     MarketEvidence,
     MarketBarEvidence,
     MarketSeriesEvidence,
@@ -40,6 +42,7 @@ from app.evidence.models import (
 )
 from app.evidence.economic_store import EconomicEventStore, latest_economic_versions
 from app.evidence.corporate_action_store import CorporateActionStore, latest_corporate_action_versions
+from app.evidence.issuer_reference_store import IssuerReferenceStore, latest_issuer_reference_versions
 from app.evidence.fundamental_store import FundamentalStore
 from app.evidence.estimate_store import EstimateStore
 from app.evidence.macro_store import MacroSeriesStore
@@ -70,6 +73,9 @@ __all__ = [
     "FundamentalSeriesProvenance",
     "FundamentalSeriesSnapshot",
     "FundamentalStore",
+    "IssuerReferenceEvidence",
+    "IssuerReferenceSnapshot",
+    "IssuerReferenceStore",
     "MarketEvidence",
     "MarketBarEvidence",
     "MarketSeriesEvidence",
@@ -97,4 +103,5 @@ __all__ = [
     "symbols_match",
     "latest_economic_versions",
     "latest_corporate_action_versions",
+    "latest_issuer_reference_versions",
 ]

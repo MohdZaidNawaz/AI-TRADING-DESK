@@ -509,6 +509,52 @@ signals or create approval authority. Pilot remains `DISABLED_NO_EXECUTION`.
 The public `/api/analyze` schema is unchanged. This phase adds no frontend work,
 MT5 or broker adapter, order placement, or execution authority.
 
+## Phase 5B-8 provider-neutral issuer and listed-instrument reference evidence
+
+Phase 5B-8 adds a distinct internal path for source-reported issuer and listed
+instrument reference profiles. It retains identity and classification context,
+not prices, statements, estimates, actions, valuation, peer analysis, ticker
+aliasing, or entity resolution:
+
+```text
+future issuer-reference connector
+    -> immutable NormalizedIssuerInstrumentReference
+    -> bounded process-local IssuerReferenceStore
+    -> immutable EvidenceSnapshot.issuer_references
+    -> EvidenceRouter
+    -> Athena Analyst / Scout Recon factual specialist artifacts
+```
+
+Each profile is scoped to its reporting source and contains source issuer and
+instrument IDs, optional source-reported symbol and venue, names, asset class,
+instrument kind, source-reported status, explicit classification taxonomy,
+optional country/domicile/currency, `as_of` and optional publication time, and
+immutable version/revision metadata. Timestamps are timezone-aware and
+normalized to UTC. Local `received_at` is retained for provenance but excluded
+from semantic identity and fingerprints. Raw provider payloads, credentials,
+URLs with credentials, floats, recommendations, confidence, direction, and
+trade parameters are excluded.
+
+The process-local store is thread-safe and bounded by 100 source-scoped
+instruments, five profile occurrences per instrument, five retained versions
+per occurrence, and an independently bounded conflict-fingerprint registry.
+Exact duplicates are idempotent. Conflicting content for the same source,
+instrument, profile occurrence, and version is rejected while deterministic
+metadata-retention permits. No provider, API route, polling job, database,
+cache, or credential is introduced in this phase.
+
+Athena Analyst and Scout Recon receive typed factual reference observations.
+Ledger The Book receives provenance references only. Atlas, Capitol, Chartist,
+Oracle, Sentinel, and Pilot receive no issuer-reference values. The evidence is
+traceability-only for proposal workflows: it is not market evidence, cannot
+satisfy Sentinel requirements, does not populate risk signals, and creates no
+approval authority. Pilot remains `DISABLED_NO_EXECUTION`.
+
+Future work may separately assess profile providers, taxonomy mapping,
+entity-resolution policy, ticker changes, valuation, comparables, and issuer
+lifecycle semantics. This foundation intentionally adds none of them. The
+public `/api/analyze` schema and frontend remain unchanged.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

@@ -12,6 +12,7 @@ from app.evidence.models import (
     EstimateSeriesEvidence,
     FundamentalObservationEvidence,
     FundamentalSeriesEvidence,
+    IssuerReferenceEvidence,
     MarketEvidence,
     MarketSeriesEvidence,
     MacroObservationEvidence,
@@ -32,6 +33,7 @@ from app.models.specialist_analysis import (
     SpecialistEvidenceReference,
     SpecialistFactObservation,
     SpecialistFundamentalObservation,
+    SpecialistIssuerReferenceObservation,
     SpecialistEstimateObservation,
     SpecialistInterpretation,
     SpecialistLifecycleObservation,
@@ -118,6 +120,7 @@ class BaseAgent(ABC):
             len(series.observations) for series in context.evidence.estimate_series
         )
         corporate_action_count = len(context.evidence.corporate_actions)
+        issuer_reference_count = len(context.evidence.issuer_references)
         if (
             market_count == 0
             and news_count == 0
@@ -128,6 +131,7 @@ class BaseAgent(ABC):
             and fundamental_count == 0
             and estimate_count == 0
             and corporate_action_count == 0
+            and issuer_reference_count == 0
         ):
             return []
 
@@ -149,6 +153,8 @@ class BaseAgent(ABC):
             assignment += f" Estimate observations assigned: {estimate_count}."
         if corporate_action_count:
             assignment += f" Corporate actions assigned: {corporate_action_count}."
+        if issuer_reference_count:
+            assignment += f" Issuer reference profiles assigned: {issuer_reference_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -234,6 +240,7 @@ class BaseAgent(ABC):
         fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
         estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
         corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
+        issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -280,6 +287,7 @@ class BaseAgent(ABC):
             fundamental_observations=fundamental_observations,
             estimate_observations=estimate_observations,
             corporate_action_observations=corporate_action_observations,
+            issuer_reference_observations=issuer_reference_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -443,6 +451,18 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
+    def issuer_reference_reference(
+        evidence: IssuerReferenceEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.profile_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.published_at or evidence.as_of,
+            symbol=evidence.instrument.source_symbol,
+        )
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -494,6 +514,9 @@ class BaseAgent(ABC):
         ) + tuple(
             self.corporate_action_reference(evidence)
             for evidence in context.evidence.corporate_actions
+        ) + tuple(
+            self.issuer_reference_reference(evidence)
+            for evidence in context.evidence.issuer_references
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

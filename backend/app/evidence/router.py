@@ -52,6 +52,7 @@ _ATHENA_FUNDAMENTAL_OBSERVATION_LIMIT = 100
 _ATHENA_ESTIMATE_OBSERVATION_LIMIT = 100
 _CORPORATE_ACTION_LIMIT = 100
 _CHARTIST_CORPORATE_ACTION_LIMIT = 50
+_ISSUER_REFERENCE_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -146,6 +147,17 @@ class EvidenceRouter:
         else:
             corporate_actions = ()
 
+        # Issuer/listing reference profiles are a dedicated source-reported
+        # identity and classification domain.  Athena and Scout receive typed
+        # factual values; Ledger receives provenance only below.  They are not
+        # market evidence and never reach Sentinel or Pilot.
+        bounded_issuer_references = snapshot.issuer_references[:_ISSUER_REFERENCE_LIMIT]
+        issuer_references = (
+            bounded_issuer_references
+            if agent_id in {"athena_analyst", "scout_recon"}
+            else ()
+        )
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -199,6 +211,8 @@ class EvidenceRouter:
                 for observation in series.observations
         ) + tuple(
             action.provenance for action in bounded_corporate_actions
+        ) + tuple(
+            profile.provenance for profile in bounded_issuer_references
             )
 
         return AgentEvidence(
@@ -211,6 +225,7 @@ class EvidenceRouter:
             fundamental_series=fundamental_series,
             estimate_series=estimate_series,
             corporate_actions=corporate_actions,
+            issuer_references=issuer_references,
             provenance=provenance,
         )
 

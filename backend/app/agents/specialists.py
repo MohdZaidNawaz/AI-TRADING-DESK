@@ -12,6 +12,7 @@ from app.models.specialist_analysis import (
     SpecialistEconomicObservation,
     SpecialistFactObservation,
     SpecialistFundamentalObservation,
+    SpecialistIssuerReferenceObservation,
     SpecialistEstimateObservation,
     SpecialistInterpretation,
     SpecialistMacroObservation,
@@ -215,6 +216,36 @@ def _corporate_action_observations(
             evidence_reference=agent.corporate_action_reference(evidence),
         )
         for evidence in context.evidence.corporate_actions
+    )
+
+
+def _issuer_reference_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistIssuerReferenceObservation, ...]:
+    """Preserve source-reported identity and taxonomy without inference."""
+    return tuple(
+        SpecialistIssuerReferenceObservation(
+            profile_id=evidence.profile_id,
+            instrument=evidence.instrument,
+            source_profile_id=evidence.source_profile_id,
+            issuer_display_name=evidence.issuer_display_name,
+            issuer_legal_name=evidence.issuer_legal_name,
+            instrument_display_name=evidence.instrument_display_name,
+            asset_class=evidence.asset_class,
+            instrument_kind=evidence.instrument_kind,
+            status=evidence.status,
+            classification=evidence.classification,
+            country=evidence.country,
+            domicile_country=evidence.domicile_country,
+            reference_currency=evidence.reference_currency,
+            as_of=evidence.as_of,
+            published_at=evidence.published_at,
+            profile_version=evidence.profile_version,
+            revision_of_profile_id=evidence.revision_of_profile_id,
+            evidence_reference=agent.issuer_reference_reference(evidence),
+        )
+        for evidence in context.evidence.issuer_references
     )
 
 
@@ -603,6 +634,7 @@ class ScoutReconAgent(BaseAgent):
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
         corporate_actions = _corporate_action_observations(self, context)
+        issuer_references = _issuer_reference_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -618,6 +650,7 @@ class ScoutReconAgent(BaseAgent):
             + _news_context_facts(self, context),
             economic_observations=_economic_observations(self, context),
             corporate_action_observations=corporate_actions,
+            issuer_reference_observations=issuer_references,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -674,6 +707,7 @@ class AthenaAnalystAgent(BaseAgent):
         fundamentals = _fundamental_observations(self, context)
         estimates = _estimate_observations(self, context)
         corporate_actions = _corporate_action_observations(self, context)
+        issuer_references = _issuer_reference_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -685,7 +719,7 @@ class AthenaAnalystAgent(BaseAgent):
                 (
                     "Reported financial-statement observations are retained as factual context only and "
                     "do not establish valuation, financial quality, a forecast, or a directional conclusion."
-                    if fundamentals or estimates or corporate_actions
+                    if fundamentals or estimates or corporate_actions or issuer_references
                     else "No verified valuation, financial-statement, estimate, or comparable-company data is "
                     "available for a fundamental conclusion."
                 )
@@ -694,6 +728,7 @@ class AthenaAnalystAgent(BaseAgent):
             fundamental_observations=fundamentals,
             estimate_observations=estimates,
             corporate_action_observations=corporate_actions,
+            issuer_reference_observations=issuer_references,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -714,9 +749,13 @@ class AthenaAnalystAgent(BaseAgent):
                         reference
                         for observation in corporate_actions
                         for reference in (observation.evidence_reference,)
+                    ) + tuple(
+                        reference
+                        for observation in issuer_references
+                        for reference in (observation.evidence_reference,)
                     ),
                 )
-                if fundamentals or estimates or corporate_actions
+                if fundamentals or estimates or corporate_actions or issuer_references
                 else SpecialistInterpretation(
                     statement=(
                         "A normalized fundamental-update event can be recorded, but it is insufficient "

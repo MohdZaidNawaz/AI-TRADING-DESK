@@ -184,6 +184,21 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(reference_time)
 
+    # Issuer/reference profiles are traceability-only.  They are neither
+    # market evidence nor Sentinel approval inputs.
+    for profile in snapshot.issuer_references:
+        reference_time = profile.published_at or profile.as_of
+        references.append(
+            EvidenceReference(
+                event_id=profile.profile_id,
+                source_id=profile.provenance.source_id,
+                domain=profile.provenance.domain,
+                timestamp=reference_time,
+                symbol=canonical_symbol(profile.instrument.source_symbol),
+            )
+        )
+        created_at_values.append(reference_time)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -258,6 +273,15 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 "action_version": action.action_version,
             }
             for action in snapshot.corporate_actions
+        ]
+    if snapshot.issuer_references:
+        fingerprint_input["issuer_references"] = [
+            {
+                "profile_id": profile.profile_id,
+                "fingerprint": profile.fingerprint,
+                "profile_version": profile.profile_version,
+            }
+            for profile in snapshot.issuer_references
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))

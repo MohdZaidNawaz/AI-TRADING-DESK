@@ -68,6 +68,14 @@ from app.models.corporate_actions import (
     NormalizedCorporateAction,
     ShareAdjustmentTerms,
 )
+from app.models.issuer_reference import (
+    InstrumentKind,
+    IssuerClassification,
+    IssuerInstrumentReferenceKey,
+    IssuerReferenceSource,
+    IssuerReferenceStatus,
+    NormalizedIssuerInstrumentReference,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1227,6 +1235,79 @@ class CorporateActionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class IssuerReferenceEvidence:
+    """Safe immutable projection of one source-reported reference-profile version."""
+
+    profile_id: str
+    source: IssuerReferenceSource
+    instrument: IssuerInstrumentReferenceKey
+    source_profile_id: str
+    issuer_display_name: str
+    issuer_legal_name: str | None
+    instrument_display_name: str | None
+    asset_class: AssetClass
+    instrument_kind: InstrumentKind
+    status: IssuerReferenceStatus
+    classification: IssuerClassification | None
+    country: str | None
+    domicile_country: str | None
+    reference_currency: str | None
+    as_of: datetime
+    published_at: datetime | None
+    profile_version: int
+    revision_of_profile_id: str | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_profile(
+        cls,
+        profile: NormalizedIssuerInstrumentReference,
+    ) -> "IssuerReferenceEvidence":
+        if not isinstance(profile, NormalizedIssuerInstrumentReference):
+            raise TypeError("profile must be a NormalizedIssuerInstrumentReference")
+        return cls(
+            profile_id=profile.profile_id,
+            source=profile.source,
+            instrument=profile.instrument,
+            source_profile_id=profile.source_profile_id,
+            issuer_display_name=profile.issuer_display_name,
+            issuer_legal_name=profile.issuer_legal_name,
+            instrument_display_name=profile.instrument_display_name,
+            asset_class=profile.asset_class,
+            instrument_kind=profile.instrument_kind,
+            status=profile.status,
+            classification=profile.classification,
+            country=profile.country,
+            domicile_country=profile.domicile_country,
+            reference_currency=profile.reference_currency,
+            as_of=_as_utc(profile.as_of),
+            published_at=(
+                _as_utc(profile.published_at) if profile.published_at is not None else None
+            ),
+            profile_version=profile.profile_version,
+            revision_of_profile_id=profile.revision_of_profile_id,
+            received_at=_as_utc(profile.received_at),
+            provenance=_provenance_from_source(
+                event_id=profile.profile_id,
+                source=profile.source,
+                event_timestamp=profile.published_at or profile.as_of,
+                received_at=profile.received_at,
+            ),
+            fingerprint=profile.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IssuerReferenceSnapshot:
+    """Bounded immutable output from the issuer-reference store."""
+
+    profiles: tuple[IssuerReferenceEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSnapshot:
     """A deterministic, immutable view of evidence available to an analysis run."""
 
@@ -1239,6 +1320,7 @@ class EvidenceSnapshot:
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
+    issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -1255,6 +1337,7 @@ class AgentEvidence:
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
+    issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
