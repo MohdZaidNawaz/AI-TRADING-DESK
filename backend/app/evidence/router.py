@@ -9,6 +9,8 @@ from app.evidence.models import (
     AgentEvidence,
     EvidenceProvenance,
     EvidenceSnapshot,
+    FundamentalObservationEvidence,
+    FundamentalSeriesEvidence,
     PositioningObservationEvidence,
     PositioningSeriesEvidence,
 )
@@ -42,6 +44,7 @@ _CONTEXTUAL_MARKET_AND_NEWS = frozenset(
 _MARKET_ONLY = frozenset({"chartist_technician", "oracle_quant"})
 _CONTEXTUAL_MARKET_LIMIT = 3
 _CAPITOL_POSITIONING_OBSERVATION_LIMIT = 100
+_ATHENA_FUNDAMENTAL_OBSERVATION_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -99,6 +102,17 @@ class EvidenceRouter:
             routed_positioning if agent_id == "capitol_smart_money" else ()
         )
 
+        # Financial-statement evidence is a dedicated issuer-accounting
+        # domain.  Athena alone receives its values; Ledger receives only
+        # provenance below.  The cap protects specialist-artifact bounds.
+        routed_fundamentals = _bounded_fundamental_series(
+            snapshot.fundamental_series,
+            limit=_ATHENA_FUNDAMENTAL_OBSERVATION_LIMIT,
+        )
+        fundamental_series = (
+            routed_fundamentals if agent_id == "athena_analyst" else ()
+        )
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -142,6 +156,10 @@ class EvidenceRouter:
                 observation.provenance
                 for series in routed_positioning
                 for observation in series.observations
+            ) + tuple(
+                observation.provenance
+                for series in routed_fundamentals
+                for observation in series.observations
             )
 
         return AgentEvidence(
@@ -151,6 +169,7 @@ class EvidenceRouter:
             economic_events=economic_events,
             macro_series=macro_series,
             positioning_series=positioning_series,
+            fundamental_series=fundamental_series,
             provenance=provenance,
         )
 
@@ -189,6 +208,53 @@ def _positioning_route_key(
     timestamp = (
         observation.published_at
         or observation.observed_at
+        or observation.vintage_at
+        or observation.received_at
+    )
+    return (
+        -observation.reference_period.end_date.toordinal(),
+        -observation.observation_version,
+        -timestamp.timestamp(),
+        series.series_id,
+        observation.observation_id,
+    )
+
+
+def _bounded_fundamental_series(
+    series: tuple[FundamentalSeriesEvidence, ...],
+    *,
+    limit: int,
+) -> tuple[FundamentalSeriesEvidence, ...]:
+    """Select recent reported observations deterministically for Athena bounds."""
+    if limit < 1:  # pragma: no cover - module constant guard
+        raise ValueError("fundamental routing limit must be positive")
+
+    candidates = sorted(
+        (
+            (item, observation)
+            for item in series
+            for observation in item.observations
+        ),
+        key=lambda item: _fundamental_route_key(item[0], item[1]),
+    )[:limit]
+    selected_ids: dict[str, set[str]] = {}
+    for item, observation in candidates:
+        selected_ids.setdefault(item.series_id, set()).add(observation.observation_id)
+    return tuple(
+        item.restricted_to(frozenset(selected_ids[item.series_id]))
+        for item in series
+        if item.series_id in selected_ids
+    )
+
+
+def _fundamental_route_key(
+    series: FundamentalSeriesEvidence,
+    observation: FundamentalObservationEvidence,
+) -> tuple[int, int, float, str, str]:
+    timestamp = (
+        observation.published_at
+        or observation.filed_at
+        or observation.reported_at
         or observation.vintage_at
         or observation.received_at
     )

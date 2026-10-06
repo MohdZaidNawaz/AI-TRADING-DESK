@@ -47,6 +47,12 @@ from app.models.positioning import (
     PositioningSeriesKey,
     PositioningSource,
 )
+from app.models.fundamentals import (
+    FundamentalReferencePeriod,
+    FundamentalSeriesKey,
+    FundamentalSource,
+    NormalizedFundamentalObservation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +284,192 @@ class MacroSeriesSnapshot:
     """Bounded immutable output from the dedicated macro-series store."""
 
     series: tuple[MacroSeriesEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FundamentalObservationEvidence:
+    """Safe immutable projection of one reported financial-statement observation."""
+
+    observation_id: str
+    series_id: str
+    reference_period: FundamentalReferencePeriod
+    value: EconomicValue
+    observation_version: int
+    revision_of_observation_id: str | None
+    reported_at: datetime | None
+    filed_at: datetime | None
+    published_at: datetime | None
+    vintage_at: datetime | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observation(
+        cls,
+        observation: NormalizedFundamentalObservation,
+    ) -> "FundamentalObservationEvidence":
+        if not isinstance(observation, NormalizedFundamentalObservation):
+            raise TypeError("observation must be a NormalizedFundamentalObservation")
+        reference_time = (
+            observation.published_at
+            or observation.filed_at
+            or observation.reported_at
+            or observation.vintage_at
+            or observation.received_at
+        )
+        return cls(
+            observation_id=observation.observation_id,
+            series_id=observation.series_key.series_id,
+            reference_period=observation.reference_period,
+            value=observation.value,
+            observation_version=observation.observation_version,
+            revision_of_observation_id=observation.revision_of_observation_id,
+            reported_at=(
+                _as_utc(observation.reported_at)
+                if observation.reported_at is not None
+                else None
+            ),
+            filed_at=_as_utc(observation.filed_at) if observation.filed_at is not None else None,
+            published_at=(
+                _as_utc(observation.published_at)
+                if observation.published_at is not None
+                else None
+            ),
+            vintage_at=(
+                _as_utc(observation.vintage_at)
+                if observation.vintage_at is not None
+                else None
+            ),
+            received_at=_as_utc(observation.received_at),
+            provenance=_provenance_from_source(
+                event_id=observation.observation_id,
+                source=observation.source,
+                event_timestamp=reference_time,
+                received_at=observation.received_at,
+            ),
+            fingerprint=observation.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FundamentalSeriesProvenance:
+    """Source and receipt metadata for a bounded financial-series snapshot."""
+
+    source_id: str
+    source_name: str
+    transport: SourceTransport
+    domain: DataDomain
+    origin_id: str | None
+    origin_name: str | None
+    first_received_at: datetime
+    latest_received_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FundamentalSeriesEvidence:
+    """Deterministic provider-neutral evidence for one reported financial metric."""
+
+    series_id: str
+    key: FundamentalSeriesKey
+    observations: tuple[FundamentalObservationEvidence, ...]
+    current_observations: tuple[FundamentalObservationEvidence, ...]
+    latest_reference_period_end: date
+    latest_reported_at: datetime | None
+    latest_filed_at: datetime | None
+    latest_published_at: datetime | None
+    latest_vintage_at: datetime | None
+    provenance: FundamentalSeriesProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_observations(
+        cls,
+        key: FundamentalSeriesKey,
+        observations: tuple[NormalizedFundamentalObservation, ...],
+    ) -> "FundamentalSeriesEvidence":
+        if not observations:
+            raise ValueError("fundamental-series evidence requires at least one observation")
+        ordered_source = tuple(sorted(observations, key=_fundamental_observation_sort_key))
+        if any(item.series_key != key for item in ordered_source):
+            raise ValueError("all observations must belong to the supplied fundamental series key")
+        first = ordered_source[0]
+        if any(item.source != first.source for item in ordered_source):
+            raise ValueError("a fundamental series cannot mix source metadata")
+
+        projected = tuple(
+            FundamentalObservationEvidence.from_observation(item) for item in ordered_source
+        )
+        return cls._from_projected(key, projected, first.source)
+
+    @classmethod
+    def _from_projected(
+        cls,
+        key: FundamentalSeriesKey,
+        projected: tuple[FundamentalObservationEvidence, ...],
+        source: FundamentalSource,
+    ) -> "FundamentalSeriesEvidence":
+        if not projected:
+            raise ValueError("fundamental-series evidence requires at least one observation")
+        current_by_period: dict[str, FundamentalObservationEvidence] = {}
+        for item in projected:
+            period_id = item.reference_period.period_id
+            existing = current_by_period.get(period_id)
+            if existing is None or _fundamental_current_rank(item) > _fundamental_current_rank(existing):
+                current_by_period[period_id] = item
+        current = tuple(sorted(current_by_period.values(), key=_fundamental_evidence_sort_key))
+        latest = max(current, key=_fundamental_evidence_sort_key)
+        provenance = FundamentalSeriesProvenance(
+            source_id=source.source_id,
+            source_name=source.display_name,
+            transport=source.transport,
+            domain=source.domain,
+            origin_id=source.origin_id,
+            origin_name=source.origin_name,
+            first_received_at=min(item.received_at for item in projected),
+            latest_received_at=max(item.received_at for item in projected),
+        )
+        return cls(
+            series_id=key.series_id,
+            key=key,
+            observations=projected,
+            current_observations=current,
+            latest_reference_period_end=latest.reference_period.end_date,
+            latest_reported_at=latest.reported_at,
+            latest_filed_at=latest.filed_at,
+            latest_published_at=latest.published_at,
+            latest_vintage_at=latest.vintage_at,
+            provenance=provenance,
+            fingerprint=_fundamental_series_fingerprint(key, projected),
+        )
+
+    def restricted_to(
+        self,
+        observation_ids: frozenset[str],
+    ) -> "FundamentalSeriesEvidence":
+        """Return a safe immutable projection for deterministic agent routing."""
+        selected = tuple(
+            item for item in self.observations if item.observation_id in observation_ids
+        )
+        if not selected:
+            raise ValueError("restricted fundamental evidence requires an observation")
+        source = FundamentalSource(
+            source_id=self.provenance.source_id,
+            display_name=self.provenance.source_name,
+            transport=self.provenance.transport,
+            domain=self.provenance.domain,
+            origin_id=self.provenance.origin_id,
+            origin_name=self.provenance.origin_name,
+        )
+        return self._from_projected(self.key, selected, source)
+
+
+@dataclass(frozen=True, slots=True)
+class FundamentalSeriesSnapshot:
+    """Bounded immutable output from the dedicated fundamental-series store."""
+
+    series: tuple[FundamentalSeriesEvidence, ...] = ()
     fingerprint: str = sha256(b"[]").hexdigest()
 
 
@@ -796,6 +988,7 @@ class EvidenceSnapshot:
     economic_events: tuple[EconomicEventEvidence, ...] = ()
     macro_series: tuple[MacroSeriesEvidence, ...] = ()
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
+    fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -809,6 +1002,7 @@ class AgentEvidence:
     economic_events: tuple[EconomicEventEvidence, ...] = ()
     macro_series: tuple[MacroSeriesEvidence, ...] = ()
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
+    fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -839,7 +1033,7 @@ def symbols_match(left: str | None, right: str | None) -> bool:
 def _provenance_from_source(
     *,
     event_id: str,
-    source: SourceMetadata | EconomicEventSource | PositioningSource,
+    source: SourceMetadata | EconomicEventSource | FundamentalSource | PositioningSource,
     event_timestamp: datetime,
     received_at: datetime,
 ) -> EvidenceProvenance:
@@ -978,6 +1172,64 @@ def _macro_current_rank(
 def _macro_series_fingerprint(
     key: MacroSeriesKey,
     observations: tuple[MacroObservationEvidence, ...],
+) -> str:
+    payload = {
+        "series_id": key.series_id,
+        "observations": [
+            {
+                "observation_id": item.observation_id,
+                "fingerprint": item.fingerprint,
+                "reference_period_id": item.reference_period.period_id,
+                "observation_version": item.observation_version,
+            }
+            for item in observations
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _fundamental_observation_sort_key(
+    observation: NormalizedFundamentalObservation,
+) -> tuple[date, date, str, int, str]:
+    return (
+        observation.reference_period.start_date,
+        observation.reference_period.end_date,
+        observation.reference_period.period_id,
+        observation.observation_version,
+        observation.observation_id,
+    )
+
+
+def _fundamental_evidence_sort_key(
+    evidence: FundamentalObservationEvidence,
+) -> tuple[date, date, str, int, str]:
+    return (
+        evidence.reference_period.start_date,
+        evidence.reference_period.end_date,
+        evidence.reference_period.period_id,
+        evidence.observation_version,
+        evidence.observation_id,
+    )
+
+
+def _fundamental_current_rank(
+    evidence: FundamentalObservationEvidence,
+) -> tuple[int, datetime, str]:
+    return (
+        evidence.observation_version,
+        evidence.vintage_at
+        or evidence.published_at
+        or evidence.filed_at
+        or evidence.reported_at
+        or evidence.received_at,
+        evidence.observation_id,
+    )
+
+
+def _fundamental_series_fingerprint(
+    key: FundamentalSeriesKey,
+    observations: tuple[FundamentalObservationEvidence, ...],
 ) -> str:
     payload = {
         "series_id": key.series_id,

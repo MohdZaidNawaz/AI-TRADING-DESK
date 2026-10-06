@@ -370,6 +370,52 @@ The public `/api/analyze` schema is unchanged. This phase adds no API route,
 frontend work, credentials, broker/MT5 adapter, order placement, or execution
 authority.
 
+## Phase 5B-5 provider-neutral fundamental financial-statement evidence
+
+Phase 5B-5 adds a distinct internal path for reported issuer accounting facts.
+It is separate from price events, OHLCV bars, derived features, economic
+releases, macro series, positioning, estimates, valuation calculations,
+comparables, corporate actions, and company profiles:
+
+```text
+future fundamental connector
+    -> immutable NormalizedFundamentalObservation
+    -> bounded process-local FundamentalStore
+    -> immutable EvidenceSnapshot.fundamental_series
+    -> EvidenceRouter
+    -> Athena Analyst structured observations
+    -> F.R.I.D.A.Y. internal specialist synthesis
+```
+
+Each observation has source-scoped issuer and series identity, statement kind,
+normalized metric identifier, reporting scope/frequency, explicit fiscal or
+point-in-time reference period, finite typed value, currency/unit/scale, and
+revision/vintage metadata. Connector-specific issuer and metric labels must be
+mapped before ingestion. FRIDAY does not reconcile issuer identities across
+providers or infer heuristic aliases. Raw provider payloads are excluded from
+the contracts, evidence snapshots, specialists, and proposal traceability.
+
+The process-local store is thread-safe and bounded by series, reporting-period
+occurrences, retained vintages, and a separate bounded conflict-fingerprint
+registry. Exact duplicates collapse. Conflicting content for the same source,
+series, period, and version is rejected, including after full-record eviction
+while the deterministic metadata-retention horizon remains. No provider,
+polling job, API route, database, cache, or credential is added.
+
+Only Athena receives typed financial-statement values, with a deterministic
+per-agent observation limit. Ledger retains provenance references only. Atlas,
+Capitol, Scout, Chartist, Oracle, Sentinel, and Pilot receive no fundamental
+values. Athena remains `INSUFFICIENT_DATA`: this phase records reported facts
+without calculating valuation or financial ratios, estimates, forecasts,
+probabilities, directions, entries, stops, targets, or sizing.
+
+Fundamental provenance participates in internal proposal traceability only. It
+is not market evidence, cannot satisfy Sentinel freshness, portfolio, sizing,
+or specialist-agreement requirements, and does not populate risk signals or
+create approval authority. Pilot remains `DISABLED_NO_EXECUTION`. The public
+`/api/analyze` schema is unchanged. This phase adds no frontend work, MT5 or
+broker adapter, order placement, or execution authority.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

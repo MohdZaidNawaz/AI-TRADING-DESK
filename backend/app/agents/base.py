@@ -7,6 +7,8 @@ from app.evidence.models import (
     AgentEvidence,
     EconomicEventEvidence,
     EvidenceProvenance,
+    FundamentalObservationEvidence,
+    FundamentalSeriesEvidence,
     MarketEvidence,
     MarketSeriesEvidence,
     MacroObservationEvidence,
@@ -25,6 +27,7 @@ from app.models.specialist_analysis import (
     SpecialistEconomicObservation,
     SpecialistEvidenceReference,
     SpecialistFactObservation,
+    SpecialistFundamentalObservation,
     SpecialistInterpretation,
     SpecialistLifecycleObservation,
     SpecialistMacroObservation,
@@ -103,6 +106,9 @@ class BaseAgent(ABC):
         positioning_count = sum(
             len(series.observations) for series in context.evidence.positioning_series
         )
+        fundamental_count = sum(
+            len(series.observations) for series in context.evidence.fundamental_series
+        )
         if (
             market_count == 0
             and news_count == 0
@@ -110,6 +116,7 @@ class BaseAgent(ABC):
             and economic_count == 0
             and macro_count == 0
             and positioning_count == 0
+            and fundamental_count == 0
         ):
             return []
 
@@ -125,6 +132,8 @@ class BaseAgent(ABC):
             assignment += f" Macro series assigned: {macro_count}."
         if positioning_count:
             assignment += f" Positioning observations assigned: {positioning_count}."
+        if fundamental_count:
+            assignment += f" Fundamental observations assigned: {fundamental_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -207,6 +216,7 @@ class BaseAgent(ABC):
         economic_observations: tuple[SpecialistEconomicObservation, ...] = (),
         macro_observations: tuple[SpecialistMacroObservation, ...] = (),
         positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
+        fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -250,6 +260,7 @@ class BaseAgent(ABC):
             economic_observations=economic_observations,
             macro_observations=macro_observations,
             positioning_observations=positioning_observations,
+            fundamental_observations=fundamental_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -359,6 +370,30 @@ class BaseAgent(ABC):
         return tuple(BaseAgent.positioning_reference(item) for item in evidence.observations)
 
     @staticmethod
+    def fundamental_reference(
+        evidence: FundamentalObservationEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.observation_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=(
+                evidence.published_at
+                or evidence.filed_at
+                or evidence.reported_at
+                or evidence.vintage_at
+                or evidence.received_at
+            ),
+            symbol=None,
+        )
+
+    @staticmethod
+    def fundamental_series_references(
+        evidence: FundamentalSeriesEvidence,
+    ) -> tuple[SpecialistEvidenceReference, ...]:
+        return tuple(BaseAgent.fundamental_reference(item) for item in evidence.observations)
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -399,6 +434,10 @@ class BaseAgent(ABC):
             reference
             for evidence in context.evidence.positioning_series
             for reference in self.positioning_series_references(evidence)
+        ) + tuple(
+            reference
+            for evidence in context.evidence.fundamental_series
+            for reference in self.fundamental_series_references(evidence)
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

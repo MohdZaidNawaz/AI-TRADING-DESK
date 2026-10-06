@@ -10,6 +10,7 @@ from app.models.specialist_analysis import (
     SpecialistDerivedObservation,
     SpecialistEconomicObservation,
     SpecialistFactObservation,
+    SpecialistFundamentalObservation,
     SpecialistInterpretation,
     SpecialistMacroObservation,
     SpecialistOperationalState,
@@ -134,6 +135,32 @@ def _positioning_observations(
         )
         for series in context.evidence.positioning_series
         for observation in series.observations
+    )
+
+
+def _fundamental_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistFundamentalObservation, ...]:
+    """Preserve typed reported financial values without valuation inference."""
+    return tuple(
+        SpecialistFundamentalObservation(
+            observation_id=evidence.observation_id,
+            series_id=evidence.series_id,
+            series_key=series.key,
+            reference_period=evidence.reference_period,
+            value=evidence.value,
+            observation_version=evidence.observation_version,
+            revision_of_observation_id=evidence.revision_of_observation_id,
+            reported_at=evidence.reported_at,
+            filed_at=evidence.filed_at,
+            published_at=evidence.published_at,
+            vintage_at=evidence.vintage_at,
+            received_at=evidence.received_at,
+            evidence_reference=agent.fundamental_reference(evidence),
+        )
+        for series in context.evidence.fundamental_series
+        for evidence in series.observations
     )
 
 
@@ -557,6 +584,7 @@ class AthenaAnalystAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        has_fundamentals = bool(context.evidence.fundamental_series)
         return self.result(
             summary=f"Prepared a mock fundamental diligence framework for {context.symbol}.",
             findings=[
@@ -564,7 +592,14 @@ class AthenaAnalystAgent(BaseAgent):
                 "Distinguish durable fundamental changes from short-lived narrative catalysts.",
                 *self.evidence_findings(context),
             ],
-            limitations=["No filings, financial statements, estimates, or valuation data was loaded."],
+            limitations=[
+                (
+                    "Reported financial-statement observations are factual only; no valuation, "
+                    "ratio, estimate, comparable, forecast, probability, or trade conclusion was inferred."
+                    if has_fundamentals
+                    else "No filings, financial statements, estimates, or valuation data was loaded."
+                )
+            ],
             confidence=0.5,
         )
 
@@ -578,6 +613,7 @@ class AthenaAnalystAgent(BaseAgent):
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
         facts = _fundamental_facts(self, context)
+        fundamentals = _fundamental_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -586,12 +622,31 @@ class AthenaAnalystAgent(BaseAgent):
             result=result,
             stance=SpecialistStance.INSUFFICIENT_DATA,
             thesis=(
-                "No verified valuation, financial-statement, estimate, or comparable-company data is "
-                "available for a fundamental conclusion."
+                (
+                    "Reported financial-statement observations are retained as factual context only and "
+                    "do not establish valuation, financial quality, a forecast, or a directional conclusion."
+                    if fundamentals
+                    else "No verified valuation, financial-statement, estimate, or comparable-company data is "
+                    "available for a fundamental conclusion."
+                )
             ),
             fact_observations=facts,
+            fundamental_observations=fundamentals,
             interpretations=(
                 SpecialistInterpretation(
+                    statement=(
+                        "Reported accounting values preserve statement, fiscal-period, unit, and revision "
+                        "context without calculating valuation ratios, financial ratios, estimates, forecasts, "
+                        "probabilities, trade direction, or trade parameters."
+                    ),
+                    evidence_references=tuple(
+                        reference
+                        for observation in fundamentals
+                        for reference in (observation.evidence_reference,)
+                    ),
+                )
+                if fundamentals
+                else SpecialistInterpretation(
                     statement=(
                         "A normalized fundamental-update event can be recorded, but it is insufficient "
                         "on its own for valuation or financial-quality analysis."

@@ -12,6 +12,7 @@ from app.models.market_series import NormalizedMarketBar
 from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservation
 from app.models.positioning import PositioningSource, NormalizedPositioningObservation
+from app.models.fundamentals import FundamentalSource, NormalizedFundamentalObservation
 
 
 @runtime_checkable
@@ -73,6 +74,17 @@ class PositioningObservationConsumer(Protocol):
         """Pass one immutable observation to the positioning evidence store."""
 
 
+@runtime_checkable
+class FundamentalObservationConsumer(Protocol):
+    """Stages financial-statement evidence without provider-specific parsing."""
+
+    def ingest_fundamental_observation(
+        self,
+        observation: NormalizedFundamentalObservation,
+    ) -> object:
+        """Pass one immutable observation to the fundamental evidence store."""
+
+
 class MarketDataClient(Protocol):
     """Retrieves a provider payload without exposing provider details downstream."""
 
@@ -108,3 +120,13 @@ class PositioningConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedPositioningObservation:
         """Keep source parsing outside positioning evidence and agent layers."""
+
+
+@runtime_checkable
+class FundamentalSeriesConnector(Protocol):
+    """Future connector boundary for one normalized financial observation."""
+
+    source: FundamentalSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedFundamentalObservation:
+        """Keep source parsing outside fundamental evidence and agent layers."""
