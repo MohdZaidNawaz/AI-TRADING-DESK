@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field, FiniteFloat, field_validator
 
 from app.models.events import AssetClass, DataDomain
+from app.models.risk_assessment import SentinelRiskAssessment
 from app.models.schemas import APIModel, AnalyzeResponse
 from app.models.specialist_analysis import SpecialistStance
 from app.models.trade_thesis import MasterTradeThesisReference
@@ -212,6 +213,10 @@ class SentinelDecision(ProposalModel):
     evaluated_at: datetime
     expires_at: datetime | None = None
     policy_version: str = Field(min_length=1, max_length=80)
+    policy_id: str = Field(min_length=1, max_length=120)
+    policy_fingerprint: str = Field(min_length=64, max_length=64)
+    assessment_id: str = Field(min_length=1, max_length=160)
+    assessment_fingerprint: str = Field(min_length=64, max_length=64)
     approval_id: str | None = Field(default=None, max_length=120)
 
     @field_validator("evaluated_at", "expires_at")
@@ -251,3 +256,4 @@ class TradeProposalWorkflowResult(ProposalModel):
     analysis: AnalyzeResponse
     proposal: TradeProposal
     sentinel_decision: SentinelDecision
+    risk_assessment: SentinelRiskAssessment | None = None

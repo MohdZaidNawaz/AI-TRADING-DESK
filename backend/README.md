@@ -793,3 +793,26 @@ $body = @{ symbol = "OANDA:XAUUSD"; event = "price_alert"; price = "2648.32"; ti
 $webhookUrl = "http://127.0.0.1:8000/api/webhooks/tradingview/$($env:TRADINGVIEW_WEBHOOK_SECRET)"
 Invoke-RestMethod -Method Post -Uri $webhookUrl -ContentType "application/json" -Body $body
 ```
+
+## Phase 7A — Versioned Sentinel Policy and Risk Assessment Contracts
+
+Phase 7A records the existing deterministic Sentinel rules in an immutable,
+provider-neutral `SentinelRiskPolicy`. The policy has a deterministic semantic
+fingerprint, an effective interval, an explicit fail-closed missing-data
+strategy, and the existing settings already supplied to Sentinel: market
+evidence age, approval TTL, requested-risk limit, specialist agreement, and
+conflict handling. It introduces no new thresholds.
+
+Each Sentinel evaluation produces an immutable `SentinelRiskAssessment` made
+up of deterministic `RiskCheckResult` artifacts. The assessment preserves the
+policy, proposal, evidence, evaluation-time, and check-result lineage. It does
+not authorize a proposal, create an approval token, determine a trade
+direction, calculate size, or invoke Pilot. `SentinelDecision` remains the
+only final risk decision and now references the policy and assessment
+fingerprints it evaluated.
+
+Phase 7A does not bind Sentinel to a source account or derived portfolio
+metrics (Phase 7B), introduce freshness or news/economic/corporate event-risk
+assessment (Phase 7C), or change the process-local approval lifecycle (Phase
+7D). Sentinel remains the sole approval authority and Pilot remains
+`DISABLED_NO_EXECUTION`.

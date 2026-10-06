@@ -24,15 +24,14 @@ from app.models.proposals import (
     TradeProposalWorkflowResult,
     VerifiedSentinelApproval,
 )
+from app.models.risk_assessment import SentinelRiskAssessment
 from app.models.schemas import AnalyzeResponse
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 from app.models.trade_thesis import MasterTradeThesis
+from app.services.sentinel_policy import build_risk_assessment, policy_from_risk_context
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
-
-
-POLICY_VERSION = "phase3-deterministic-v1"
 
 
 class ApprovalClaimError(ValueError):
@@ -454,28 +453,74 @@ class SentinelRiskGate:
         risk_context: RiskContext | None,
     ) -> SentinelDecision:
         """Return a deterministic approval, rejection, or insufficient-data decision."""
+        decision, _assessment = self.evaluate_with_assessment(
+            proposal=proposal,
+            snapshot=snapshot,
+            risk_context=risk_context,
+        )
+        return decision
+
+    def evaluate_with_assessment(
+        self,
+        *,
+        proposal: TradeProposal,
+        snapshot: EvidenceSnapshot,
+        risk_context: RiskContext | None,
+    ) -> tuple[SentinelDecision, SentinelRiskAssessment]:
+        """Evaluate the existing rules and retain their immutable check trace."""
         fingerprint = proposal_fingerprint(proposal)
         evaluated_at = _evaluation_time(snapshot, risk_context)
-        rejection_reasons = _proposal_snapshot_rejections(proposal, snapshot)
-        rejection_reasons.extend(_parameter_rejections(proposal.parameters))
+        policy = policy_from_risk_context(risk_context)
+        snapshot_rejections = tuple(_proposal_snapshot_rejections(proposal, snapshot))
+        parameter_rejections = tuple(_parameter_rejections(proposal.parameters))
+        symbol_rejections: list[str] = []
         if proposal.symbol is not None and canonical_symbol(proposal.symbol) is None:
-            rejection_reasons.append("invalid_symbol")
+            symbol_rejections.append("invalid_symbol")
         if snapshot.symbol is not None and proposal.symbol is not None and not symbols_match(
             snapshot.symbol,
             proposal.symbol,
         ):
-            rejection_reasons.append("proposal_symbol_does_not_match_evidence")
+            symbol_rejections.append("proposal_symbol_does_not_match_evidence")
 
-        missing = _missing_requirements(
+        missing = tuple(_missing_requirements(
             proposal=proposal,
             snapshot=snapshot,
             risk_context=risk_context,
             evaluated_at=evaluated_at,
-        )
+        ))
 
+        risk_limit_rejections: tuple[str, ...] = ()
+        signal_rejections: tuple[str, ...] = ()
         if risk_context is not None and proposal.parameters is not None:
-            rejection_reasons.extend(_risk_limit_rejections(proposal.parameters, risk_context))
-            rejection_reasons.extend(_signal_rejections(proposal.parameters, risk_context))
+            risk_limit_rejections = tuple(_risk_limit_rejections(proposal.parameters, risk_context))
+            signal_rejections = tuple(_signal_rejections(proposal.parameters, risk_context))
+
+        policy_check = policy.is_effective_at(evaluated_at)
+        policy_rejections = () if policy_check else ("policy_not_effective",)
+        rejection_reasons = [
+            *snapshot_rejections,
+            *parameter_rejections,
+            *symbol_rejections,
+            *risk_limit_rejections,
+            *signal_rejections,
+            *policy_rejections,
+        ]
+        bundle = build_evidence_bundle(snapshot)
+        assessment = build_risk_assessment(
+            policy=policy,
+            proposal=proposal,
+            proposal_fingerprint=fingerprint,
+            evidence_fingerprint=bundle.fingerprint,
+            evidence_references=bundle.references,
+            evaluated_at=evaluated_at,
+            risk_context=risk_context,
+            snapshot_rejections=snapshot_rejections,
+            parameter_rejections=parameter_rejections,
+            symbol_rejections=tuple(symbol_rejections),
+            risk_limit_rejections=risk_limit_rejections,
+            signal_rejections=signal_rejections,
+            missing_requirements=missing,
+        )
 
         if rejection_reasons:
             decision_status = SentinelDecisionStatus.REJECTED
@@ -503,7 +548,11 @@ class SentinelRiskGate:
                     "missing": missing,
                     "evidence_fingerprint": proposal.evidence_fingerprint,
                     "evaluated_at": evaluated_at.isoformat(),
-                    "policy_version": POLICY_VERSION,
+                    "policy_id": policy.policy_id,
+                    "policy_version": policy.policy_version,
+                    "policy_fingerprint": policy.fingerprint,
+                    "assessment_id": assessment.assessment_id,
+                    "assessment_fingerprint": assessment.fingerprint,
                 }
             ),
             proposal_id=proposal.proposal_id,
@@ -515,9 +564,13 @@ class SentinelRiskGate:
             evidence_fingerprint=proposal.evidence_fingerprint,
             evaluated_at=evaluated_at,
             expires_at=expires_at,
-            policy_version=POLICY_VERSION,
+            policy_version=policy.policy_version,
+            policy_id=policy.policy_id,
+            policy_fingerprint=policy.fingerprint,
+            assessment_id=assessment.assessment_id,
+            assessment_fingerprint=assessment.fingerprint,
         )
-        return self._registry._record_approved_decision(proposal, decision)
+        return self._registry._record_approved_decision(proposal, decision), assessment
 
 
 def transition_proposal(
@@ -581,7 +634,7 @@ class TradeProposalWorkflow:
             master_thesis=master_thesis,
         )
         pending = draft.model_copy(update={"status": TradeProposalStatus.PENDING_RISK})
-        decision = self._sentinel_gate.evaluate(
+        decision, assessment = self._sentinel_gate.evaluate_with_assessment(
             proposal=pending,
             snapshot=snapshot,
             risk_context=risk_context,
@@ -590,6 +643,7 @@ class TradeProposalWorkflow:
             analysis=analysis,
             proposal=transition_proposal(pending, decision),
             sentinel_decision=decision,
+            risk_assessment=assessment,
         )
 
     def run_explicit(
@@ -608,7 +662,7 @@ class TradeProposalWorkflow:
         """
         if proposal.analysis_id != analysis.analysis_id:
             raise ValueError("Explicit proposal must match the supplied analysis ID")
-        decision = self._sentinel_gate.evaluate(
+        decision, assessment = self._sentinel_gate.evaluate_with_assessment(
             proposal=proposal,
             snapshot=snapshot,
             risk_context=risk_context,
@@ -617,6 +671,7 @@ class TradeProposalWorkflow:
             analysis=analysis,
             proposal=transition_proposal(proposal, decision),
             sentinel_decision=decision,
+            risk_assessment=assessment,
         )
 
 

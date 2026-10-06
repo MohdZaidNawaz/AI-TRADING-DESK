@@ -233,6 +233,34 @@ def test_master_creates_a_non_executable_draft_without_inventing_trade_parameter
     assert result.proposal.parameters.direction is None
     assert result.proposal.parameters.stop_loss is None
     assert result.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
+    assert result.risk_assessment is not None
+    assert result.sentinel_decision.policy_id == result.risk_assessment.policy_id
+    assert result.sentinel_decision.policy_fingerprint == result.risk_assessment.policy_fingerprint
+    assert result.sentinel_decision.assessment_id == result.risk_assessment.assessment_id
+    assert result.sentinel_decision.assessment_fingerprint == result.risk_assessment.fingerprint
+
+
+def test_sentinel_decision_references_non_authorizing_policy_and_assessment() -> None:
+    snapshot = _snapshot()
+    proposal = _proposal(snapshot=snapshot)
+    decision, assessment = SentinelRiskGate().evaluate_with_assessment(
+        proposal=proposal,
+        snapshot=snapshot,
+        risk_context=_risk_context(),
+    )
+
+    assert decision.decision is SentinelDecisionStatus.APPROVED
+    assert decision.policy_id == "sentinel-risk-policy"
+    assert decision.policy_version == "phase7a-deterministic-v1"
+    assert decision.policy_fingerprint == assessment.policy_fingerprint
+    assert decision.assessment_id == assessment.assessment_id
+    assert decision.assessment_fingerprint == assessment.fingerprint
+    assert assessment.overall_status.value == "pass"
+    assert any(
+        item.reference_type == "legacy_risk_context"
+        for check in assessment.checks
+        for item in check.input_references
+    )
 
 
 def test_derived_features_do_not_create_trade_parameters_or_satisfy_sentinel() -> None:
