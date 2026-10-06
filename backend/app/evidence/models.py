@@ -76,6 +76,14 @@ from app.models.issuer_reference import (
     IssuerReferenceStatus,
     NormalizedIssuerInstrumentReference,
 )
+from app.models.portfolio_risk import (
+    NormalizedPortfolioRiskSnapshot,
+    PortfolioRiskSource,
+    ReportedAccountState,
+    ReportedPortfolioPosition,
+    ReportedRiskLimit,
+    SourceAccountKey,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1308,6 +1316,65 @@ class IssuerReferenceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PortfolioRiskEvidence:
+    """Safe immutable projection of one source-reported portfolio snapshot."""
+
+    snapshot_id: str
+    source: PortfolioRiskSource
+    account: SourceAccountKey
+    snapshot_occurrence_id: str
+    account_state: ReportedAccountState
+    positions: tuple[ReportedPortfolioPosition, ...]
+    risk_limits: tuple[ReportedRiskLimit, ...]
+    as_of: datetime
+    published_at: datetime | None
+    snapshot_version: int
+    revision_of_snapshot_id: str | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: NormalizedPortfolioRiskSnapshot,
+    ) -> "PortfolioRiskEvidence":
+        if not isinstance(snapshot, NormalizedPortfolioRiskSnapshot):
+            raise TypeError("snapshot must be a NormalizedPortfolioRiskSnapshot")
+        return cls(
+            snapshot_id=snapshot.snapshot_id,
+            source=snapshot.source,
+            account=snapshot.account,
+            snapshot_occurrence_id=snapshot.snapshot_occurrence_id,
+            account_state=snapshot.account_state,
+            positions=snapshot.positions,
+            risk_limits=snapshot.risk_limits,
+            as_of=_as_utc(snapshot.as_of),
+            published_at=(
+                _as_utc(snapshot.published_at) if snapshot.published_at is not None else None
+            ),
+            snapshot_version=snapshot.snapshot_version,
+            revision_of_snapshot_id=snapshot.revision_of_snapshot_id,
+            received_at=_as_utc(snapshot.received_at),
+            provenance=_provenance_from_source(
+                event_id=snapshot.snapshot_id,
+                source=snapshot.source,
+                event_timestamp=snapshot.published_at or snapshot.as_of,
+                received_at=snapshot.received_at,
+            ),
+            fingerprint=snapshot.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioRiskEvidenceSnapshot:
+    """Bounded immutable output from the portfolio-risk store."""
+
+    snapshots: tuple[PortfolioRiskEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSnapshot:
     """A deterministic, immutable view of evidence available to an analysis run."""
 
@@ -1321,6 +1388,7 @@ class EvidenceSnapshot:
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
+    portfolio_risk_snapshots: tuple[PortfolioRiskEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -1338,6 +1406,7 @@ class AgentEvidence:
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
+    portfolio_risk_snapshots: tuple[PortfolioRiskEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 

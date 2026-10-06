@@ -19,6 +19,10 @@ from app.models.issuer_reference import (
     IssuerReferenceSource,
     NormalizedIssuerInstrumentReference,
 )
+from app.models.portfolio_risk import (
+    NormalizedPortfolioRiskSnapshot,
+    PortfolioRiskSource,
+)
 
 
 @runtime_checkable
@@ -196,3 +200,24 @@ class IssuerReferenceConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedIssuerInstrumentReference:
         """Keep source parsing outside reference evidence and specialist layers."""
+
+
+@runtime_checkable
+class PortfolioRiskConsumer(Protocol):
+    """Stages source-reported account/portfolio context without provider parsing."""
+
+    def ingest_portfolio_risk_snapshot(
+        self,
+        snapshot: NormalizedPortfolioRiskSnapshot,
+    ) -> object:
+        """Pass one immutable context snapshot to the dedicated bounded store."""
+
+
+@runtime_checkable
+class PortfolioRiskConnector(Protocol):
+    """Future connector boundary for one normalized portfolio-risk snapshot."""
+
+    source: PortfolioRiskSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedPortfolioRiskSnapshot:
+        """Keep source parsing outside portfolio evidence and specialist layers."""

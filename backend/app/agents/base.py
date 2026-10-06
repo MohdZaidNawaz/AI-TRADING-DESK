@@ -20,6 +20,7 @@ from app.evidence.models import (
     NewsEvidence,
     PositioningObservationEvidence,
     PositioningSeriesEvidence,
+    PortfolioRiskEvidence,
     canonical_symbol,
 )
 from app.models.derived_features import DerivedMarketFeature
@@ -40,6 +41,8 @@ from app.models.specialist_analysis import (
     SpecialistMacroObservation,
     SpecialistOperationalState,
     SpecialistPositioningObservation,
+    SpecialistPortfolioRiskObservation,
+    SpecialistPortfolioContextState,
     SpecialistStance,
     create_specialist_analysis,
 )
@@ -121,6 +124,7 @@ class BaseAgent(ABC):
         )
         corporate_action_count = len(context.evidence.corporate_actions)
         issuer_reference_count = len(context.evidence.issuer_references)
+        portfolio_risk_count = len(context.evidence.portfolio_risk_snapshots)
         if (
             market_count == 0
             and news_count == 0
@@ -132,6 +136,7 @@ class BaseAgent(ABC):
             and estimate_count == 0
             and corporate_action_count == 0
             and issuer_reference_count == 0
+            and portfolio_risk_count == 0
         ):
             return []
 
@@ -155,6 +160,8 @@ class BaseAgent(ABC):
             assignment += f" Corporate actions assigned: {corporate_action_count}."
         if issuer_reference_count:
             assignment += f" Issuer reference profiles assigned: {issuer_reference_count}."
+        if portfolio_risk_count:
+            assignment += f" Portfolio-risk snapshots assigned: {portfolio_risk_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -241,6 +248,8 @@ class BaseAgent(ABC):
         estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
         corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
         issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = (),
+        portfolio_risk_observations: tuple[SpecialistPortfolioRiskObservation, ...] = (),
+        portfolio_context_state: SpecialistPortfolioContextState | None = None,
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -266,6 +275,12 @@ class BaseAgent(ABC):
             )
         if self.agent_id == "pilot_execution" and operational_state is None:
             operational_state = SpecialistOperationalState.DISABLED_NO_EXECUTION
+        if self.agent_id == "sentinel_risk_officer" and portfolio_context_state is None:
+            portfolio_context_state = (
+                SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_AVAILABLE
+                if portfolio_risk_observations
+                else SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_INSUFFICIENT
+            )
 
         return create_specialist_analysis(
             parent_analysis_id=parent_analysis_id,
@@ -288,6 +303,8 @@ class BaseAgent(ABC):
             estimate_observations=estimate_observations,
             corporate_action_observations=corporate_action_observations,
             issuer_reference_observations=issuer_reference_observations,
+            portfolio_risk_observations=portfolio_risk_observations,
+            portfolio_context_state=portfolio_context_state,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -463,6 +480,18 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
+    def portfolio_risk_reference(
+        evidence: PortfolioRiskEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.snapshot_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.published_at or evidence.as_of,
+            symbol=None,
+        )
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -517,6 +546,9 @@ class BaseAgent(ABC):
         ) + tuple(
             self.issuer_reference_reference(evidence)
             for evidence in context.evidence.issuer_references
+        ) + tuple(
+            self.portfolio_risk_reference(evidence)
+            for evidence in context.evidence.portfolio_risk_snapshots
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

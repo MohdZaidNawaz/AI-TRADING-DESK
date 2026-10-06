@@ -33,6 +33,7 @@ from app.models.fundamentals import NormalizedFundamentalObservation
 from app.models.estimates import NormalizedEstimateObservation
 from app.models.corporate_actions import NormalizedCorporateAction
 from app.models.issuer_reference import NormalizedIssuerInstrumentReference
+from app.models.portfolio_risk import NormalizedPortfolioRiskSnapshot
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
@@ -423,6 +424,13 @@ class FridayCore:
     ) -> object:
         """Stage source-reported issuer/listing context without analysis or execution."""
         return self._evidence_store.ingest_issuer_reference(profile)
+
+    def ingest_portfolio_risk_snapshot(
+        self,
+        snapshot: NormalizedPortfolioRiskSnapshot,
+    ) -> object:
+        """Stage source-reported portfolio context without analysis or execution."""
+        return self._evidence_store.ingest_portfolio_risk_snapshot(snapshot)
 
     @property
     def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:

@@ -47,6 +47,12 @@ from app.models.issuer_reference import (
     IssuerInstrumentReferenceKey,
     IssuerReferenceStatus,
 )
+from app.models.portfolio_risk import (
+    ReportedAccountState,
+    ReportedPortfolioPosition,
+    ReportedRiskLimit,
+    SourceAccountKey,
+)
 from app.models.schemas import APIModel
 
 
@@ -76,6 +82,13 @@ class SpecialistOperationalState(str, Enum):
     """A non-authorizing operational state for a specialist capability."""
 
     DISABLED_NO_EXECUTION = "disabled_no_execution"
+
+
+class SpecialistPortfolioContextState(str, Enum):
+    """Factual availability state; it is not a risk calculation or decision."""
+
+    PORTFOLIO_CONTEXT_AVAILABLE = "portfolio_context_available"
+    PORTFOLIO_CONTEXT_INSUFFICIENT = "portfolio_context_insufficient"
 
 
 class SpecialistConsensus(str, Enum):
@@ -594,6 +607,62 @@ class SpecialistIssuerReferenceObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistPortfolioRiskObservation(SpecialistAnalysisModel):
+    """Typed source-reported portfolio facts retained only by Sentinel."""
+
+    snapshot_id: str = Field(min_length=1, max_length=160)
+    account: SourceAccountKey
+    snapshot_occurrence_id: str = Field(min_length=1, max_length=160)
+    account_state: ReportedAccountState
+    positions: tuple[ReportedPortfolioPosition, ...] = Field(default=(), max_length=250)
+    risk_limits: tuple[ReportedRiskLimit, ...] = Field(default=(), max_length=250)
+    as_of: datetime
+    published_at: datetime | None = None
+    snapshot_version: int = Field(ge=1)
+    revision_of_snapshot_id: str | None = Field(default=None, max_length=160)
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("as_of", "published_at")
+    @classmethod
+    def normalize_portfolio_risk_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("portfolio-risk observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @field_validator("positions")
+    @classmethod
+    def order_positions(
+        cls,
+        values: tuple[ReportedPortfolioPosition, ...],
+    ) -> tuple[ReportedPortfolioPosition, ...]:
+        return tuple(sorted(values, key=lambda value: value.source_position_id))
+
+    @field_validator("risk_limits")
+    @classmethod
+    def order_risk_limits(
+        cls,
+        values: tuple[ReportedRiskLimit, ...],
+    ) -> tuple[ReportedRiskLimit, ...]:
+        return tuple(sorted(values, key=lambda value: value.source_limit_id))
+
+    @model_validator(mode="after")
+    def validate_portfolio_risk_reference(self) -> "SpecialistPortfolioRiskObservation":
+        if self.evidence_reference.domain is not DataDomain.ALTERNATIVE_DATA:
+            raise ValueError("portfolio-risk observations require alternative_data evidence")
+        if self.evidence_reference.event_id != self.snapshot_id:
+            raise ValueError("portfolio-risk identity must match its evidence reference")
+        if self.snapshot_version == 1 and self.revision_of_snapshot_id is not None:
+            raise ValueError("version-one portfolio snapshots cannot declare a revision link")
+        if self.snapshot_version > 1 and self.revision_of_snapshot_id is None:
+            raise ValueError("revised portfolio snapshots require revision_of_snapshot_id")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -663,6 +732,11 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         default=(),
         max_length=250,
     )
+    portfolio_risk_observations: tuple[SpecialistPortfolioRiskObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    portfolio_context_state: SpecialistPortfolioContextState | None = None
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = Field(
         default=(),
         max_length=250,
@@ -841,6 +915,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("portfolio_risk_observations")
+    @classmethod
+    def order_portfolio_risk_observations(
+        cls,
+        values: tuple[SpecialistPortfolioRiskObservation, ...],
+    ) -> tuple[SpecialistPortfolioRiskObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.account.account_id,
+                    item.snapshot_occurrence_id,
+                    item.as_of,
+                    item.snapshot_version,
+                    item.snapshot_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -928,6 +1021,23 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             raise ValueError("issuer-reference observations must reference assigned supporting evidence")
         if self.agent_id not in {"athena_analyst", "scout_recon"} and self.issuer_reference_observations:
             raise ValueError("only Athena and Scout may retain issuer-reference observations")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.portfolio_risk_observations
+        ):
+            raise ValueError("portfolio-risk observations must reference assigned supporting evidence")
+        if self.agent_id != "sentinel_risk_officer" and self.portfolio_risk_observations:
+            raise ValueError("only Sentinel may retain portfolio-risk observations")
+        if self.agent_id == "sentinel_risk_officer":
+            expected_state = (
+                SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_AVAILABLE
+                if self.portfolio_risk_observations
+                else SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_INSUFFICIENT
+            )
+            if self.portfolio_context_state is not expected_state:
+                raise ValueError("Sentinel portfolio_context_state must match assigned portfolio evidence")
+        elif self.portfolio_context_state is not None:
+            raise ValueError("portfolio_context_state is reserved for Sentinel Risk Officer")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -1027,6 +1137,8 @@ def create_specialist_analysis(
     estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
     corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
     issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = (),
+    portfolio_risk_observations: tuple[SpecialistPortfolioRiskObservation, ...] = (),
+    portfolio_context_state: SpecialistPortfolioContextState | None = None,
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -1056,6 +1168,8 @@ def create_specialist_analysis(
         estimate_observations=estimate_observations,
         corporate_action_observations=corporate_action_observations,
         issuer_reference_observations=issuer_reference_observations,
+        portfolio_risk_observations=portfolio_risk_observations,
+        portfolio_context_state=portfolio_context_state,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

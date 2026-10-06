@@ -555,6 +555,51 @@ entity-resolution policy, ticker changes, valuation, comparables, and issuer
 lifecycle semantics. This foundation intentionally adds none of them. The
 public `/api/analyze` schema and frontend remain unchanged.
 
+## Phase 5B-9 provider-neutral portfolio and account-risk context evidence
+
+Phase 5B-9 adds a distinct internal path for source-reported account state,
+positions, and explicit portfolio/account limits. It is evidence only, not a
+broker integration or an account-management adapter:
+
+```text
+future portfolio-risk connector
+    -> immutable NormalizedPortfolioRiskSnapshot
+    -> bounded process-local PortfolioRiskStore
+    -> immutable EvidenceSnapshot.portfolio_risk_snapshots
+    -> EvidenceRouter
+    -> Sentinel Risk Officer factual specialist artifact
+```
+
+Each snapshot is source-scoped to a source account identity and may preserve
+explicitly reported balance, equity, funds, margin, P&L, position side,
+quantity, source-reported prices, and source-reported limits. Monetary values
+use typed finite decimal `EconomicValue` values; no binary floating-point
+financial data is used. Source account identities are never reconciled across
+providers. Raw provider payloads, credentials, secrets, authentication headers,
+and credential-bearing URLs are excluded.
+
+The store is thread-safe and bounded by 100 accounts, 500 snapshot occurrences
+per account, five retained versions per occurrence, and an independently
+bounded conflict-fingerprint registry. Exact duplicates are idempotent, while
+conflicting content for the same source/account/occurrence/version is rejected
+within its deterministic metadata-retention horizon. `received_at` is retained
+for provenance but excluded from semantic identity and fingerprints.
+
+Sentinel Risk Officer is the sole typed consumer. Ledger The Book receives
+provenance references only; Atlas, Capitol, Scout, Athena, Chartist, Oracle,
+and Pilot receive no portfolio-risk values. Reported portfolio evidence can
+satisfy only Sentinel's existing `portfolio_context` availability requirement.
+It cannot replace market evidence, freshness, sizing policy, specialist
+agreement, or event/news-risk assessment, and it cannot independently approve
+a proposal.
+
+This phase does not calculate exposure, leverage, drawdown, margin utilization,
+portfolio heat, correlation, concentration, sizing, liquidation risk, or stop
+distance. It produces no trade direction, trade parameters, approval decision,
+or execution instruction. Pilot remains `DISABLED_NO_EXECUTION`; no MT5,
+broker SDK, provider, API route, credential, frontend, or execution capability
+is introduced.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

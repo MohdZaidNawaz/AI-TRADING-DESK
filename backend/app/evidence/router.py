@@ -53,6 +53,7 @@ _ATHENA_ESTIMATE_OBSERVATION_LIMIT = 100
 _CORPORATE_ACTION_LIMIT = 100
 _CHARTIST_CORPORATE_ACTION_LIMIT = 50
 _ISSUER_REFERENCE_LIMIT = 100
+_PORTFOLIO_RISK_SNAPSHOT_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -158,6 +159,14 @@ class EvidenceRouter:
             else ()
         )
 
+        # Source-reported account and portfolio context is a dedicated risk
+        # domain. Sentinel alone receives typed values; Ledger has provenance
+        # only below. It is not market evidence and never reaches Pilot.
+        bounded_portfolio_risk = snapshot.portfolio_risk_snapshots[:_PORTFOLIO_RISK_SNAPSHOT_LIMIT]
+        portfolio_risk_snapshots = (
+            bounded_portfolio_risk if agent_id == "sentinel_risk_officer" else ()
+        )
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -213,6 +222,8 @@ class EvidenceRouter:
             action.provenance for action in bounded_corporate_actions
         ) + tuple(
             profile.provenance for profile in bounded_issuer_references
+        ) + tuple(
+            portfolio.provenance for portfolio in bounded_portfolio_risk
             )
 
         return AgentEvidence(
@@ -226,6 +237,7 @@ class EvidenceRouter:
             estimate_series=estimate_series,
             corporate_actions=corporate_actions,
             issuer_references=issuer_references,
+            portfolio_risk_snapshots=portfolio_risk_snapshots,
             provenance=provenance,
         )
 

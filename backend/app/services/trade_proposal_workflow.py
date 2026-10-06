@@ -199,6 +199,21 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(reference_time)
 
+    # Source-reported portfolio context is traceability-only. It remains
+    # distinct from market evidence and does not calculate risk or approve.
+    for portfolio_snapshot in snapshot.portfolio_risk_snapshots:
+        reference_time = portfolio_snapshot.published_at or portfolio_snapshot.as_of
+        references.append(
+            EvidenceReference(
+                event_id=portfolio_snapshot.snapshot_id,
+                source_id=portfolio_snapshot.provenance.source_id,
+                domain=portfolio_snapshot.provenance.domain,
+                timestamp=reference_time,
+                symbol=None,
+            )
+        )
+        created_at_values.append(reference_time)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -282,6 +297,15 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 "profile_version": profile.profile_version,
             }
             for profile in snapshot.issuer_references
+        ]
+    if snapshot.portfolio_risk_snapshots:
+        fingerprint_input["portfolio_risk_snapshots"] = [
+            {
+                "snapshot_id": item.snapshot_id,
+                "fingerprint": item.fingerprint,
+                "snapshot_version": item.snapshot_version,
+            }
+            for item in snapshot.portfolio_risk_snapshots
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))
@@ -580,17 +604,19 @@ def _missing_requirements(
     if not market_evidence:
         missing.append("market_evidence")
 
+    has_reported_portfolio_context = bool(snapshot.portfolio_risk_snapshots)
     if risk_context is None:
         missing.extend(
             (
                 "risk_context",
                 "market_freshness_policy",
-                "portfolio_context",
                 "sizing_limit",
                 "structured_specialist_agreement",
                 "approval_ttl",
             )
         )
+        if not has_reported_portfolio_context:
+            missing.append("portfolio_context")
         if snapshot.news_evidence:
             missing.append("news_risk_assessment")
         return missing
@@ -604,7 +630,7 @@ def _missing_requirements(
         newest_market_time = max(evidence.timestamp for evidence in market_evidence)
         if (evaluated_at - newest_market_time).total_seconds() > risk_context.max_market_evidence_age_seconds:
             missing.append("fresh_market_evidence")
-    if risk_context.portfolio is None:
+    if risk_context.portfolio is None and not has_reported_portfolio_context:
         missing.append("portfolio_context")
     if risk_context.max_risk_fraction is None:
         missing.append("sizing_limit")

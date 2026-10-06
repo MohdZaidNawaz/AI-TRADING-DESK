@@ -11,6 +11,7 @@ from app.evidence.models import (
     EvidenceSnapshot,
     FundamentalSeriesEvidence,
     IssuerReferenceEvidence,
+    PortfolioRiskEvidence,
     MarketEvidence,
     MarketSeriesEvidence,
     MacroSeriesEvidence,
@@ -21,6 +22,7 @@ from app.evidence.models import (
 )
 from app.evidence.corporate_action_store import CorporateActionStore
 from app.evidence.issuer_reference_store import IssuerReferenceStore
+from app.evidence.portfolio_risk_store import PortfolioRiskStore
 from app.evidence.economic_store import EconomicEventStore
 from app.evidence.fundamental_store import FundamentalStore
 from app.evidence.estimate_store import EstimateStore
@@ -36,6 +38,7 @@ from app.models.fundamentals import NormalizedFundamentalObservation
 from app.models.estimates import NormalizedEstimateObservation
 from app.models.corporate_actions import NormalizedCorporateAction
 from app.models.issuer_reference import NormalizedIssuerInstrumentReference
+from app.models.portfolio_risk import NormalizedPortfolioRiskSnapshot
 
 
 class EvidenceStore:
@@ -71,6 +74,9 @@ class EvidenceStore:
         max_issuer_reference_instruments: int = 100,
         max_issuer_reference_profiles_per_instrument: int = 5,
         max_issuer_reference_versions_per_profile: int = 5,
+        max_portfolio_risk_accounts: int = 100,
+        max_portfolio_risk_occurrences_per_account: int = 500,
+        max_portfolio_risk_versions_per_occurrence: int = 5,
         market_series_store: MarketSeriesStore | None = None,
         economic_event_store: EconomicEventStore | None = None,
         macro_series_store: MacroSeriesStore | None = None,
@@ -79,6 +85,7 @@ class EvidenceStore:
         estimate_store: EstimateStore | None = None,
         corporate_action_store: CorporateActionStore | None = None,
         issuer_reference_store: IssuerReferenceStore | None = None,
+        portfolio_risk_store: PortfolioRiskStore | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
@@ -133,6 +140,15 @@ class EvidenceStore:
             max_issuer_reference_versions_per_profile,
             "max_issuer_reference_versions_per_profile",
         )
+        _validate_limit(max_portfolio_risk_accounts, "max_portfolio_risk_accounts")
+        _validate_limit(
+            max_portfolio_risk_occurrences_per_account,
+            "max_portfolio_risk_occurrences_per_account",
+        )
+        _validate_limit(
+            max_portfolio_risk_versions_per_occurrence,
+            "max_portfolio_risk_versions_per_occurrence",
+        )
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
@@ -173,6 +189,11 @@ class EvidenceStore:
             max_instruments=max_issuer_reference_instruments,
             max_profiles_per_instrument=max_issuer_reference_profiles_per_instrument,
             max_versions_per_profile=max_issuer_reference_versions_per_profile,
+        )
+        self._portfolio_risk_store = portfolio_risk_store or PortfolioRiskStore(
+            max_accounts=max_portfolio_risk_accounts,
+            max_occurrences_per_account=max_portfolio_risk_occurrences_per_account,
+            max_versions_per_occurrence=max_portfolio_risk_versions_per_occurrence,
         )
         self._lock = RLock()
 
@@ -263,6 +284,14 @@ class EvidenceStore:
         with self._lock:
             return self._issuer_reference_store.ingest(profile)
 
+    def ingest_portfolio_risk_snapshot(
+        self,
+        snapshot: NormalizedPortfolioRiskSnapshot,
+    ) -> PortfolioRiskEvidence | None:
+        """Retain one source-reported account/portfolio context snapshot."""
+        with self._lock:
+            return self._portfolio_risk_store.ingest(snapshot)
+
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
         requested_symbol = canonical_symbol(symbol)
@@ -295,6 +324,7 @@ class EvidenceStore:
             estimate_series = self._estimate_store.snapshot(symbol=requested_symbol).series
             corporate_actions = self._corporate_action_store.snapshot(symbol=requested_symbol).actions
             issuer_references = self._issuer_reference_store.snapshot(symbol=requested_symbol).profiles
+            portfolio_risk_snapshots = self._portfolio_risk_store.snapshot().snapshots
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
@@ -307,6 +337,7 @@ class EvidenceStore:
             estimate_series=estimate_series,
             corporate_actions=corporate_actions,
             issuer_references=issuer_references,
+            portfolio_risk_snapshots=portfolio_risk_snapshots,
             symbol=requested_symbol,
         )
 
@@ -416,6 +447,15 @@ class EvidenceStore:
     @property
     def issuer_reference_store(self) -> IssuerReferenceStore:
         return self._issuer_reference_store
+
+    @property
+    def portfolio_risk_snapshot_count(self) -> int:
+        with self._lock:
+            return self._portfolio_risk_store.snapshot_count
+
+    @property
+    def portfolio_risk_store(self) -> PortfolioRiskStore:
+        return self._portfolio_risk_store
 
     @staticmethod
     def _trim(

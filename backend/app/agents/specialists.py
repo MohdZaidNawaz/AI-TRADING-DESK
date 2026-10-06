@@ -17,6 +17,8 @@ from app.models.specialist_analysis import (
     SpecialistInterpretation,
     SpecialistMacroObservation,
     SpecialistOperationalState,
+    SpecialistPortfolioContextState,
+    SpecialistPortfolioRiskObservation,
     SpecialistPositioningObservation,
     SpecialistStance,
 )
@@ -246,6 +248,29 @@ def _issuer_reference_observations(
             evidence_reference=agent.issuer_reference_reference(evidence),
         )
         for evidence in context.evidence.issuer_references
+    )
+
+
+def _portfolio_risk_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistPortfolioRiskObservation, ...]:
+    """Preserve reported account context without calculating portfolio risk."""
+    return tuple(
+        SpecialistPortfolioRiskObservation(
+            snapshot_id=evidence.snapshot_id,
+            account=evidence.account,
+            snapshot_occurrence_id=evidence.snapshot_occurrence_id,
+            account_state=evidence.account_state,
+            positions=evidence.positions,
+            risk_limits=evidence.risk_limits,
+            as_of=evidence.as_of,
+            published_at=evidence.published_at,
+            snapshot_version=evidence.snapshot_version,
+            revision_of_snapshot_id=evidence.revision_of_snapshot_id,
+            evidence_reference=agent.portfolio_risk_reference(evidence),
+        )
+        for evidence in context.evidence.portfolio_risk_snapshots
     )
 
 
@@ -985,6 +1010,7 @@ class SentinelRiskOfficerAgent(BaseAgent):
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
         facts = _market_context_facts(self, context) + _news_context_facts(self, context)
+        portfolio_risk = _portfolio_risk_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -1002,11 +1028,18 @@ class SentinelRiskOfficerAgent(BaseAgent):
                 context,
                 include_values=False,
             ),
+            portfolio_risk_observations=portfolio_risk,
+            portfolio_context_state=(
+                SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_AVAILABLE
+                if portfolio_risk
+                else SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_INSUFFICIENT
+            ),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "Portfolio, exposure, proposal parameters, explicit risk policy, and required "
-                        "risk assessments remain outside this specialist artifact."
+                        "Reported account state, positions, and source limits are factual context only; "
+                        "no exposure, leverage, drawdown, margin utilization, sizing, or approval "
+                        "calculation is performed in this specialist artifact."
                     )
                 ),
             ),
