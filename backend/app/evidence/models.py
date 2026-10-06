@@ -84,6 +84,7 @@ from app.models.portfolio_risk import (
     ReportedRiskLimit,
     SourceAccountKey,
 )
+from app.models.portfolio_risk_metrics import PortfolioRiskMetric, PortfolioRiskMetricsSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -1375,6 +1376,68 @@ class PortfolioRiskEvidenceSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PortfolioRiskMetricsEvidence:
+    """Safe immutable projection of one deterministic metric calculation set."""
+
+    metrics_snapshot_id: str
+    account: SourceAccountKey
+    source_snapshot_id: str
+    source_snapshot_occurrence_id: str
+    source_snapshot_version: int
+    source_snapshot_fingerprint: str
+    calculation_version: str
+    as_of: datetime
+    calculated_at: datetime
+    metrics: tuple[PortfolioRiskMetric, ...]
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: PortfolioRiskMetricsSnapshot,
+        source_evidence: PortfolioRiskEvidence,
+    ) -> "PortfolioRiskMetricsEvidence":
+        if not isinstance(snapshot, PortfolioRiskMetricsSnapshot):
+            raise TypeError("snapshot must be a PortfolioRiskMetricsSnapshot")
+        if not isinstance(source_evidence, PortfolioRiskEvidence):
+            raise TypeError("source_evidence must be a PortfolioRiskEvidence")
+        if (
+            snapshot.account != source_evidence.account
+            or snapshot.source_snapshot_id != source_evidence.snapshot_id
+            or snapshot.source_snapshot_fingerprint != source_evidence.fingerprint
+        ):
+            raise ValueError("metric snapshot must match its source portfolio evidence")
+        return cls(
+            metrics_snapshot_id=snapshot.metrics_snapshot_id,
+            account=snapshot.account,
+            source_snapshot_id=snapshot.source_snapshot_id,
+            source_snapshot_occurrence_id=snapshot.source_snapshot_occurrence_id,
+            source_snapshot_version=snapshot.source_snapshot_version,
+            source_snapshot_fingerprint=snapshot.source_snapshot_fingerprint,
+            calculation_version=snapshot.calculation_version,
+            as_of=_as_utc(snapshot.as_of),
+            calculated_at=_as_utc(snapshot.calculated_at),
+            metrics=snapshot.metrics,
+            provenance=_provenance_from_source(
+                event_id=snapshot.metrics_snapshot_id,
+                source=source_evidence.source,
+                event_timestamp=snapshot.as_of,
+                received_at=snapshot.calculated_at,
+            ),
+            fingerprint=snapshot.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioRiskMetricsEvidenceSnapshot:
+    """Bounded immutable output from the derived-risk metric store."""
+
+    snapshots: tuple[PortfolioRiskMetricsEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSnapshot:
     """A deterministic, immutable view of evidence available to an analysis run."""
 
@@ -1389,6 +1452,7 @@ class EvidenceSnapshot:
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
     portfolio_risk_snapshots: tuple[PortfolioRiskEvidence, ...] = ()
+    portfolio_risk_metric_snapshots: tuple[PortfolioRiskMetricsEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -1407,6 +1471,7 @@ class AgentEvidence:
     corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     issuer_references: tuple[IssuerReferenceEvidence, ...] = ()
     portfolio_risk_snapshots: tuple[PortfolioRiskEvidence, ...] = ()
+    portfolio_risk_metric_snapshots: tuple[PortfolioRiskMetricsEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -1444,6 +1509,7 @@ def _provenance_from_source(
         | EstimateSource
         | CorporateActionSource
         | PositioningSource
+        | PortfolioRiskSource
     ),
     event_timestamp: datetime,
     received_at: datetime,

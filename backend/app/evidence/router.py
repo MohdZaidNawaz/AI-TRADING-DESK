@@ -54,6 +54,7 @@ _CORPORATE_ACTION_LIMIT = 100
 _CHARTIST_CORPORATE_ACTION_LIMIT = 50
 _ISSUER_REFERENCE_LIMIT = 100
 _PORTFOLIO_RISK_SNAPSHOT_LIMIT = 100
+_PORTFOLIO_RISK_METRIC_SNAPSHOT_LIMIT = 100
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -166,6 +167,14 @@ class EvidenceRouter:
         portfolio_risk_snapshots = (
             bounded_portfolio_risk if agent_id == "sentinel_risk_officer" else ()
         )
+        bounded_portfolio_risk_metrics = snapshot.portfolio_risk_metric_snapshots[
+            :_PORTFOLIO_RISK_METRIC_SNAPSHOT_LIMIT
+        ]
+        portfolio_risk_metric_snapshots = (
+            bounded_portfolio_risk_metrics
+            if agent_id == "sentinel_risk_officer"
+            else ()
+        )
 
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
@@ -224,7 +233,7 @@ class EvidenceRouter:
             profile.provenance for profile in bounded_issuer_references
         ) + tuple(
             portfolio.provenance for portfolio in bounded_portfolio_risk
-            )
+        )
 
         return AgentEvidence(
             market_evidence=market_evidence,
@@ -238,6 +247,7 @@ class EvidenceRouter:
             corporate_actions=corporate_actions,
             issuer_references=issuer_references,
             portfolio_risk_snapshots=portfolio_risk_snapshots,
+            portfolio_risk_metric_snapshots=portfolio_risk_metric_snapshots,
             provenance=provenance,
         )
 

@@ -125,11 +125,13 @@ class ReportedAccountState(PortfolioRiskModel):
     currency: str | None = Field(default=None, max_length=12)
     balance: EconomicValue | None = None
     equity: EconomicValue | None = None
+    reference_equity: EconomicValue | None = None
     available_funds: EconomicValue | None = None
     margin_used: EconomicValue | None = None
     margin_available: EconomicValue | None = None
     unrealized_pnl: EconomicValue | None = None
     realized_pnl: EconomicValue | None = None
+    daily_loss: EconomicValue | None = None
     status: AccountStatus = AccountStatus.UNKNOWN
 
     @field_validator("currency", mode="before")
@@ -145,11 +147,13 @@ class ReportedAccountState(PortfolioRiskModel):
         values = (
             self.balance,
             self.equity,
+            self.reference_equity,
             self.available_funds,
             self.margin_used,
             self.margin_available,
             self.unrealized_pnl,
             self.realized_pnl,
+            self.daily_loss,
         )
         if any(value is not None and value.unit is not EconomicValueUnit.CURRENCY for value in values):
             raise ValueError("reported account monetary values must use the currency unit")
@@ -379,11 +383,13 @@ def _canonical_account_state(state: ReportedAccountState) -> dict[str, object]:
         "currency": state.currency,
         "balance": _canonical_value(state.balance),
         "equity": _canonical_value(state.equity),
+        "reference_equity": _canonical_value(state.reference_equity),
         "available_funds": _canonical_value(state.available_funds),
         "margin_used": _canonical_value(state.margin_used),
         "margin_available": _canonical_value(state.margin_available),
         "unrealized_pnl": _canonical_value(state.unrealized_pnl),
         "realized_pnl": _canonical_value(state.realized_pnl),
+        "daily_loss": _canonical_value(state.daily_loss),
         "status": state.status.value,
     }
 

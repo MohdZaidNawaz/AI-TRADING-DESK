@@ -12,6 +12,7 @@ from app.evidence.models import (
     FundamentalSeriesEvidence,
     IssuerReferenceEvidence,
     PortfolioRiskEvidence,
+    PortfolioRiskMetricsEvidence,
     MarketEvidence,
     MarketSeriesEvidence,
     MacroSeriesEvidence,
@@ -23,6 +24,7 @@ from app.evidence.models import (
 from app.evidence.corporate_action_store import CorporateActionStore
 from app.evidence.issuer_reference_store import IssuerReferenceStore
 from app.evidence.portfolio_risk_store import PortfolioRiskStore
+from app.evidence.portfolio_risk_metrics_store import PortfolioRiskMetricsStore
 from app.evidence.economic_store import EconomicEventStore
 from app.evidence.fundamental_store import FundamentalStore
 from app.evidence.estimate_store import EstimateStore
@@ -39,6 +41,7 @@ from app.models.estimates import NormalizedEstimateObservation
 from app.models.corporate_actions import NormalizedCorporateAction
 from app.models.issuer_reference import NormalizedIssuerInstrumentReference
 from app.models.portfolio_risk import NormalizedPortfolioRiskSnapshot
+from app.services.portfolio_risk_metrics import PortfolioRiskMetricsService
 
 
 class EvidenceStore:
@@ -77,6 +80,8 @@ class EvidenceStore:
         max_portfolio_risk_accounts: int = 100,
         max_portfolio_risk_occurrences_per_account: int = 500,
         max_portfolio_risk_versions_per_occurrence: int = 5,
+        max_portfolio_risk_metric_accounts: int = 100,
+        max_portfolio_risk_metric_snapshots_per_account: int = 500,
         market_series_store: MarketSeriesStore | None = None,
         economic_event_store: EconomicEventStore | None = None,
         macro_series_store: MacroSeriesStore | None = None,
@@ -86,6 +91,8 @@ class EvidenceStore:
         corporate_action_store: CorporateActionStore | None = None,
         issuer_reference_store: IssuerReferenceStore | None = None,
         portfolio_risk_store: PortfolioRiskStore | None = None,
+        portfolio_risk_metrics_store: PortfolioRiskMetricsStore | None = None,
+        portfolio_risk_metrics_service: PortfolioRiskMetricsService | None = None,
     ) -> None:
         _validate_limit(max_market_events, "max_market_events")
         _validate_limit(max_news_events, "max_news_events")
@@ -149,6 +156,11 @@ class EvidenceStore:
             max_portfolio_risk_versions_per_occurrence,
             "max_portfolio_risk_versions_per_occurrence",
         )
+        _validate_limit(max_portfolio_risk_metric_accounts, "max_portfolio_risk_metric_accounts")
+        _validate_limit(
+            max_portfolio_risk_metric_snapshots_per_account,
+            "max_portfolio_risk_metric_snapshots_per_account",
+        )
         self._max_market_events = max_market_events
         self._max_news_events = max_news_events
         self._market_events: dict[str, MarketEvidence] = {}
@@ -194,6 +206,16 @@ class EvidenceStore:
             max_accounts=max_portfolio_risk_accounts,
             max_occurrences_per_account=max_portfolio_risk_occurrences_per_account,
             max_versions_per_occurrence=max_portfolio_risk_versions_per_occurrence,
+        )
+        self._portfolio_risk_metrics_store = (
+            portfolio_risk_metrics_store
+            or PortfolioRiskMetricsStore(
+                max_accounts=max_portfolio_risk_metric_accounts,
+                max_snapshots_per_account=max_portfolio_risk_metric_snapshots_per_account,
+            )
+        )
+        self._portfolio_risk_metrics_service = (
+            portfolio_risk_metrics_service or PortfolioRiskMetricsService()
         )
         self._lock = RLock()
 
@@ -290,7 +312,11 @@ class EvidenceStore:
     ) -> PortfolioRiskEvidence | None:
         """Retain one source-reported account/portfolio context snapshot."""
         with self._lock:
-            return self._portfolio_risk_store.ingest(snapshot)
+            evidence = self._portfolio_risk_store.ingest(snapshot)
+            if evidence is not None:
+                derived = self._portfolio_risk_metrics_service.calculate(evidence)
+                self._portfolio_risk_metrics_store.ingest(derived, evidence)
+            return evidence
 
     def snapshot(self, *, symbol: str | None = None) -> EvidenceSnapshot:
         """Return a symbol-scoped, immutable, deterministically ordered snapshot."""
@@ -325,6 +351,7 @@ class EvidenceStore:
             corporate_actions = self._corporate_action_store.snapshot(symbol=requested_symbol).actions
             issuer_references = self._issuer_reference_store.snapshot(symbol=requested_symbol).profiles
             portfolio_risk_snapshots = self._portfolio_risk_store.snapshot().snapshots
+            portfolio_risk_metric_snapshots = self._portfolio_risk_metrics_store.snapshot().snapshots
 
         return EvidenceSnapshot(
             market_evidence=market_evidence,
@@ -338,6 +365,7 @@ class EvidenceStore:
             corporate_actions=corporate_actions,
             issuer_references=issuer_references,
             portfolio_risk_snapshots=portfolio_risk_snapshots,
+            portfolio_risk_metric_snapshots=portfolio_risk_metric_snapshots,
             symbol=requested_symbol,
         )
 
@@ -456,6 +484,15 @@ class EvidenceStore:
     @property
     def portfolio_risk_store(self) -> PortfolioRiskStore:
         return self._portfolio_risk_store
+
+    @property
+    def portfolio_risk_metric_snapshot_count(self) -> int:
+        with self._lock:
+            return self._portfolio_risk_metrics_store.snapshot_count
+
+    @property
+    def portfolio_risk_metrics_store(self) -> PortfolioRiskMetricsStore:
+        return self._portfolio_risk_metrics_store
 
     @staticmethod
     def _trim(

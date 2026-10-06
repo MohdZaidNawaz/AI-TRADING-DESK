@@ -20,6 +20,8 @@ from app.evidence.models import (
     IssuerReferenceSnapshot,
     PortfolioRiskEvidence,
     PortfolioRiskEvidenceSnapshot,
+    PortfolioRiskMetricsEvidence,
+    PortfolioRiskMetricsEvidenceSnapshot,
     MarketEvidence,
     MarketBarEvidence,
     MarketSeriesEvidence,
@@ -46,6 +48,7 @@ from app.evidence.economic_store import EconomicEventStore, latest_economic_vers
 from app.evidence.corporate_action_store import CorporateActionStore, latest_corporate_action_versions
 from app.evidence.issuer_reference_store import IssuerReferenceStore, latest_issuer_reference_versions
 from app.evidence.portfolio_risk_store import PortfolioRiskStore
+from app.evidence.portfolio_risk_metrics_store import PortfolioRiskMetricsStore
 from app.evidence.fundamental_store import FundamentalStore
 from app.evidence.estimate_store import EstimateStore
 from app.evidence.macro_store import MacroSeriesStore
@@ -81,7 +84,10 @@ __all__ = [
     "IssuerReferenceStore",
     "PortfolioRiskEvidence",
     "PortfolioRiskEvidenceSnapshot",
+    "PortfolioRiskMetricsEvidence",
+    "PortfolioRiskMetricsEvidenceSnapshot",
     "PortfolioRiskStore",
+    "PortfolioRiskMetricsStore",
     "MarketEvidence",
     "MarketBarEvidence",
     "MarketSeriesEvidence",

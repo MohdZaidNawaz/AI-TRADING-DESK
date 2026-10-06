@@ -214,6 +214,21 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
         )
         created_at_values.append(reference_time)
 
+    # Derived portfolio-risk metrics are traceability-only. They remain
+    # separate from market evidence and cannot satisfy other Sentinel policy
+    # requirements independently.
+    for metrics_snapshot in snapshot.portfolio_risk_metric_snapshots:
+        references.append(
+            EvidenceReference(
+                event_id=metrics_snapshot.metrics_snapshot_id,
+                source_id=metrics_snapshot.provenance.source_id,
+                domain=metrics_snapshot.provenance.domain,
+                timestamp=metrics_snapshot.as_of,
+                symbol=None,
+            )
+        )
+        created_at_values.append(metrics_snapshot.as_of)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -306,6 +321,16 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 "snapshot_version": item.snapshot_version,
             }
             for item in snapshot.portfolio_risk_snapshots
+        ]
+    if snapshot.portfolio_risk_metric_snapshots:
+        fingerprint_input["portfolio_risk_metric_snapshots"] = [
+            {
+                "metrics_snapshot_id": item.metrics_snapshot_id,
+                "fingerprint": item.fingerprint,
+                "calculation_version": item.calculation_version,
+                "source_snapshot_id": item.source_snapshot_id,
+            }
+            for item in snapshot.portfolio_risk_metric_snapshots
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))

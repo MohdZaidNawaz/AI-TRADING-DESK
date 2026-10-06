@@ -19,6 +19,8 @@ from app.models.specialist_analysis import (
     SpecialistOperationalState,
     SpecialistPortfolioContextState,
     SpecialistPortfolioRiskObservation,
+    SpecialistPortfolioRiskMetricObservation,
+    SpecialistPortfolioRiskMetricsState,
     SpecialistPositioningObservation,
     SpecialistStance,
 )
@@ -271,6 +273,30 @@ def _portfolio_risk_observations(
             evidence_reference=agent.portfolio_risk_reference(evidence),
         )
         for evidence in context.evidence.portfolio_risk_snapshots
+    )
+
+
+def _portfolio_risk_metric_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistPortfolioRiskMetricObservation, ...]:
+    """Retain deterministic risk facts without applying a risk policy."""
+    return tuple(
+        SpecialistPortfolioRiskMetricObservation(
+            metric_id=metric.metric_id,
+            metric_type=metric.metric_type,
+            status=metric.status,
+            value=metric.value,
+            unit=metric.unit,
+            currency=metric.currency,
+            calculation_version=metric.calculation_version,
+            as_of=metric.as_of,
+            calculated_at=metric.calculated_at,
+            input_references=metric.input_references,
+            evidence_reference=agent.portfolio_risk_metrics_reference(evidence),
+        )
+        for evidence in context.evidence.portfolio_risk_metric_snapshots
+        for metric in evidence.metrics
     )
 
 
@@ -1011,6 +1037,7 @@ class SentinelRiskOfficerAgent(BaseAgent):
     ) -> SpecialistAnalysis:
         facts = _market_context_facts(self, context) + _news_context_facts(self, context)
         portfolio_risk = _portfolio_risk_observations(self, context)
+        portfolio_risk_metrics = _portfolio_risk_metric_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -1034,12 +1061,17 @@ class SentinelRiskOfficerAgent(BaseAgent):
                 if portfolio_risk
                 else SpecialistPortfolioContextState.PORTFOLIO_CONTEXT_INSUFFICIENT
             ),
+            portfolio_risk_metric_observations=portfolio_risk_metrics,
+            portfolio_risk_metrics_state=(
+                SpecialistPortfolioRiskMetricsState.PORTFOLIO_RISK_METRICS_AVAILABLE
+                if any(item.status.value == "available" for item in portfolio_risk_metrics)
+                else SpecialistPortfolioRiskMetricsState.PORTFOLIO_RISK_METRICS_INSUFFICIENT
+            ),
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "Reported account state, positions, and source limits are factual context only; "
-                        "no exposure, leverage, drawdown, margin utilization, sizing, or approval "
-                        "calculation is performed in this specialist artifact."
+                        "Reported portfolio context and deterministic derived metrics are factual only; "
+                        "they create no threshold policy, sizing, approval, or execution decision."
                     )
                 ),
             ),

@@ -9,6 +9,7 @@ or execution instructions.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import Enum
 from hashlib import sha256
 import json
@@ -53,6 +54,12 @@ from app.models.portfolio_risk import (
     ReportedRiskLimit,
     SourceAccountKey,
 )
+from app.models.portfolio_risk_metrics import (
+    PortfolioRiskMetricInputReference,
+    PortfolioRiskMetricStatus,
+    PortfolioRiskMetricType,
+    PortfolioRiskMetricUnit,
+)
 from app.models.schemas import APIModel
 
 
@@ -89,6 +96,13 @@ class SpecialistPortfolioContextState(str, Enum):
 
     PORTFOLIO_CONTEXT_AVAILABLE = "portfolio_context_available"
     PORTFOLIO_CONTEXT_INSUFFICIENT = "portfolio_context_insufficient"
+
+
+class SpecialistPortfolioRiskMetricsState(str, Enum):
+    """Factual availability state for deterministic derived risk metrics."""
+
+    PORTFOLIO_RISK_METRICS_AVAILABLE = "portfolio_risk_metrics_available"
+    PORTFOLIO_RISK_METRICS_INSUFFICIENT = "portfolio_risk_metrics_insufficient"
 
 
 class SpecialistConsensus(str, Enum):
@@ -663,6 +677,46 @@ class SpecialistPortfolioRiskObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistPortfolioRiskMetricObservation(SpecialistAnalysisModel):
+    """A factual deterministic metric retained only by Sentinel."""
+
+    metric_id: str = Field(min_length=1, max_length=160)
+    metric_type: PortfolioRiskMetricType
+    status: PortfolioRiskMetricStatus
+    value: Decimal | None = None
+    unit: PortfolioRiskMetricUnit
+    currency: str | None = Field(default=None, max_length=12)
+    calculation_version: str = Field(min_length=1, max_length=80)
+    as_of: datetime
+    calculated_at: datetime
+    input_references: tuple[PortfolioRiskMetricInputReference, ...] = ()
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("as_of", "calculated_at")
+    @classmethod
+    def normalize_metric_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("portfolio-risk metric timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @field_validator("value")
+    @classmethod
+    def validate_metric_value(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and not value.is_finite():
+            raise ValueError("portfolio-risk metric values must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_metric_reference(self) -> "SpecialistPortfolioRiskMetricObservation":
+        if self.evidence_reference.domain is not DataDomain.ALTERNATIVE_DATA:
+            raise ValueError("portfolio-risk metrics require alternative_data evidence")
+        if self.status is PortfolioRiskMetricStatus.AVAILABLE and self.value is None:
+            raise ValueError("available portfolio-risk metrics require a value")
+        if self.status is not PortfolioRiskMetricStatus.AVAILABLE and self.value is not None:
+            raise ValueError("unavailable portfolio-risk metrics cannot contain a value")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -737,6 +791,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     portfolio_context_state: SpecialistPortfolioContextState | None = None
+    portfolio_risk_metric_observations: tuple[SpecialistPortfolioRiskMetricObservation, ...] = Field(
+        default=(), max_length=500
+    )
+    portfolio_risk_metrics_state: SpecialistPortfolioRiskMetricsState | None = None
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = Field(
         default=(),
         max_length=250,
@@ -934,6 +992,23 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("portfolio_risk_metric_observations")
+    @classmethod
+    def order_portfolio_risk_metric_observations(
+        cls,
+        values: tuple[SpecialistPortfolioRiskMetricObservation, ...],
+    ) -> tuple[SpecialistPortfolioRiskMetricObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.metric_type.value,
+                    item.as_of,
+                    item.metric_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -1038,6 +1113,26 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
                 raise ValueError("Sentinel portfolio_context_state must match assigned portfolio evidence")
         elif self.portfolio_context_state is not None:
             raise ValueError("portfolio_context_state is reserved for Sentinel Risk Officer")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.portfolio_risk_metric_observations
+        ):
+            raise ValueError("portfolio-risk metric observations must reference assigned supporting evidence")
+        if self.agent_id != "sentinel_risk_officer" and self.portfolio_risk_metric_observations:
+            raise ValueError("only Sentinel may retain portfolio-risk metric observations")
+        if self.agent_id == "sentinel_risk_officer":
+            expected_metrics_state = (
+                SpecialistPortfolioRiskMetricsState.PORTFOLIO_RISK_METRICS_AVAILABLE
+                if any(
+                    item.status is PortfolioRiskMetricStatus.AVAILABLE
+                    for item in self.portfolio_risk_metric_observations
+                )
+                else SpecialistPortfolioRiskMetricsState.PORTFOLIO_RISK_METRICS_INSUFFICIENT
+            )
+            if self.portfolio_risk_metrics_state is not expected_metrics_state:
+                raise ValueError("Sentinel portfolio_risk_metrics_state must match assigned metric evidence")
+        elif self.portfolio_risk_metrics_state is not None:
+            raise ValueError("portfolio_risk_metrics_state is reserved for Sentinel Risk Officer")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -1139,6 +1234,8 @@ def create_specialist_analysis(
     issuer_reference_observations: tuple[SpecialistIssuerReferenceObservation, ...] = (),
     portfolio_risk_observations: tuple[SpecialistPortfolioRiskObservation, ...] = (),
     portfolio_context_state: SpecialistPortfolioContextState | None = None,
+    portfolio_risk_metric_observations: tuple[SpecialistPortfolioRiskMetricObservation, ...] = (),
+    portfolio_risk_metrics_state: SpecialistPortfolioRiskMetricsState | None = None,
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -1170,6 +1267,8 @@ def create_specialist_analysis(
         issuer_reference_observations=issuer_reference_observations,
         portfolio_risk_observations=portfolio_risk_observations,
         portfolio_context_state=portfolio_context_state,
+        portfolio_risk_metric_observations=portfolio_risk_metric_observations,
+        portfolio_risk_metrics_state=portfolio_risk_metrics_state,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

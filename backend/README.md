@@ -600,6 +600,50 @@ or execution instruction. Pilot remains `DISABLED_NO_EXECUTION`; no MT5,
 broker SDK, provider, API route, credential, frontend, or execution capability
 is introduced.
 
+## Phase 5B-10 provider-neutral portfolio-risk metrics and exposure evidence
+
+Phase 5B-10 is a separate deterministic layer over Phase 5B-9 source-reported
+portfolio snapshots. Phase 5B-9 records what a source reports; Phase 5B-10
+records only what FRIDAY can calculate exactly from those typed facts:
+
+```text
+NormalizedPortfolioRiskSnapshot
+    -> PortfolioRiskStore
+    -> deterministic PortfolioRiskMetricsService (portfolio-risk-v1)
+    -> bounded PortfolioRiskMetricsStore
+    -> EvidenceSnapshot.portfolio_risk_metric_snapshots
+    -> Sentinel Risk Officer factual artifact
+```
+
+The only supported metric families are equity utilization (`equity / balance`),
+margin utilization (`margin_used / (margin_used + margin_available)`), account
+drawdown against an explicitly source-reported reference equity, daily-loss
+utilization against an explicitly source-reported daily-loss limit, absolute
+position exposure (`abs(quantity * reference_price)`), and position
+concentration against a complete set of available source-reported position
+exposures. All arithmetic uses finite `Decimal` values. Each metric retains its
+calculation version, source snapshot identity/fingerprint, timestamp, status,
+and explicit typed input references.
+
+Missing, incompatible, non-positive-denominator, or incomplete inputs produce
+an `insufficient_inputs` metric state. FRIDAY never estimates a missing value,
+substitutes balance for a reference equity, infers a prop-firm rule, derives
+leverage, or constructs a partial portfolio-total denominator. Receipt time is
+provenance only and excluded from semantic metric identities and fingerprints.
+
+The metric store is process-local, thread-safe, bounded, deterministic, and
+retains a bounded post-eviction conflict-fingerprint registry. Exact duplicate
+calculations are idempotent; semantically conflicting calculations for the
+same source/account/source-snapshot occurrence/version/calculation-version are
+rejected while retained conflict metadata permits.
+
+Sentinel Risk Officer is the sole typed metric consumer. The metrics are factual
+risk context only: they add no thresholds, automatic approval/rejection,
+direction, recommendation, position sizing, leverage recommendation, entry,
+stop, target, execution authority, provider integration, API route, or frontend
+change. Ledger receives no unrestricted metric values, Pilot remains
+`DISABLED_NO_EXECUTION`, and the public `/api/analyze` contract is unchanged.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:
