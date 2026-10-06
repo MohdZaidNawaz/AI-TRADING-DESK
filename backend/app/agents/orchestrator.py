@@ -35,10 +35,12 @@ from app.models.corporate_actions import NormalizedCorporateAction
 from app.models.issuer_reference import NormalizedIssuerInstrumentReference
 from app.models.portfolio_risk import NormalizedPortfolioRiskSnapshot
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
+from app.models.proposal_assembly import ExplicitTradeProposalInput
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 from app.models.trade_thesis import MasterTradeThesis
 from app.services.trade_proposal_workflow import TradeProposalWorkflow, build_evidence_bundle
+from app.services.proposal_assembly import ProposalAssemblyService
 from app.services.derived_feature_routing import DerivedFeatureRouter
 from app.services.derived_features import (
     DEFAULT_DERIVED_FEATURE_REQUESTS,
@@ -84,6 +86,7 @@ class FridayCore:
         derived_feature_router: DerivedFeatureRouter | None = None,
         derived_feature_requests: tuple[DerivedFeatureRequest, ...] | None = None,
         trade_proposal_workflow: TradeProposalWorkflow | None = None,
+        proposal_assembly_service: ProposalAssemblyService | None = None,
     ) -> None:
         self._specialists = specialists
         self._master = master
@@ -99,6 +102,7 @@ class FridayCore:
         self._trade_proposal_workflow = trade_proposal_workflow or TradeProposalWorkflow(
             master=self._master
         )
+        self._proposal_assembly_service = proposal_assembly_service or ProposalAssemblyService()
         self._recent_market_events: deque[NormalizedDataEvent] = deque(maxlen=100)
         self._event_lock = Lock()
 
@@ -281,6 +285,38 @@ class FridayCore:
             specialist_analyses=analysis_run.specialist_analyses,
             master_synthesis=analysis_run.master_synthesis,
             master_thesis=analysis_run.master_thesis,
+        )
+
+    def run_explicit_trade_proposal_workflow(
+        self,
+        request: AnalyzeRequest,
+        *,
+        proposal_input: ExplicitTradeProposalInput,
+        risk_context: RiskContext | None = None,
+    ) -> TradeProposalWorkflowResult:
+        """Explicitly assemble and submit a final proposal for Sentinel review.
+
+        This internal-only method is never invoked by ``analyze``.  It captures
+        one immutable snapshot, creates no trade values itself, and forwards only
+        the caller-supplied final proposal to Sentinel.
+        """
+        snapshot = self._evidence_store.snapshot(symbol=request.symbol)
+        analysis_run = self._analyze_run(
+            request,
+            snapshot=snapshot,
+            lifecycle=AnalysisLifecycle(),
+        )
+        proposal = self._proposal_assembly_service.assemble(
+            master_thesis=analysis_run.master_thesis,
+            snapshot=snapshot,
+            analysis_id=analysis_run.analysis.analysis_id,
+            proposal_input=proposal_input,
+        )
+        return self._trade_proposal_workflow.run_explicit(
+            analysis=analysis_run.analysis,
+            snapshot=snapshot,
+            risk_context=risk_context,
+            proposal=proposal,
         )
 
     def _analyze_run(

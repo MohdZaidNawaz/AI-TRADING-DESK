@@ -395,7 +395,7 @@ def test_missing_or_stale_market_evidence_returns_insufficient_data() -> None:
         risk_context=_risk_context(as_of=MOMENT + timedelta(minutes=20)),
     )
     missing = SentinelRiskGate().evaluate(
-        proposal=_proposal(snapshot=fresh_snapshot),
+        proposal=_proposal(snapshot=missing_market_snapshot),
         snapshot=missing_market_snapshot,
         risk_context=_risk_context(),
     )

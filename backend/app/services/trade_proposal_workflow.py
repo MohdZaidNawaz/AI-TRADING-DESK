@@ -456,7 +456,8 @@ class SentinelRiskGate:
         """Return a deterministic approval, rejection, or insufficient-data decision."""
         fingerprint = proposal_fingerprint(proposal)
         evaluated_at = _evaluation_time(snapshot, risk_context)
-        rejection_reasons = _parameter_rejections(proposal.parameters)
+        rejection_reasons = _proposal_snapshot_rejections(proposal, snapshot)
+        rejection_reasons.extend(_parameter_rejections(proposal.parameters))
         if proposal.symbol is not None and canonical_symbol(proposal.symbol) is None:
             rejection_reasons.append("invalid_symbol")
         if snapshot.symbol is not None and proposal.symbol is not None and not symbols_match(
@@ -590,6 +591,47 @@ class TradeProposalWorkflow:
             proposal=transition_proposal(pending, decision),
             sentinel_decision=decision,
         )
+
+    def run_explicit(
+        self,
+        *,
+        analysis: AnalyzeResponse,
+        snapshot: EvidenceSnapshot,
+        risk_context: RiskContext | None,
+        proposal: TradeProposal,
+    ) -> TradeProposalWorkflowResult:
+        """Evaluate an already assembled final proposal only when explicitly invoked.
+
+        This path never asks Master to create a draft or infer parameters.  The
+        proposal is still non-executable and Sentinel remains the sole source of
+        any registry-backed approval.
+        """
+        if proposal.analysis_id != analysis.analysis_id:
+            raise ValueError("Explicit proposal must match the supplied analysis ID")
+        decision = self._sentinel_gate.evaluate(
+            proposal=proposal,
+            snapshot=snapshot,
+            risk_context=risk_context,
+        )
+        return TradeProposalWorkflowResult(
+            analysis=analysis,
+            proposal=transition_proposal(proposal, decision),
+            sentinel_decision=decision,
+        )
+
+
+def _proposal_snapshot_rejections(
+    proposal: TradeProposal,
+    snapshot: EvidenceSnapshot,
+) -> list[str]:
+    """Reject a proposal detached from the immutable snapshot Sentinel receives."""
+    bundle = build_evidence_bundle(snapshot)
+    rejected: list[str] = []
+    if proposal.evidence_fingerprint != bundle.fingerprint:
+        rejected.append("proposal_evidence_fingerprint_does_not_match_snapshot")
+    if proposal.evidence_references != bundle.references:
+        rejected.append("proposal_evidence_references_do_not_match_snapshot")
+    return rejected
 
 
 def _missing_requirements(

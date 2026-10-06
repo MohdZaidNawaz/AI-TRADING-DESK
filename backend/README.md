@@ -674,9 +674,32 @@ sizing, specialist-agreement, or event/news-risk requirements.
 
 The existing proposal flow may retain only a compact thesis ID/fingerprint for
 traceability. Sentinel remains the sole approval gate and Pilot remains
-`DISABLED_NO_EXECUTION`. Phase 6A-2, if separately approved, would examine an
-explicit proposal-assembly boundary; it is not implemented here. No provider,
-API route, frontend, broker, MT5, credential, or execution change is included.
+`DISABLED_NO_EXECUTION`. No provider, API route, frontend, broker, MT5,
+credential, or execution change is included.
+
+## Phase 6A-2 explicit proposal assembly
+
+`ExplicitTradeProposalInput` is an internal, provider-neutral boundary for a
+human or future external capability to supply a direction, reference price,
+stop loss, targets, risk/reward, sizing intent, requested risk fraction, and
+ordinary-text rationale. It must reference the exact immutable
+`MasterTradeThesis` ID and fingerprint produced for the captured analysis.
+
+`ProposalAssemblyService` validates the supplied thesis, analysis ID, canonical
+symbol, and evidence fingerprint against one immutable `EvidenceSnapshot`.
+It copies only the supplied parameter values into an immutable pending
+`TradeProposal`; it never derives a direction or any parameter from specialist
+stances, Master synthesis, thesis bias, prices, indicators, or evidence.
+
+The internal explicit workflow is deliberately separate from `/api/analyze`.
+It runs only when explicitly invoked with `ExplicitTradeProposalInput`, passes
+the assembled final proposal to Sentinel, and verifies that proposal provenance
+exactly matches the snapshot received by Sentinel. The thesis remains
+analytical, non-authorizing, and non-executable; it cannot satisfy Sentinel
+market freshness, portfolio, sizing, agreement, or news/event-risk rules.
+Only Sentinel can register an approval. Pilot continues to validate a
+registry-backed, unexpired, one-time approval and always returns
+`DISABLED_NO_EXECUTION` without invoking an execution adapter.
 
 ## News and research foundation
 
