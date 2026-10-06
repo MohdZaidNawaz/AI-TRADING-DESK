@@ -5,6 +5,7 @@ from typing import Literal
 
 from app.evidence.models import (
     AgentEvidence,
+    CorporateActionEvidence,
     EconomicEventEvidence,
     EvidenceProvenance,
     EstimateObservationEvidence,
@@ -26,6 +27,7 @@ from app.models.specialist_analysis import (
     SpecialistAnalysisStatus,
     SpecialistDerivedFeatureReference,
     SpecialistDerivedObservation,
+    SpecialistCorporateActionObservation,
     SpecialistEconomicObservation,
     SpecialistEvidenceReference,
     SpecialistFactObservation,
@@ -115,6 +117,7 @@ class BaseAgent(ABC):
         estimate_count = sum(
             len(series.observations) for series in context.evidence.estimate_series
         )
+        corporate_action_count = len(context.evidence.corporate_actions)
         if (
             market_count == 0
             and news_count == 0
@@ -124,6 +127,7 @@ class BaseAgent(ABC):
             and positioning_count == 0
             and fundamental_count == 0
             and estimate_count == 0
+            and corporate_action_count == 0
         ):
             return []
 
@@ -143,6 +147,8 @@ class BaseAgent(ABC):
             assignment += f" Fundamental observations assigned: {fundamental_count}."
         if estimate_count:
             assignment += f" Estimate observations assigned: {estimate_count}."
+        if corporate_action_count:
+            assignment += f" Corporate actions assigned: {corporate_action_count}."
         findings = [assignment]
         if context.evidence.provenance:
             findings.append(
@@ -227,6 +233,7 @@ class BaseAgent(ABC):
         positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
         fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
         estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
+        corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
         invalidating_conditions: tuple[str, ...] = (),
         operational_state: SpecialistOperationalState | None = None,
         lifecycle: SpecialistLifecycleObservation | None = None,
@@ -272,6 +279,7 @@ class BaseAgent(ABC):
             positioning_observations=positioning_observations,
             fundamental_observations=fundamental_observations,
             estimate_observations=estimate_observations,
+            corporate_action_observations=corporate_action_observations,
             supporting_evidence=supporting_evidence,
             derived_feature_references=derived_feature_references,
             invalidating_conditions=invalidating_conditions,
@@ -423,6 +431,18 @@ class BaseAgent(ABC):
         return tuple(BaseAgent.estimate_reference(item) for item in evidence.observations)
 
     @staticmethod
+    def corporate_action_reference(
+        evidence: CorporateActionEvidence,
+    ) -> SpecialistEvidenceReference:
+        return SpecialistEvidenceReference(
+            event_id=evidence.action_id,
+            source_id=evidence.provenance.source_id,
+            domain=evidence.provenance.domain,
+            timestamp=evidence.effective_at or evidence.published_at,
+            symbol=evidence.instrument.symbol,
+        )
+
+    @staticmethod
     def provenance_reference(
         evidence: EvidenceProvenance,
     ) -> SpecialistEvidenceReference:
@@ -471,6 +491,9 @@ class BaseAgent(ABC):
             reference
             for evidence in context.evidence.estimate_series
             for reference in self.estimate_series_references(evidence)
+        ) + tuple(
+            self.corporate_action_reference(evidence)
+            for evidence in context.evidence.corporate_actions
         ) + tuple(
             self.provenance_reference(evidence)
             for evidence in context.evidence.provenance

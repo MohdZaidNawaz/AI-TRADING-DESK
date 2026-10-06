@@ -7,6 +7,7 @@ from app.models.events import EventType
 from app.models.derived_features import FeatureStatus
 from app.models.specialist_analysis import (
     SpecialistAnalysis,
+    SpecialistCorporateActionObservation,
     SpecialistDerivedObservation,
     SpecialistEconomicObservation,
     SpecialistFactObservation,
@@ -187,6 +188,33 @@ def _estimate_observations(
         )
         for series in context.evidence.estimate_series
         for evidence in series.observations
+    )
+
+
+def _corporate_action_observations(
+    agent: BaseAgent,
+    context: AnalysisContext,
+) -> tuple[SpecialistCorporateActionObservation, ...]:
+    """Retain assigned issuer actions without price adjustment or inference."""
+    return tuple(
+        SpecialistCorporateActionObservation(
+            action_id=evidence.action_id,
+            instrument=evidence.instrument,
+            occurrence_id=evidence.occurrence_id,
+            action_type=evidence.action_type,
+            lifecycle=evidence.lifecycle,
+            cash_dividend_terms=evidence.cash_dividend_terms,
+            share_adjustment_terms=evidence.share_adjustment_terms,
+            published_at=evidence.published_at,
+            effective_at=evidence.effective_at,
+            ex_date=evidence.ex_date,
+            record_date=evidence.record_date,
+            payment_date=evidence.payment_date,
+            action_version=evidence.action_version,
+            revision_of_action_id=evidence.revision_of_action_id,
+            evidence_reference=agent.corporate_action_reference(evidence),
+        )
+        for evidence in context.evidence.corporate_actions
     )
 
 
@@ -574,6 +602,7 @@ class ScoutReconAgent(BaseAgent):
         created_at: datetime,
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
+        corporate_actions = _corporate_action_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -588,6 +617,7 @@ class ScoutReconAgent(BaseAgent):
             fact_observations=_market_context_facts(self, context)
             + _news_context_facts(self, context),
             economic_observations=_economic_observations(self, context),
+            corporate_action_observations=corporate_actions,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -643,6 +673,7 @@ class AthenaAnalystAgent(BaseAgent):
         facts = _fundamental_facts(self, context)
         fundamentals = _fundamental_observations(self, context)
         estimates = _estimate_observations(self, context)
+        corporate_actions = _corporate_action_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -654,7 +685,7 @@ class AthenaAnalystAgent(BaseAgent):
                 (
                     "Reported financial-statement observations are retained as factual context only and "
                     "do not establish valuation, financial quality, a forecast, or a directional conclusion."
-                    if fundamentals or estimates
+                    if fundamentals or estimates or corporate_actions
                     else "No verified valuation, financial-statement, estimate, or comparable-company data is "
                     "available for a fundamental conclusion."
                 )
@@ -662,6 +693,7 @@ class AthenaAnalystAgent(BaseAgent):
             fact_observations=facts,
             fundamental_observations=fundamentals,
             estimate_observations=estimates,
+            corporate_action_observations=corporate_actions,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
@@ -678,9 +710,13 @@ class AthenaAnalystAgent(BaseAgent):
                         reference
                         for observation in estimates
                         for reference in (observation.evidence_reference,)
+                    ) + tuple(
+                        reference
+                        for observation in corporate_actions
+                        for reference in (observation.evidence_reference,)
                     ),
                 )
-                if fundamentals or estimates
+                if fundamentals or estimates or corporate_actions
                 else SpecialistInterpretation(
                     statement=(
                         "A normalized fundamental-update event can be recorded, but it is insufficient "
@@ -746,6 +782,7 @@ class ChartistTechnicianAgent(BaseAgent):
         result: AgentAnalysis,
     ) -> SpecialistAnalysis:
         facts = _technical_facts(self, context) + _technical_series_facts(self, context)
+        corporate_actions = _corporate_action_observations(self, context)
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
@@ -766,6 +803,7 @@ class ChartistTechnicianAgent(BaseAgent):
             ),
             fact_observations=facts,
             derived_observations=_derived_feature_observations(self, context),
+            corporate_action_observations=corporate_actions,
             interpretations=(
                 SpecialistInterpretation(
                     statement=(

@@ -8,7 +8,7 @@ or execution instructions.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from hashlib import sha256
 import json
@@ -34,6 +34,13 @@ from app.models.macro_series import MacroReferencePeriod, MacroSeriesKey
 from app.models.positioning import PositioningReferencePeriod, PositioningSeriesKey
 from app.models.fundamentals import FundamentalReferencePeriod, FundamentalSeriesKey
 from app.models.estimates import EstimateReferencePeriod, EstimateSeriesKey
+from app.models.corporate_actions import (
+    CashDividendTerms,
+    CorporateActionInstrumentKey,
+    CorporateActionLifecycle,
+    CorporateActionType,
+    ShareAdjustmentTerms,
+)
 from app.models.schemas import APIModel
 
 
@@ -489,6 +496,51 @@ class SpecialistEstimateObservation(SpecialistAnalysisModel):
         return self
 
 
+class SpecialistCorporateActionObservation(SpecialistAnalysisModel):
+    """Typed issuer-action fact without price adjustment or trade inference."""
+
+    action_id: str = Field(min_length=1, max_length=160)
+    instrument: CorporateActionInstrumentKey
+    occurrence_id: str = Field(min_length=1, max_length=160)
+    action_type: CorporateActionType
+    lifecycle: CorporateActionLifecycle
+    cash_dividend_terms: CashDividendTerms | None = None
+    share_adjustment_terms: ShareAdjustmentTerms | None = None
+    published_at: datetime
+    effective_at: datetime | None = None
+    ex_date: date | None = None
+    record_date: date | None = None
+    payment_date: date | None = None
+    action_version: int = Field(ge=1)
+    revision_of_action_id: str | None = Field(default=None, max_length=160)
+    evidence_reference: SpecialistEvidenceReference
+
+    @field_validator("published_at", "effective_at")
+    @classmethod
+    def normalize_corporate_action_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("corporate-action observation timestamps must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def validate_corporate_action_reference(self) -> "SpecialistCorporateActionObservation":
+        if self.evidence_reference.domain is not DataDomain.FUNDAMENTAL_DATA:
+            raise ValueError("corporate actions require fundamental_data evidence")
+        if self.evidence_reference.event_id != self.action_id:
+            raise ValueError("corporate-action identity must match its evidence reference")
+        if self.action_type is CorporateActionType.CASH_DIVIDEND:
+            if self.cash_dividend_terms is None or self.share_adjustment_terms is not None:
+                raise ValueError("cash-dividend observations require cash terms only")
+        elif self.cash_dividend_terms is not None or self.share_adjustment_terms is None:
+            raise ValueError("share-adjustment observations require share terms only")
+        return self
+
+
 class SpecialistLifecycleObservation(SpecialistAnalysisModel):
     """Current-run metadata retained by Ledger without inventing history."""
 
@@ -547,6 +599,10 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
         max_length=250,
     )
     estimate_observations: tuple[SpecialistEstimateObservation, ...] = Field(
+        default=(),
+        max_length=250,
+    )
+    corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = Field(
         default=(),
         max_length=250,
     )
@@ -690,6 +746,25 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             )
         )
 
+    @field_validator("corporate_action_observations")
+    @classmethod
+    def order_corporate_action_observations(
+        cls,
+        values: tuple[SpecialistCorporateActionObservation, ...],
+    ) -> tuple[SpecialistCorporateActionObservation, ...]:
+        return tuple(
+            sorted(
+                dict.fromkeys(values),
+                key=lambda item: (
+                    item.effective_at or item.published_at,
+                    item.instrument.instrument_id,
+                    item.occurrence_id,
+                    item.action_version,
+                    item.action_id,
+                ),
+            )
+        )
+
     @field_validator("supporting_evidence")
     @classmethod
     def order_supporting_evidence(
@@ -753,6 +828,23 @@ class SpecialistAnalysis(SpecialistAnalysisModel):
             raise ValueError("estimate observations must reference assigned supporting evidence")
         if self.agent_id != "athena_analyst" and self.estimate_observations:
             raise ValueError("only Athena Analyst may retain estimate observations")
+        if any(
+            _reference_key(observation.evidence_reference) not in supporting_keys
+            for observation in self.corporate_action_observations
+        ):
+            raise ValueError("corporate-action observations must reference assigned supporting evidence")
+        if self.agent_id not in {
+            "athena_analyst",
+            "scout_recon",
+            "chartist_technician",
+        } and self.corporate_action_observations:
+            raise ValueError("only Athena, Scout, and Chartist may retain corporate-action observations")
+        if any(
+            observation.action_type
+            in {CorporateActionType.CASH_DIVIDEND}
+            for observation in self.corporate_action_observations
+        ) and self.agent_id == "chartist_technician":
+            raise ValueError("Chartist may retain split corporate actions only")
         feature_keys = {
             _feature_reference_key(reference)
             for reference in self.derived_feature_references
@@ -850,6 +942,7 @@ def create_specialist_analysis(
     positioning_observations: tuple[SpecialistPositioningObservation, ...] = (),
     fundamental_observations: tuple[SpecialistFundamentalObservation, ...] = (),
     estimate_observations: tuple[SpecialistEstimateObservation, ...] = (),
+    corporate_action_observations: tuple[SpecialistCorporateActionObservation, ...] = (),
     supporting_evidence: tuple[SpecialistEvidenceReference, ...] = (),
     derived_feature_references: tuple[SpecialistDerivedFeatureReference, ...] = (),
     invalidating_conditions: tuple[str, ...] = (),
@@ -877,6 +970,7 @@ def create_specialist_analysis(
         positioning_observations=positioning_observations,
         fundamental_observations=fundamental_observations,
         estimate_observations=estimate_observations,
+        corporate_action_observations=corporate_action_observations,
         supporting_evidence=supporting_evidence,
         derived_feature_references=derived_feature_references,
         invalidating_conditions=invalidating_conditions,

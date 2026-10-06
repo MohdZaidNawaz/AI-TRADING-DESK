@@ -463,6 +463,52 @@ signals or create approval authority. Pilot remains `DISABLED_NO_EXECUTION`.
 The public `/api/analyze` schema is unchanged. This phase adds no frontend work,
 MT5 or broker adapter, order placement, or execution authority.
 
+## Phase 5B-7 provider-neutral corporate-action evidence
+
+Phase 5B-7 adds a distinct internal path for source-reported issuer actions:
+cash dividends, stock splits, and reverse stock splits. It is separate from
+prices, OHLCV bars, derived features, financial statements, analyst estimates,
+valuation calculations, and total-return or historical-price adjustment logic:
+
+```text
+future corporate-action connector
+    -> immutable NormalizedCorporateAction
+    -> bounded process-local CorporateActionStore
+    -> immutable EvidenceSnapshot.corporate_actions
+    -> EvidenceRouter
+    -> specialist artifacts
+```
+
+Each action has a source-scoped issuer/instrument identity, provider occurrence
+ID, lifecycle, explicit published/effective times, optional discrete calendar
+dates, immutable version/revision linkage, and typed terms. Cash dividends
+require a finite currency amount and explicit currency. Share adjustments
+require positive whole-number numerator/denominator terms. Raw provider payloads
+are excluded from contracts, snapshots, specialist artifacts, and proposal
+traces. FRIDAY does not reconcile issuers across providers or infer aliases.
+
+The process-local store is thread-safe and bounded by source-scoped
+instruments, action occurrences, versions, and a separate bounded
+conflict-fingerprint registry. Exact duplicates are idempotent. Conflicting
+content for the same source, instrument, occurrence, and version is rejected
+while its deterministic metadata-retention horizon remains. No provider, API
+route, polling job, database, cache, or credential is introduced in this phase.
+
+Athena Analyst and Scout Recon receive typed corporate-action facts. Chartist
+Technician receives only split and reverse-split facts to contextualize a
+possible series discontinuity. Ledger The Book receives provenance references
+only. Atlas, Capitol, Oracle, Sentinel, and Pilot receive no corporate-action
+values. These facts do not create price adjustments, dividend-yield or
+total-return calculations, valuation, forecasts, probabilities, market stance,
+trade direction, entries, stops, targets, or sizing.
+
+Corporate-action provenance participates in internal proposal traceability only.
+It is not market evidence, cannot satisfy Sentinel freshness, portfolio, sizing,
+risk-context, or specialist-agreement requirements, and does not populate risk
+signals or create approval authority. Pilot remains `DISABLED_NO_EXECUTION`.
+The public `/api/analyze` schema is unchanged. This phase adds no frontend work,
+MT5 or broker adapter, order placement, or execution authority.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:

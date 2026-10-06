@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from app.evidence.economic_store import latest_economic_versions
 from app.evidence.models import (
+    CorporateActionEvidence,
     AgentEvidence,
     EvidenceProvenance,
     EvidenceSnapshot,
@@ -16,6 +17,7 @@ from app.evidence.models import (
     PositioningObservationEvidence,
     PositioningSeriesEvidence,
 )
+from app.models.corporate_actions import CorporateActionType
 from app.models.economic_events import EconomicReleaseStatus
 
 
@@ -48,6 +50,8 @@ _CONTEXTUAL_MARKET_LIMIT = 3
 _CAPITOL_POSITIONING_OBSERVATION_LIMIT = 100
 _ATHENA_FUNDAMENTAL_OBSERVATION_LIMIT = 100
 _ATHENA_ESTIMATE_OBSERVATION_LIMIT = 100
+_CORPORATE_ACTION_LIMIT = 100
+_CHARTIST_CORPORATE_ACTION_LIMIT = 50
 _ATLAS_ECONOMIC_STATUSES = frozenset(
     {
         EconomicReleaseStatus.SCHEDULED,
@@ -125,6 +129,23 @@ class EvidenceRouter:
         )
         estimate_series = routed_estimates if agent_id == "athena_analyst" else ()
 
+        # Corporate actions are discrete issuer facts, deliberately separate
+        # from statements, estimates, and price evidence.  Athena and Scout
+        # receive typed facts; Chartist receives only share adjustments for
+        # non-economic series-discontinuity context. Ledger has provenance only.
+        bounded_corporate_actions = snapshot.corporate_actions[:_CORPORATE_ACTION_LIMIT]
+        if agent_id in {"athena_analyst", "scout_recon"}:
+            corporate_actions = bounded_corporate_actions
+        elif agent_id == "chartist_technician":
+            corporate_actions = tuple(
+                action
+                for action in bounded_corporate_actions
+                if action.action_type
+                in {CorporateActionType.STOCK_SPLIT, CorporateActionType.REVERSE_STOCK_SPLIT}
+            )[:_CHARTIST_CORPORATE_ACTION_LIMIT]
+        else:
+            corporate_actions = ()
+
         current_economic_events = latest_economic_versions(snapshot.economic_events)
         if agent_id == "atlas_macro":
             economic_events = tuple(
@@ -176,6 +197,8 @@ class EvidenceRouter:
                 observation.provenance
                 for series in routed_estimates
                 for observation in series.observations
+        ) + tuple(
+            action.provenance for action in bounded_corporate_actions
             )
 
         return AgentEvidence(
@@ -187,6 +210,7 @@ class EvidenceRouter:
             positioning_series=positioning_series,
             fundamental_series=fundamental_series,
             estimate_series=estimate_series,
+            corporate_actions=corporate_actions,
             provenance=provenance,
         )
 

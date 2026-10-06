@@ -2,6 +2,8 @@
 
 from app.evidence.models import (
     AgentEvidence,
+    CorporateActionEvidence,
+    CorporateActionSnapshot,
     EconomicEventEvidence,
     EconomicEventSnapshot,
     EvidenceProvenance,
@@ -37,6 +39,7 @@ from app.evidence.models import (
     symbols_match,
 )
 from app.evidence.economic_store import EconomicEventStore, latest_economic_versions
+from app.evidence.corporate_action_store import CorporateActionStore, latest_corporate_action_versions
 from app.evidence.fundamental_store import FundamentalStore
 from app.evidence.estimate_store import EstimateStore
 from app.evidence.macro_store import MacroSeriesStore
@@ -47,6 +50,9 @@ from app.evidence.series_store import MarketSeriesStore
 
 __all__ = [
     "AgentEvidence",
+    "CorporateActionEvidence",
+    "CorporateActionSnapshot",
+    "CorporateActionStore",
     "EconomicEventEvidence",
     "EconomicEventSnapshot",
     "EconomicEventStore",
@@ -90,4 +96,5 @@ __all__ = [
     "canonical_symbol",
     "symbols_match",
     "latest_economic_versions",
+    "latest_corporate_action_versions",
 ]

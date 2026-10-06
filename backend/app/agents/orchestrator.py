@@ -31,6 +31,7 @@ from app.models.macro_series import NormalizedMacroObservation
 from app.models.positioning import NormalizedPositioningObservation
 from app.models.fundamentals import NormalizedFundamentalObservation
 from app.models.estimates import NormalizedEstimateObservation
+from app.models.corporate_actions import NormalizedCorporateAction
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
@@ -410,6 +411,10 @@ class FridayCore:
     ) -> object:
         """Stage a source-reported estimate without analysis or execution."""
         return self._evidence_store.ingest_estimate_observation(observation)
+
+    def ingest_corporate_action(self, action: NormalizedCorporateAction) -> object:
+        """Stage one source-reported action without analysis or execution."""
+        return self._evidence_store.ingest_corporate_action(action)
 
     @property
     def recent_market_events(self) -> tuple[NormalizedDataEvent, ...]:

@@ -59,6 +59,15 @@ from app.models.estimates import (
     EstimateSource,
     NormalizedEstimateObservation,
 )
+from app.models.corporate_actions import (
+    CashDividendTerms,
+    CorporateActionInstrumentKey,
+    CorporateActionLifecycle,
+    CorporateActionSource,
+    CorporateActionType,
+    NormalizedCorporateAction,
+    ShareAdjustmentTerms,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1154,6 +1163,70 @@ class NewsEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class CorporateActionEvidence:
+    """Safe immutable projection of one source-reported corporate-action version."""
+
+    action_id: str
+    source: CorporateActionSource
+    instrument: CorporateActionInstrumentKey
+    occurrence_id: str
+    action_type: CorporateActionType
+    lifecycle: CorporateActionLifecycle
+    cash_dividend_terms: CashDividendTerms | None
+    share_adjustment_terms: ShareAdjustmentTerms | None
+    published_at: datetime
+    effective_at: datetime | None
+    ex_date: date | None
+    record_date: date | None
+    payment_date: date | None
+    action_version: int
+    revision_of_action_id: str | None
+    received_at: datetime
+    provenance: EvidenceProvenance
+    fingerprint: str
+
+    @classmethod
+    def from_action(cls, action: NormalizedCorporateAction) -> "CorporateActionEvidence":
+        if not isinstance(action, NormalizedCorporateAction):
+            raise TypeError("action must be a NormalizedCorporateAction")
+        return cls(
+            action_id=action.action_id,
+            source=action.source,
+            instrument=action.instrument,
+            occurrence_id=action.occurrence_id,
+            action_type=action.action_type,
+            lifecycle=action.lifecycle,
+            cash_dividend_terms=action.cash_dividend_terms,
+            share_adjustment_terms=action.share_adjustment_terms,
+            published_at=_as_utc(action.published_at),
+            effective_at=(
+                _as_utc(action.effective_at) if action.effective_at is not None else None
+            ),
+            ex_date=action.ex_date,
+            record_date=action.record_date,
+            payment_date=action.payment_date,
+            action_version=action.action_version,
+            revision_of_action_id=action.revision_of_action_id,
+            received_at=_as_utc(action.received_at),
+            provenance=_provenance_from_source(
+                event_id=action.action_id,
+                source=action.source,
+                event_timestamp=action.effective_at or action.published_at,
+                received_at=action.received_at,
+            ),
+            fingerprint=action.fingerprint,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CorporateActionSnapshot:
+    """Bounded immutable output from the corporate-action store."""
+
+    actions: tuple[CorporateActionEvidence, ...] = ()
+    fingerprint: str = sha256(b"[]").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSnapshot:
     """A deterministic, immutable view of evidence available to an analysis run."""
 
@@ -1165,6 +1238,7 @@ class EvidenceSnapshot:
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
+    corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     symbol: str | None = None
 
 
@@ -1180,6 +1254,7 @@ class AgentEvidence:
     positioning_series: tuple[PositioningSeriesEvidence, ...] = ()
     fundamental_series: tuple[FundamentalSeriesEvidence, ...] = ()
     estimate_series: tuple[EstimateSeriesEvidence, ...] = ()
+    corporate_actions: tuple[CorporateActionEvidence, ...] = ()
     provenance: tuple[EvidenceProvenance, ...] = ()
 
 
@@ -1215,6 +1290,7 @@ def _provenance_from_source(
         | EconomicEventSource
         | FundamentalSource
         | EstimateSource
+        | CorporateActionSource
         | PositioningSource
     ),
     event_timestamp: datetime,

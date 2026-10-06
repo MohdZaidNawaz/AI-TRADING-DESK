@@ -7,6 +7,8 @@ from app.ingestion.service import (
 )
 from app.ingestion.contracts import (
     EconomicEventConsumer,
+    CorporateActionConsumer,
+    CorporateActionConnector,
     EstimateObservationConsumer,
     EstimateSeriesConnector,
     FundamentalObservationConsumer,
@@ -24,6 +26,8 @@ __all__ = [
     "NewsResearchIngestionService",
     "NewsEvidenceConsumer",
     "EconomicEventConsumer",
+    "CorporateActionConsumer",
+    "CorporateActionConnector",
     "EstimateObservationConsumer",
     "EstimateSeriesConnector",
     "FundamentalObservationConsumer",

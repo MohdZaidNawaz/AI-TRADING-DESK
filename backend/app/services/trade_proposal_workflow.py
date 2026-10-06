@@ -169,6 +169,21 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
             )
             created_at_values.append(reference_time)
 
+    # Corporate-action evidence is traceability-only. It is neither market
+    # evidence nor a Sentinel approval input.
+    for action in snapshot.corporate_actions:
+        reference_time = action.effective_at or action.published_at
+        references.append(
+            EvidenceReference(
+                event_id=action.action_id,
+                source_id=action.provenance.source_id,
+                domain=action.provenance.domain,
+                timestamp=reference_time,
+                symbol=canonical_symbol(action.instrument.symbol),
+            )
+        )
+        created_at_values.append(reference_time)
+
     ordered_references = tuple(
         sorted(
             references,
@@ -234,6 +249,15 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 "latest_as_of": series.latest_as_of.isoformat(),
             }
             for series in sorted(snapshot.estimate_series, key=lambda item: item.series_id)
+        ]
+    if snapshot.corporate_actions:
+        fingerprint_input["corporate_actions"] = [
+            {
+                "action_id": action.action_id,
+                "fingerprint": action.fingerprint,
+                "action_version": action.action_version,
+            }
+            for action in snapshot.corporate_actions
         ]
     fingerprint = _fingerprint(fingerprint_input)
     created_at = max(created_at_values, default=datetime(1970, 1, 1, tzinfo=UTC))

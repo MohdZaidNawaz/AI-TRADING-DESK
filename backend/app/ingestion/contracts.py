@@ -14,6 +14,7 @@ from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservatio
 from app.models.positioning import PositioningSource, NormalizedPositioningObservation
 from app.models.fundamentals import FundamentalSource, NormalizedFundamentalObservation
 from app.models.estimates import EstimateSource, NormalizedEstimateObservation
+from app.models.corporate_actions import CorporateActionSource, NormalizedCorporateAction
 
 
 @runtime_checkable
@@ -152,3 +153,21 @@ class EstimateSeriesConnector(Protocol):
 
     def normalize(self, payload: Mapping[str, Any]) -> NormalizedEstimateObservation:
         """Keep source parsing outside estimate evidence and agent layers."""
+
+
+@runtime_checkable
+class CorporateActionConsumer(Protocol):
+    """Stages normalized source-reported corporate actions without provider parsing."""
+
+    def ingest_corporate_action(self, action: NormalizedCorporateAction) -> object:
+        """Pass one immutable action version to its dedicated evidence store."""
+
+
+@runtime_checkable
+class CorporateActionConnector(Protocol):
+    """Future connector boundary for one normalized corporate action."""
+
+    source: CorporateActionSource
+
+    def normalize(self, payload: Mapping[str, Any]) -> NormalizedCorporateAction:
+        """Keep source parsing outside corporate-action evidence and agents."""
