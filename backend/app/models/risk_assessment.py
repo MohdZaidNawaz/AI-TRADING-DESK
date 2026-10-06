@@ -10,6 +10,7 @@ import json
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.models.schemas import APIModel
+from app.models.portfolio_risk import SourceAccountKey
 
 
 class RiskAssessmentModel(APIModel):
@@ -23,6 +24,56 @@ class RiskCheckStatus(str, Enum):
     REJECTED = "rejected"
     INSUFFICIENT_DATA = "insufficient_data"
     NOT_APPLICABLE = "not_applicable"
+
+
+class EventRiskStatus(str, Enum):
+    ASSESSED_CLEAR = "assessed_clear"
+    ASSESSED_RELEVANT = "assessed_relevant"
+    INSUFFICIENT_DATA = "insufficient_data"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class SentinelAccountBinding(RiskAssessmentModel):
+    """Exact source-scoped account and compatible snapshot selection."""
+
+    account: SourceAccountKey
+    portfolio_snapshot_id: str = Field(min_length=1, max_length=160)
+    portfolio_snapshot_fingerprint: str = Field(min_length=64, max_length=64)
+    metrics_snapshot_id: str = Field(min_length=1, max_length=160)
+    metrics_snapshot_fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class SentinelEventRiskAssessment(RiskAssessmentModel):
+    """Factual event-evidence assessment; never a trade recommendation."""
+
+    domain: str = Field(pattern=r"^(news|economic_event|corporate_action)$")
+    status: EventRiskStatus
+    evidence_references: tuple["RiskCheckInputReference", ...] = ()
+    reason_codes: tuple[str, ...] = ()
+
+    @field_validator("evidence_references")
+    @classmethod
+    def order_event_references(
+        cls, values: tuple["RiskCheckInputReference", ...]
+    ) -> tuple["RiskCheckInputReference", ...]:
+        return tuple(sorted(set(values), key=lambda item: (item.reference_type, item.reference_id)))
+
+    @field_validator("reason_codes")
+    @classmethod
+    def order_event_reasons(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted({value.strip() for value in values if value.strip()}))
+
+    @computed_field(return_type=str)
+    @property
+    def fingerprint(self) -> str:
+        return _fingerprint(
+            {
+                "domain": self.domain,
+                "status": self.status.value,
+                "evidence_references": [item.model_dump(mode="json") for item in self.evidence_references],
+                "reason_codes": list(self.reason_codes),
+            }
+        )
 
 
 class RiskCheckInputReference(RiskAssessmentModel):
@@ -111,6 +162,8 @@ class SentinelRiskAssessment(RiskAssessmentModel):
     proposal_fingerprint: str = Field(min_length=64, max_length=64)
     evidence_fingerprint: str = Field(min_length=64, max_length=64)
     evidence_references: tuple[RiskCheckInputReference, ...] = ()
+    account_binding: SentinelAccountBinding | None = None
+    event_assessments: tuple[SentinelEventRiskAssessment, ...] = ()
     checks: tuple[RiskCheckResult, ...] = ()
     evaluated_at: datetime
     overall_status: RiskCheckStatus
@@ -151,6 +204,16 @@ class SentinelRiskAssessment(RiskAssessmentModel):
             raise ValueError("risk assessment checks must have unique deterministic IDs")
         return tuple(unique[key] for key in sorted(unique))
 
+    @field_validator("event_assessments")
+    @classmethod
+    def canonicalize_event_assessments(
+        cls, values: tuple[SentinelEventRiskAssessment, ...]
+    ) -> tuple[SentinelEventRiskAssessment, ...]:
+        unique = {item.domain: item for item in values}
+        if len(unique) != len(values):
+            raise ValueError("event risk assessments must have unique domains")
+        return tuple(unique[key] for key in sorted(unique))
+
     @model_validator(mode="after")
     def validate_overall_status(self) -> "SentinelRiskAssessment":
         expected = _overall_status(self.checks)
@@ -182,6 +245,10 @@ class SentinelRiskAssessment(RiskAssessmentModel):
                 "evidence_references": [
                     item.model_dump(mode="json") for item in self.evidence_references
                 ],
+                "account_binding": (
+                    self.account_binding.model_dump(mode="json") if self.account_binding else None
+                ),
+                "event_assessments": [item.fingerprint for item in self.event_assessments],
                 "checks": [item.fingerprint for item in self.checks],
                 "overall_status": self.overall_status.value,
             }

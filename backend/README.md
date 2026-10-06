@@ -816,3 +816,24 @@ metrics (Phase 7B), introduce freshness or news/economic/corporate event-risk
 assessment (Phase 7C), or change the process-local approval lifecycle (Phase
 7D). Sentinel remains the sole approval authority and Pilot remains
 `DISABLED_NO_EXECUTION`.
+
+## Phase 7 — Production Sentinel Risk Policy
+
+Phase 7 preserves Sentinel as FRIDAY's sole approval authority. Phase 7A adds
+an immutable, versioned policy and deterministic assessment lineage. Phase 7B
+adds optional policy-controlled binding to one exact source-scoped account,
+portfolio snapshot, and compatible derived metrics snapshot; no account values
+are inferred or reconciled across sources. Phase 7C adds policy-controlled
+freshness and factual news, economic-event, and corporate-action evidence
+checks. Missing, stale, future-dated, ambiguous, or incompatible required
+evidence fails closed as `INSUFFICIENT_DATA`; explicit policy-limit breaches are
+`REJECTED`.
+
+Phase 7D makes the internal approval registry bounded and deterministic. It is
+still process-local by design: after restart, approvals are unavailable and
+therefore fail closed. It stores only the minimum Sentinel decision identities,
+never provider payloads, article bodies, credentials, or execution data.
+
+No Phase 7 component creates a trade direction, entry, stop, target, leverage,
+or automatic sizing. Master and thesis remain non-authorizing. Pilot remains
+`DISABLED_NO_EXECUTION`; there is no MT5, broker, or order-execution path.

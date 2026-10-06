@@ -80,6 +80,25 @@ class SentinelRiskPolicy(SentinelPolicyModel):
     max_requested_risk_fraction: FiniteFloat | None = None
     required_agreeing_specialists: int | None = Field(default=None, ge=1)
     reject_conflicting_signals: bool | None = None
+    # Phase 7B/7C settings are disabled unless explicitly selected by a
+    # versioned policy.  None never means a hidden limit.
+    require_portfolio_metric_binding: bool = False
+    require_artifact_backed_specialist_agreement: bool = False
+    require_news_event_assessment: bool = False
+    require_economic_event_assessment: bool = False
+    require_corporate_action_assessment: bool = False
+    max_portfolio_evidence_age_seconds: int | None = Field(default=None, ge=1)
+    max_portfolio_metrics_age_seconds: int | None = Field(default=None, ge=1)
+    max_news_evidence_age_seconds: int | None = Field(default=None, ge=1)
+    max_economic_event_age_seconds: int | None = Field(default=None, ge=1)
+    max_corporate_action_age_seconds: int | None = Field(default=None, ge=1)
+    max_future_clock_skew_seconds: int | None = Field(default=None, ge=0)
+    max_equity_utilization: FiniteFloat | None = None
+    max_margin_utilization: FiniteFloat | None = None
+    max_account_drawdown: FiniteFloat | None = None
+    max_daily_loss_utilization: FiniteFloat | None = None
+    max_absolute_position_exposure: FiniteFloat | None = None
+    max_portfolio_concentration: FiniteFloat | None = None
     metadata: tuple[SentinelPolicyMetadata, ...] = ()
 
     @field_validator("policy_id", "policy_version", mode="before")
@@ -117,6 +136,16 @@ class SentinelRiskPolicy(SentinelPolicyModel):
             raise ValueError("policy expiry must be after its effective time")
         if self.max_requested_risk_fraction is not None and self.max_requested_risk_fraction <= 0:
             raise ValueError("maximum requested risk fraction must be positive")
+        limits = (
+            self.max_equity_utilization,
+            self.max_margin_utilization,
+            self.max_account_drawdown,
+            self.max_daily_loss_utilization,
+            self.max_absolute_position_exposure,
+            self.max_portfolio_concentration,
+        )
+        if any(limit is not None and limit <= 0 for limit in limits):
+            raise ValueError("configured portfolio metric limits must be positive")
         return self
 
     def is_effective_at(self, evaluated_at: datetime) -> bool:
@@ -145,6 +174,25 @@ class SentinelRiskPolicy(SentinelPolicyModel):
                 "max_requested_risk_fraction": self.max_requested_risk_fraction,
                 "required_agreeing_specialists": self.required_agreeing_specialists,
                 "reject_conflicting_signals": self.reject_conflicting_signals,
+                "require_portfolio_metric_binding": self.require_portfolio_metric_binding,
+                "require_artifact_backed_specialist_agreement": (
+                    self.require_artifact_backed_specialist_agreement
+                ),
+                "require_news_event_assessment": self.require_news_event_assessment,
+                "require_economic_event_assessment": self.require_economic_event_assessment,
+                "require_corporate_action_assessment": self.require_corporate_action_assessment,
+                "max_portfolio_evidence_age_seconds": self.max_portfolio_evidence_age_seconds,
+                "max_portfolio_metrics_age_seconds": self.max_portfolio_metrics_age_seconds,
+                "max_news_evidence_age_seconds": self.max_news_evidence_age_seconds,
+                "max_economic_event_age_seconds": self.max_economic_event_age_seconds,
+                "max_corporate_action_age_seconds": self.max_corporate_action_age_seconds,
+                "max_future_clock_skew_seconds": self.max_future_clock_skew_seconds,
+                "max_equity_utilization": self.max_equity_utilization,
+                "max_margin_utilization": self.max_margin_utilization,
+                "max_account_drawdown": self.max_account_drawdown,
+                "max_daily_loss_utilization": self.max_daily_loss_utilization,
+                "max_absolute_position_exposure": self.max_absolute_position_exposure,
+                "max_portfolio_concentration": self.max_portfolio_concentration,
                 "metadata": [item.model_dump(mode="json") for item in self.metadata],
             }
         )

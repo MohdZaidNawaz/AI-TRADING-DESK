@@ -217,6 +217,11 @@ class SentinelDecision(ProposalModel):
     policy_fingerprint: str = Field(min_length=64, max_length=64)
     assessment_id: str = Field(min_length=1, max_length=160)
     assessment_fingerprint: str = Field(min_length=64, max_length=64)
+    account_id: str | None = Field(default=None, max_length=160)
+    portfolio_snapshot_id: str | None = Field(default=None, max_length=160)
+    portfolio_snapshot_fingerprint: str | None = Field(default=None, min_length=64, max_length=64)
+    metrics_snapshot_id: str | None = Field(default=None, max_length=160)
+    metrics_snapshot_fingerprint: str | None = Field(default=None, min_length=64, max_length=64)
     approval_id: str | None = Field(default=None, max_length=120)
 
     @field_validator("evaluated_at", "expires_at")
@@ -236,6 +241,10 @@ class VerifiedSentinelApproval(ProposalModel):
     proposal_fingerprint: str
     analysis_id: str
     evidence_fingerprint: str
+    policy_id: str
+    policy_fingerprint: str
+    assessment_id: str
+    assessment_fingerprint: str
     decision_id: str
     approval_id: str
     expires_at: datetime

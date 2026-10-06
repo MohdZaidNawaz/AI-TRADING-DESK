@@ -12,6 +12,8 @@ from app.models.risk_assessment import (
     RiskCheckResult,
     RiskCheckStatus,
     SentinelRiskAssessment,
+    SentinelAccountBinding,
+    SentinelEventRiskAssessment,
 )
 from app.models.sentinel_policy import (
     MissingDataStrategy,
@@ -93,6 +95,9 @@ def build_risk_assessment(
     risk_limit_rejections: tuple[str, ...],
     signal_rejections: tuple[str, ...],
     missing_requirements: tuple[str, ...],
+    additional_checks: tuple[RiskCheckResult, ...] = (),
+    account_binding: SentinelAccountBinding | None = None,
+    event_assessments: tuple[SentinelEventRiskAssessment, ...] = (),
 ) -> SentinelRiskAssessment:
     """Convert existing Gate outcomes into immutable deterministic check facts."""
     base_references: tuple[RiskCheckInputReference, ...] = (
@@ -130,6 +135,7 @@ def build_risk_assessment(
             (*base_references, *evidence_inputs),
             missing=True,
         ),
+        *additional_checks,
     )
     return SentinelRiskAssessment(
         policy_id=policy.policy_id,
@@ -139,6 +145,8 @@ def build_risk_assessment(
         proposal_fingerprint=proposal_fingerprint,
         evidence_fingerprint=evidence_fingerprint,
         evidence_references=evidence_inputs,
+        account_binding=account_binding,
+        event_assessments=event_assessments,
         checks=checks,
         evaluated_at=evaluated_at,
         overall_status=_overall_from_checks(checks),

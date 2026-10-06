@@ -24,11 +24,12 @@ from app.models.proposals import (
     TradeProposalWorkflowResult,
     VerifiedSentinelApproval,
 )
-from app.models.risk_assessment import SentinelRiskAssessment
+from app.models.risk_assessment import RiskCheckStatus, SentinelAccountBinding, SentinelRiskAssessment
 from app.models.schemas import AnalyzeResponse
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
 from app.models.trade_thesis import MasterTradeThesis
 from app.services.sentinel_policy import build_risk_assessment, policy_from_risk_context
+from app.services.sentinel_production import production_checks
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
@@ -348,9 +349,12 @@ def proposal_fingerprint(proposal: TradeProposal) -> str:
 
 
 class ApprovalRegistry:
-    """Thread-safe process-local registry for idempotent, single-use approvals."""
+    """Thread-safe, bounded volatile registry; restart always fails closed."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_records: int = 1_000) -> None:
+        if max_records < 1:
+            raise ValueError("max_records must be positive")
+        self._max_records = max_records
         self._records: dict[str, _ApprovalRecord] = {}
         self._proposal_approvals: dict[tuple[str, str], str] = {}
         self._lock = RLock()
@@ -370,6 +374,7 @@ class ApprovalRegistry:
 
         key = (proposal.proposal_id, decision.proposal_fingerprint)
         with self._lock:
+            self._cleanup(decision.evaluated_at)
             existing_approval_id = self._proposal_approvals.get(key)
             if existing_approval_id is not None:
                 return self._records[existing_approval_id].decision
@@ -380,6 +385,10 @@ class ApprovalRegistry:
                     "proposal_fingerprint": decision.proposal_fingerprint,
                     "analysis_id": decision.analysis_id,
                     "evidence_fingerprint": decision.evidence_fingerprint,
+                    "policy_id": decision.policy_id,
+                    "policy_fingerprint": decision.policy_fingerprint,
+                    "assessment_id": decision.assessment_id,
+                    "assessment_fingerprint": decision.assessment_fingerprint,
                     "decision_id": decision.decision_id,
                     "expires_at": decision.expires_at.isoformat() if decision.expires_at else None,
                 }
@@ -387,6 +396,7 @@ class ApprovalRegistry:
             registered = decision.model_copy(update={"approval_id": approval_id})
             self._records[approval_id] = _ApprovalRecord(decision=registered)
             self._proposal_approvals[key] = approval_id
+            self._trim()
             return registered
 
     def claim(
@@ -429,17 +439,52 @@ class ApprovalRegistry:
                 proposal_fingerprint=registered.proposal_fingerprint,
                 analysis_id=proposal.analysis_id,
                 evidence_fingerprint=proposal.evidence_fingerprint,
+                policy_id=registered.policy_id,
+                policy_fingerprint=registered.policy_fingerprint,
+                assessment_id=registered.assessment_id,
+                assessment_fingerprint=registered.assessment_fingerprint,
                 decision_id=registered.decision_id,
                 approval_id=registered.approval_id,
                 expires_at=registered.expires_at,
+            )
+
+    def _cleanup(self, now: datetime) -> None:
+        for approval_id, record in tuple(self._records.items()):
+            if record.decision.expires_at is None or now >= record.decision.expires_at:
+                self._records.pop(approval_id, None)
+                self._proposal_approvals.pop(
+                    (record.decision.proposal_id, record.decision.proposal_fingerprint),
+                    None,
+                )
+
+    def _trim(self) -> None:
+        overflow = len(self._records) - self._max_records
+        if overflow <= 0:
+            return
+        ordered = sorted(
+            self._records.items(),
+            key=lambda item: (item[1].decision.expires_at or item[1].decision.evaluated_at, item[0]),
+        )
+        for approval_id, record in ordered[:overflow]:
+            self._records.pop(approval_id, None)
+            self._proposal_approvals.pop(
+                (record.decision.proposal_id, record.decision.proposal_fingerprint),
+                None,
             )
 
 
 class SentinelRiskGate:
     """Evaluate explicit research proposals without portfolio or execution adapters."""
 
-    def __init__(self, registry: ApprovalRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: ApprovalRegistry | None = None,
+        policy=None,
+        account_binding: SentinelAccountBinding | None = None,
+    ) -> None:
         self._registry = registry or ApprovalRegistry()
+        self._policy = policy
+        self._account_binding = account_binding
 
     @property
     def registry(self) -> ApprovalRegistry:
@@ -470,7 +515,7 @@ class SentinelRiskGate:
         """Evaluate the existing rules and retain their immutable check trace."""
         fingerprint = proposal_fingerprint(proposal)
         evaluated_at = _evaluation_time(snapshot, risk_context)
-        policy = policy_from_risk_context(risk_context)
+        policy = self._policy or policy_from_risk_context(risk_context)
         snapshot_rejections = tuple(_proposal_snapshot_rejections(proposal, snapshot))
         parameter_rejections = tuple(_parameter_rejections(proposal.parameters))
         symbol_rejections: list[str] = []
@@ -497,6 +542,25 @@ class SentinelRiskGate:
 
         policy_check = policy.is_effective_at(evaluated_at)
         policy_rejections = () if policy_check else ("policy_not_effective",)
+        production, event_assessments = production_checks(
+            policy=policy,
+            snapshot=snapshot,
+            evaluated_at=evaluated_at,
+            account_binding=self._account_binding,
+        )
+        production_rejections = tuple(
+            code
+            for check in production
+            if check.status is RiskCheckStatus.REJECTED
+            for code in check.reason_codes
+        )
+        production_missing = tuple(
+            code
+            for check in production
+            if check.status is RiskCheckStatus.INSUFFICIENT_DATA
+            for code in check.reason_codes
+        )
+        missing = (*missing, *production_missing)
         rejection_reasons = [
             *snapshot_rejections,
             *parameter_rejections,
@@ -504,6 +568,7 @@ class SentinelRiskGate:
             *risk_limit_rejections,
             *signal_rejections,
             *policy_rejections,
+            *production_rejections,
         ]
         bundle = build_evidence_bundle(snapshot)
         assessment = build_risk_assessment(
@@ -520,6 +585,9 @@ class SentinelRiskGate:
             risk_limit_rejections=risk_limit_rejections,
             signal_rejections=signal_rejections,
             missing_requirements=missing,
+            additional_checks=production,
+            account_binding=self._account_binding,
+            event_assessments=event_assessments,
         )
 
         if rejection_reasons:
@@ -569,6 +637,21 @@ class SentinelRiskGate:
             policy_fingerprint=policy.fingerprint,
             assessment_id=assessment.assessment_id,
             assessment_fingerprint=assessment.fingerprint,
+            account_id=(self._account_binding.account.account_id if self._account_binding else None),
+            portfolio_snapshot_id=(
+                self._account_binding.portfolio_snapshot_id if self._account_binding else None
+            ),
+            portfolio_snapshot_fingerprint=(
+                self._account_binding.portfolio_snapshot_fingerprint
+                if self._account_binding
+                else None
+            ),
+            metrics_snapshot_id=(self._account_binding.metrics_snapshot_id if self._account_binding else None),
+            metrics_snapshot_fingerprint=(
+                self._account_binding.metrics_snapshot_fingerprint
+                if self._account_binding
+                else None
+            ),
         )
         return self._registry._record_approved_decision(proposal, decision), assessment
 
