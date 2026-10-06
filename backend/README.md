@@ -837,3 +837,20 @@ never provider payloads, article bodies, credentials, or execution data.
 No Phase 7 component creates a trade direction, entry, stop, target, leverage,
 or automatic sizing. Master and thesis remain non-authorizing. Pilot remains
 `DISABLED_NO_EXECUTION`; there is no MT5, broker, or order-execution path.
+
+## Phase 8 — Pilot Execution Architecture
+
+Pilot is an execution coordinator, never a strategy or risk engine. It can
+only verify a registered, unexpired, unconsumed Sentinel approval; without one
+it creates no `ExecutionIntent`. Intent preparation copies only explicit
+proposal values and preserves proposal, evidence, policy, assessment, and
+account lineage. It does not consume approval: consumption is reserved for a
+future successful adapter submission.
+
+Intents are immutable, deterministically identified, and retained in a bounded
+process-local store. Duplicate identical requests resolve to the same intent.
+Phase 8 stops at the `ExecutionAdapter` protocol and returns
+`ADAPTER_UNAVAILABLE`; no adapter is called. MT5/broker integration belongs to
+Phase 9. Phase 10 will add execution safety, reconciliation, kill switch, and
+order-state recovery. No MT5 package, credentials, broker session, symbol
+mapping, sizing calculation, or order submission exists in Phase 8.

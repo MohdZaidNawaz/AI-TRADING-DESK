@@ -448,6 +448,20 @@ class ApprovalRegistry:
                 expires_at=registered.expires_at,
             )
 
+    def verify(self, *, proposal: TradeProposal, decision: SentinelDecision, now: datetime) -> VerifiedSentinelApproval:
+        """Validate an approval without consuming it; reserved for Phase 8 intent creation."""
+        if decision.decision is not SentinelDecisionStatus.APPROVED or not decision.approval_id:
+            raise ApprovalClaimError("A registered Sentinel approval is required.")
+        with self._lock:
+            record = self._records.get(decision.approval_id)
+            if record is None or record.decision != decision:
+                raise ApprovalClaimError("Sentinel approval is not registered.")
+            if record.consumed or decision.expires_at is None or now >= decision.expires_at:
+                raise ApprovalClaimError("Sentinel approval is unavailable.")
+            if decision.proposal_id != proposal.proposal_id or decision.proposal_fingerprint != proposal_fingerprint(proposal):
+                raise ApprovalClaimError("Sentinel approval does not match the proposal.")
+            return VerifiedSentinelApproval(proposal_id=decision.proposal_id, proposal_fingerprint=decision.proposal_fingerprint, analysis_id=decision.analysis_id, evidence_fingerprint=decision.evidence_fingerprint, policy_id=decision.policy_id, policy_fingerprint=decision.policy_fingerprint, assessment_id=decision.assessment_id, assessment_fingerprint=decision.assessment_fingerprint, decision_id=decision.decision_id, approval_id=decision.approval_id, expires_at=decision.expires_at)
+
     def _cleanup(self, now: datetime) -> None:
         for approval_id, record in tuple(self._records.items()):
             if record.decision.expires_at is None or now >= record.decision.expires_at:
