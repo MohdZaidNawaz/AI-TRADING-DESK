@@ -37,6 +37,7 @@ from app.models.portfolio_risk import NormalizedPortfolioRiskSnapshot
 from app.models.derived_features import DerivedFeatureRequest, DerivedFeatureSnapshot
 from app.models.proposals import RiskContext, TradeProposalWorkflowResult
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
+from app.models.trade_thesis import MasterTradeThesis
 from app.services.trade_proposal_workflow import TradeProposalWorkflow, build_evidence_bundle
 from app.services.derived_feature_routing import DerivedFeatureRouter
 from app.services.derived_features import (
@@ -60,6 +61,7 @@ class _AnalysisRun:
     analysis: AnalyzeResponse
     specialist_analyses: tuple[SpecialistAnalysis, ...]
     master_synthesis: MasterSpecialistSynthesis
+    master_thesis: MasterTradeThesis
 
 
 class FridayCore:
@@ -278,6 +280,7 @@ class FridayCore:
             risk_context=risk_context,
             specialist_analyses=analysis_run.specialist_analyses,
             master_synthesis=analysis_run.master_synthesis,
+            master_thesis=analysis_run.master_thesis,
         )
 
     def _analyze_run(
@@ -316,6 +319,13 @@ class FridayCore:
             evidence_fingerprint=evidence_bundle.fingerprint,
             specialist_analyses=agent_run.specialist_analyses,
         )
+        master_thesis = self._master.create_trade_thesis(
+            analysis_id=analysis_id,
+            symbol=request.symbol,
+            evidence_fingerprint=evidence_bundle.fingerprint,
+            evidence_as_of=evidence_bundle.created_at,
+            master_synthesis=master_synthesis,
+        )
         analysis = AnalyzeResponse(
             analysis_id=analysis_id,
             mode="deterministic_mock",
@@ -330,6 +340,7 @@ class FridayCore:
             analysis=analysis,
             specialist_analyses=agent_run.specialist_analyses,
             master_synthesis=master_synthesis,
+            master_thesis=master_thesis,
         )
 
     def _calculate_derived_features(

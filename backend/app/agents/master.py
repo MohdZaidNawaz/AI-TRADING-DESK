@@ -12,11 +12,13 @@ from app.models.proposals import (
     TradeProposal,
 )
 from app.models.schemas import AgentAnalysis, Synthesis
+from app.models.trade_thesis import MasterTradeThesis
 from app.models.specialist_analysis import (
     MasterSpecialistSynthesis,
     SpecialistAnalysis,
     summarize_specialist_analyses,
 )
+from app.services.master_decision import MasterDecisionService
 
 
 class MasterAgent:
@@ -24,6 +26,9 @@ class MasterAgent:
 
     agent_id = "master"
     name = "F.R.I.D.A.Y. — The Master"
+
+    def __init__(self, *, decision_service: MasterDecisionService | None = None) -> None:
+        self._decision_service = decision_service or MasterDecisionService()
 
     def synthesize(
         self,
@@ -76,6 +81,7 @@ class MasterAgent:
         synthesis: Synthesis,
         specialist_analyses: tuple[SpecialistAnalysis, ...] = (),
         master_synthesis: MasterSpecialistSynthesis | None = None,
+        master_thesis: MasterTradeThesis | None = None,
     ) -> TradeProposal:
         """Create a non-executable research draft without inventing trade inputs.
 
@@ -123,6 +129,13 @@ class MasterAgent:
             )
         ):
             raise ValueError("Master synthesis must preserve the supplied specialist analyses")
+        if master_thesis is not None and (
+            master_synthesis is None
+            or master_thesis.analysis_id != analysis_id
+            or master_thesis.evidence_fingerprint != evidence_fingerprint
+            or master_thesis.master_synthesis_id != master_synthesis.synthesis_id
+        ):
+            raise ValueError("Master thesis must reference the supplied analysis and Master synthesis")
 
         analyses_by_agent = {analysis.agent_id: analysis for analysis in specialist_analyses}
         specialist_references = tuple(
@@ -172,6 +185,7 @@ class MasterAgent:
             evidence_fingerprint=evidence_fingerprint,
             evidence_references=evidence_references,
             specialist_references=specialist_references,
+            master_thesis_reference=(master_thesis.as_reference() if master_thesis else None),
             symbol=canonical,
             asset_class=asset_class,
             observed_market_reference=observed_market_reference,
@@ -182,4 +196,22 @@ class MasterAgent:
             ),
             created_at=created_at,
             missing_requirements=tuple(missing),
+        )
+
+    def create_trade_thesis(
+        self,
+        *,
+        analysis_id: str,
+        symbol: str | None,
+        evidence_fingerprint: str,
+        evidence_as_of: datetime,
+        master_synthesis: MasterSpecialistSynthesis,
+    ) -> MasterTradeThesis:
+        """Build one immutable analytical thesis with no approval authority."""
+        return self._decision_service.build(
+            analysis_id=analysis_id,
+            symbol=symbol,
+            evidence_fingerprint=evidence_fingerprint,
+            evidence_as_of=evidence_as_of,
+            master_synthesis=master_synthesis,
         )

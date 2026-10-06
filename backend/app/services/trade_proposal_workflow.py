@@ -26,6 +26,7 @@ from app.models.proposals import (
 )
 from app.models.schemas import AnalyzeResponse
 from app.models.specialist_analysis import MasterSpecialistSynthesis, SpecialistAnalysis
+from app.models.trade_thesis import MasterTradeThesis
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
@@ -557,6 +558,7 @@ class TradeProposalWorkflow:
         risk_context: RiskContext | None,
         specialist_analyses: tuple[SpecialistAnalysis, ...] = (),
         master_synthesis: MasterSpecialistSynthesis | None = None,
+        master_thesis: MasterTradeThesis | None = None,
     ) -> TradeProposalWorkflowResult:
         """Use the exact supplied snapshot for draft creation and Sentinel review.
 
@@ -575,6 +577,7 @@ class TradeProposalWorkflow:
             synthesis=analysis.synthesis,
             specialist_analyses=specialist_analyses,
             master_synthesis=master_synthesis,
+            master_thesis=master_thesis,
         )
         pending = draft.model_copy(update={"status": TradeProposalStatus.PENDING_RISK})
         decision = self._sentinel_gate.evaluate(

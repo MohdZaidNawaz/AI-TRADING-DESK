@@ -16,6 +16,7 @@ from pydantic import ConfigDict, Field, FiniteFloat, field_validator
 from app.models.events import AssetClass, DataDomain
 from app.models.schemas import APIModel, AnalyzeResponse
 from app.models.specialist_analysis import SpecialistStance
+from app.models.trade_thesis import MasterTradeThesisReference
 
 
 class ProposalModel(APIModel):
@@ -138,6 +139,7 @@ class TradeProposal(ProposalModel):
     evidence_fingerprint: str = Field(min_length=1, max_length=64)
     evidence_references: tuple[EvidenceReference, ...] = ()
     specialist_references: tuple[SpecialistAnalysisReference, ...] = ()
+    master_thesis_reference: MasterTradeThesisReference | None = None
     symbol: str | None = Field(default=None, max_length=40)
     asset_class: AssetClass = AssetClass.UNKNOWN
     observed_market_reference: ObservedMarketReference | None = None

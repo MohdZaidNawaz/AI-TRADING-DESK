@@ -644,6 +644,40 @@ stop, target, execution authority, provider integration, API route, or frontend
 change. Ledger receives no unrestricted metric values, Pilot remains
 `DISABLED_NO_EXECUTION`, and the public `/api/analyze` contract is unchanged.
 
+## Phase 6A-1 Master Decision Thesis Foundation
+
+Phase 6A-1 inserts one immutable `MasterTradeThesis` into FRIDAY's internal
+analysis flow:
+
+```text
+nine SpecialistAnalysis artifacts
+    -> MasterSpecialistSynthesis
+    -> MasterTradeThesis
+    -> non-executable TradeProposal draft
+    -> SentinelRiskGate
+    -> disabled Pilot boundary
+```
+
+The thesis is a provider-neutral analytical artifact built only from the
+structured specialist artifacts, Master synthesis, and safe evidence references
+already captured for the immutable analysis run. It has a deterministic ID and
+fingerprint, preserves artifact and evidence lineage, records factual coverage
+metadata, and represents only analytical bias: bullish, bearish, neutral,
+conflicted, or insufficient data.
+
+Analytical bias is deliberately distinct from trade direction. A bullish thesis
+does not create a `LONG` proposal; a bearish thesis does not create a `SHORT`
+proposal. The thesis cannot determine an entry, stop loss, target, risk/reward,
+position size, leverage, probability, approval, or execution instruction. It
+does not alter Sentinel policy or satisfy market freshness, portfolio context,
+sizing, specialist-agreement, or event/news-risk requirements.
+
+The existing proposal flow may retain only a compact thesis ID/fingerprint for
+traceability. Sentinel remains the sole approval gate and Pilot remains
+`DISABLED_NO_EXECUTION`. Phase 6A-2, if separately approved, would examine an
+explicit proposal-assembly boundary; it is not implemented here. No provider,
+API route, frontend, broker, MT5, credential, or execution change is included.
+
 ## News and research foundation
 
 The backend includes a provider-neutral staging layer for future financial-news and research sources:
