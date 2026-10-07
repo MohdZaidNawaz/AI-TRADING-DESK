@@ -854,3 +854,33 @@ Phase 8 stops at the `ExecutionAdapter` protocol and returns
 Phase 9. Phase 10 will add execution safety, reconciliation, kill switch, and
 order-state recovery. No MT5 package, credentials, broker session, symbol
 mapping, sizing calculation, or order submission exists in Phase 8.
+
+## Phase 9 — MT5 / Broker Adapter
+
+Phase 9 adds an optional `MT5ExecutionAdapter` behind the existing
+`ExecutionAdapter` protocol. Pilot still verifies the registered Sentinel
+approval and creates the immutable `ExecutionIntent`; it only calls the
+injected adapter's `prepare()` method and never imports MetaTrader5 directly.
+The adapter imports the optional Windows `MetaTrader5` package lazily, so the
+backend remains available when the package, terminal, local configuration, or
+terminal session is unavailable.
+
+MT5 settings are local-only and use process environment values before the
+`backend/.env` fallback: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, optional
+`MT5_PATH`, and optional `MT5_EXECUTION_MODE`. `backend/.env` is ignored by
+Git; use `.env.example` placeholders only. Passwords are not included in
+intents, results, logs, exceptions, or safe dry-run requests.
+
+The adapter needs an explicit mapping such as `{"XAUUSD": "XAUUSD.a"}`.
+It does not infer aliases or silently change a canonical symbol. Missing or
+ambiguous mappings, unavailable/hidden/untradable symbols, absent quotes,
+account-binding mismatches, invalid price precision, invalid volume steps, and
+unsupported explicit order or filling modes all fail closed.
+
+Execution modes are `disabled`, `read_only`, `dry_run`, and `live`; the default
+is `disabled`. `read_only` supports terminal/account details, instrument
+metadata, positions, and broker order status. `dry_run` validates the explicit
+intent and builds a sanitized request without calling `order_send`. `live` is
+also hard-blocked with `MT5_EXECUTION_DISABLED`: Phase 9 has no reachable live
+submission path. Phase 10 is reserved for the separate execution-safety gate,
+idempotency, reconciliation, kill switch, and recovery design.

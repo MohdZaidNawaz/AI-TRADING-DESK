@@ -7,6 +7,7 @@ from datetime import datetime
 from app.models.proposals import DisabledPilotResult, SentinelDecision, TradeProposal
 from app.services.trade_proposal_workflow import ApprovalClaimError, ApprovalRegistry
 from app.execution.intent_store import ExecutionIntentStore
+from app.execution.adapter import ExecutionAdapter
 from app.models.execution import ExecutionIntent, ExecutionResult, ExecutionStatus
 from app.services.execution_validation import validate
 
@@ -18,9 +19,10 @@ class PilotApprovalError(ValueError):
 class PilotExecutionCoordinator:
     """Validate a Sentinel approval, consume it once, and perform no execution."""
 
-    def __init__(self, approval_registry: ApprovalRegistry, intent_store: ExecutionIntentStore | None = None) -> None:
+    def __init__(self, approval_registry: ApprovalRegistry, intent_store: ExecutionIntentStore | None = None, adapter: ExecutionAdapter | None = None) -> None:
         self._approval_registry = approval_registry
         self._intent_store = intent_store or ExecutionIntentStore()
+        self._adapter = adapter
 
     def prepare_execution(self, *, proposal: TradeProposal, decision: SentinelDecision, now: datetime) -> tuple[ExecutionIntent | None, ExecutionResult]:
         """Validate an approved proposal without consuming approval or calling an adapter.
@@ -40,7 +42,9 @@ class PilotExecutionCoordinator:
         assert params is not None and params.direction is not None and params.reference_price is not None and params.stop_loss is not None and params.targets
         intent = ExecutionIntent(proposal_id=proposal.proposal_id, proposal_fingerprint=self._proposal_fingerprint(proposal), analysis_id=proposal.analysis_id, symbol=proposal.symbol or "", asset_class=proposal.asset_class, direction=params.direction, requested_entry=params.reference_price, stop_loss=params.stop_loss, take_profit=params.targets[0], requested_risk_fraction=params.requested_risk_fraction, approval_id=decision.approval_id or "", policy_id=decision.policy_id, policy_fingerprint=decision.policy_fingerprint, assessment_id=decision.assessment_id, assessment_fingerprint=decision.assessment_fingerprint, evidence_fingerprint=proposal.evidence_fingerprint, account_id=decision.account_id, portfolio_snapshot_id=decision.portfolio_snapshot_id, portfolio_snapshot_fingerprint=decision.portfolio_snapshot_fingerprint, created_at=now, expires_at=decision.expires_at or now, status=ExecutionStatus.READY_FOR_ADAPTER)
         intent=self._intent_store.put(intent)
-        return intent, ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=proposal.proposal_id, status=ExecutionStatus.ADAPTER_UNAVAILABLE, reason_codes=("ADAPTER_NOT_AVAILABLE",), evaluated_at=now, adapter_status="ADAPTER_NOT_CONNECTED")
+        if self._adapter is None:
+            return intent, ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=proposal.proposal_id, status=ExecutionStatus.ADAPTER_UNAVAILABLE, reason_codes=("ADAPTER_NOT_AVAILABLE",), evaluated_at=now, adapter_status="ADAPTER_NOT_CONNECTED")
+        return intent, self._adapter.prepare(intent)
 
     @staticmethod
     def _proposal_fingerprint(proposal: TradeProposal) -> str:
