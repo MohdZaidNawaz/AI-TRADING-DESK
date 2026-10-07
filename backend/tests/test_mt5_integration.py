@@ -22,8 +22,9 @@ def test_pilot_depends_only_on_execution_adapter_and_preserves_lineage() -> None
     proposal, decision, registry, now = approved_execution_pair()
     adapter = RecordingAdapter()
     intent, result = PilotExecutionCoordinator(registry, adapter=adapter).prepare_execution(proposal=proposal, decision=decision, now=now)
-    assert intent is adapter.intent
-    assert result.reason_codes == ("TEST_ADAPTER",)
+    assert intent is not None
+    assert adapter.intent is None
+    assert result.reason_codes == ("FINAL_SAFETY_GATE_REQUIRED",)
     assert intent.proposal_id == proposal.proposal_id
     assert intent.approval_id == decision.approval_id
     assert registry.verify(proposal=proposal, decision=decision, now=now).approval_id == decision.approval_id

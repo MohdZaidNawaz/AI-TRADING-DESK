@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from app.models.proposals import DisabledPilotResult, SentinelDecision, TradeProposal
 from app.services.trade_proposal_workflow import ApprovalClaimError, ApprovalRegistry
@@ -10,6 +11,9 @@ from app.execution.intent_store import ExecutionIntentStore
 from app.execution.adapter import ExecutionAdapter
 from app.models.execution import ExecutionIntent, ExecutionResult, ExecutionStatus
 from app.services.execution_validation import validate
+
+if TYPE_CHECKING:
+    from app.services.execution_gate import FinalExecutionGate
 
 
 class PilotApprovalError(ValueError):
@@ -19,10 +23,11 @@ class PilotApprovalError(ValueError):
 class PilotExecutionCoordinator:
     """Validate a Sentinel approval, consume it once, and perform no execution."""
 
-    def __init__(self, approval_registry: ApprovalRegistry, intent_store: ExecutionIntentStore | None = None, adapter: ExecutionAdapter | None = None) -> None:
+    def __init__(self, approval_registry: ApprovalRegistry, intent_store: ExecutionIntentStore | None = None, adapter: ExecutionAdapter | None = None, safety_gate: "FinalExecutionGate | None" = None) -> None:
         self._approval_registry = approval_registry
         self._intent_store = intent_store or ExecutionIntentStore()
         self._adapter = adapter
+        self._safety_gate = safety_gate
 
     def prepare_execution(self, *, proposal: TradeProposal, decision: SentinelDecision, now: datetime) -> tuple[ExecutionIntent | None, ExecutionResult]:
         """Validate an approved proposal without consuming approval or calling an adapter.
@@ -44,7 +49,12 @@ class PilotExecutionCoordinator:
         intent=self._intent_store.put(intent)
         if self._adapter is None:
             return intent, ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=proposal.proposal_id, status=ExecutionStatus.ADAPTER_UNAVAILABLE, reason_codes=("ADAPTER_NOT_AVAILABLE",), evaluated_at=now, adapter_status="ADAPTER_NOT_CONNECTED")
-        return intent, self._adapter.prepare(intent)
+        if self._safety_gate is None:
+            return intent, ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=proposal.proposal_id, status=ExecutionStatus.NOT_EXECUTED, reason_codes=("FINAL_SAFETY_GATE_REQUIRED",), evaluated_at=now, adapter_status="FINAL_GATE_REQUIRED")
+        mode = getattr(self._adapter, "execution_mode", "disabled")
+        execution_mode = getattr(mode, "value", str(mode))
+        safety = self._safety_gate.evaluate_submission(proposal=proposal, decision=decision, intent=intent, execution_mode=execution_mode, now=now)
+        return intent, ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=proposal.proposal_id, status=ExecutionStatus.NOT_EXECUTED, reason_codes=safety.reason_codes or ("EXECUTION_DISABLED",), evaluated_at=now, adapter_status=f"FINAL_GATE_{safety.execution.state.value.upper()}")
 
     @staticmethod
     def _proposal_fingerprint(proposal: TradeProposal) -> str:

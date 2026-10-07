@@ -884,3 +884,44 @@ intent and builds a sanitized request without calling `order_send`. `live` is
 also hard-blocked with `MT5_EXECUTION_DISABLED`: Phase 9 has no reachable live
 submission path. Phase 10 is reserved for the separate execution-safety gate,
 idempotency, reconciliation, kill switch, and recovery design.
+
+## Phase 10 — Final Execution Safety
+
+Phase 10 adds a provider-neutral execution-control layer around an existing
+immutable `ExecutionIntent`. It records deterministic lifecycle states,
+idempotency identity, approval/policy/assessment lineage, account identity,
+requested values, safe broker identifiers, transitions, and reconciliation
+status. The lifecycle permits only explicit state transitions; invalid changes
+fail closed.
+
+The final execution gate answers a different question from Sentinel:
+
+- Sentinel: *is this proposal risk-approved?*
+- Phase 10: *is this exact approved intent currently safe and authorized for
+  submission?*
+
+It checks exact Sentinel approval lineage, expiry, account identity, intent and
+proposal lineage, duplicate/conflicting attempts, a bounded thread-safe state
+store, a submission guard, adapter availability, and the kill switch. A
+process-local `ExecutionKillSwitch` blocks new submissions when triggered. It
+does not cancel broker orders or positions. When Pilot has an adapter, it
+requires this final gate and cannot call the adapter directly.
+
+The approval remains unconsumed for intent creation, validation, read-only MT5
+operations, and dry runs. It would be consumed only after a future, confirmed
+broker-submission boundary; no Phase 10 code crosses that boundary.
+
+Reconciliation compares sanitized provider-neutral broker observations with an
+execution record. Missing, unknown, or mismatched broker state becomes
+`RECONCILIATION_REQUIRED`; it never triggers an automatic retry or replacement
+order. The bounded store fails closed at capacity rather than evicting an
+execution identity and weakening duplicate protection. Because records are
+deliberately process-local, a restart cannot prove that an earlier broker order
+was absent. Such an attempt must be
+registered as stale and reconciled before any later submission.
+
+Live execution remains disabled. The current final gate always returns an
+execution block and no code path calls `ExecutionAdapter.submit()` or MT5
+`order_send`. A persistent execution ledger, broker reconciliation worker,
+production authorization, and any live-submission capability remain future
+hardening work.
