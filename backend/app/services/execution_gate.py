@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from app.audit.models import AuditEvent, AuditEventType
+from app.audit.service import AuditService
+from app.audit.store import AuditStoreError
 from app.execution.adapter import ExecutionAdapter
 from app.execution.kill_switch import ExecutionKillSwitch
 from app.execution.state_store import ExecutionStateStore
@@ -27,14 +30,18 @@ class FinalExecutionGate:
         state_store: ExecutionStateStore,
         kill_switch: ExecutionKillSwitch,
         adapter: ExecutionAdapter | None,
+        audit_service: AuditService | None = None,
     ) -> None:
         self._approval_registry = approval_registry
         self._state_store = state_store
         self._kill_switch = kill_switch
         self._adapter = adapter
+        self._audit_service = audit_service
 
     def register_intent(self, *, intent: ExecutionIntent, execution_mode: str, now: datetime) -> ExecutionSafetyDecision:
         record = build_execution_record(intent, execution_mode=execution_mode, now=now)
+        if not self._audit("intent_registration", record=record, intent=intent, now=now):
+            return ExecutionSafetyDecision(execution=record, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
         try:
             record, created = self._state_store.create_or_get(record)
         except ValueError:
@@ -44,6 +51,9 @@ class FinalExecutionGate:
         if created:
             record = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.VALIDATED, now=now)
             record = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.READY_FOR_SUBMISSION, now=now)
+            if not self._audit("intent_ready", record=record, intent=intent, now=now):
+                blocked = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.BLOCKED, now=now, reason_code="AUDIT_PERSISTENCE_UNAVAILABLE")
+                return ExecutionSafetyDecision(execution=blocked, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
         return ExecutionSafetyDecision(execution=record)
 
     def evaluate_submission(
@@ -60,6 +70,9 @@ class FinalExecutionGate:
         record = registered.execution
         if registered.reason_codes:
             return registered
+        if not self._audit("submission_evaluated", record=record, intent=intent, now=now):
+            blocked = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.BLOCKED, now=now, reason_code="AUDIT_PERSISTENCE_UNAVAILABLE")
+            return ExecutionSafetyDecision(execution=blocked, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
         if record.state is not ExecutionLifecycleState.READY_FOR_SUBMISSION:
             return ExecutionSafetyDecision(execution=record, reason_codes=("DUPLICATE_EXECUTION",))
         with self._state_store.submission_guard(record.execution_id) as acquired:
@@ -79,7 +92,35 @@ class FinalExecutionGate:
         """Require reconciliation because process-local storage cannot prove broker absence."""
         record = build_execution_record(intent, execution_mode=execution_mode, now=now)
         recovery = self._state_store.mark_restart_recovery_required(record, now=now)
+        if not self._audit("restart_recovery", record=recovery, intent=intent, now=now):
+            return ExecutionSafetyDecision(execution=recovery, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE", "RECONCILIATION_REQUIRED"))
         return ExecutionSafetyDecision(execution=recovery, reason_codes=("STALE_EXECUTION_STATE", "RECONCILIATION_REQUIRED"))
+
+    def _audit(self, event_name: str, *, record, intent: ExecutionIntent, now: datetime) -> bool:
+        """Persist safety-boundary references when a durable ledger is supplied.
+
+        Existing in-memory-only callers remain valid for disabled execution.  A
+        configured ledger is mandatory for any later submission-capable path.
+        """
+        if self._audit_service is None:
+            return True
+        event = AuditEvent(
+            event_type=AuditEventType.EXECUTION_LIFECYCLE,
+            occurred_at=now,
+            execution_id=record.execution_id,
+            proposal_id=intent.proposal_id,
+            intent_id=intent.execution_intent_id,
+            approval_id=intent.approval_id,
+            account_reference=intent.account_id,
+            state=record.state.value,
+            reason_code=event_name,
+            provenance_fingerprint=record.fingerprint,
+        )
+        try:
+            self._audit_service.record(event)
+        except AuditStoreError:
+            return False
+        return True
 
     def _gate_codes(self, *, proposal: TradeProposal, decision: SentinelDecision, intent: ExecutionIntent, execution_mode: str, now: datetime) -> tuple[str, ...]:
         codes: list[str] = []

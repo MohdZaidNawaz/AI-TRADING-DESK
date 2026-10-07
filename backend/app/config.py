@@ -12,6 +12,8 @@ MT5_PASSWORD_ENV = "MT5_PASSWORD"
 MT5_SERVER_ENV = "MT5_SERVER"
 MT5_PATH_ENV = "MT5_PATH"
 MT5_EXECUTION_MODE_ENV = "MT5_EXECUTION_MODE"
+AUDIT_DB_PATH_ENV = "FRIDAY_AUDIT_DB_PATH"
+OPERATION_TIMEOUT_SECONDS_ENV = "FRIDAY_OPERATION_TIMEOUT_SECONDS"
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
@@ -94,3 +96,12 @@ def _non_blank(value: str | None) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def get_runtime_settings() -> dict[str, str | None]:
+    """Return non-secret operational settings; execution still defaults disabled."""
+    return {
+        AUDIT_DB_PATH_ENV: _non_blank(os.getenv(AUDIT_DB_PATH_ENV)),
+        OPERATION_TIMEOUT_SECONDS_ENV: _non_blank(os.getenv(OPERATION_TIMEOUT_SECONDS_ENV)),
+        MT5_EXECUTION_MODE_ENV: _non_blank(os.getenv(MT5_EXECUTION_MODE_ENV)),
+    }

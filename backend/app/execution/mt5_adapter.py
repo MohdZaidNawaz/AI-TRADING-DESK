@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 
 from app.config import get_mt5_settings
 from app.execution.mt5_order import build_mt5_order_request
+from app.health.models import ComponentHealth, HealthStatus
 from app.models.execution import ExecutionIntent, ExecutionResult, ExecutionStatus
 from app.models.mt5 import (
     BrokerInstrumentContract,
@@ -90,7 +91,32 @@ class MT5ExecutionAdapter:
     def availability(self) -> str:
         """Initialize a terminal session only when a caller explicitly uses it."""
         codes = self._ensure_session()
+        self._last_code = codes[0] if codes else None
         return "MT5_CONNECTED" if not codes else codes[0]
+
+    def health_snapshot(self, *, checked_at: datetime) -> ComponentHealth:
+        """Return passive MT5 health from prior adapter activity without probing.
+
+        A caller may explicitly call ``availability`` before this method when it
+        wants to attempt a bounded terminal check.  Health never authorizes an
+        order and does not expose settings or credentials.
+        """
+        state = self._state
+        if state is MT5SessionState.CONNECTED:
+            status = HealthStatus.HEALTHY
+        elif state in {MT5SessionState.INITIALIZING, MT5SessionState.DEGRADED}:
+            status = HealthStatus.DEGRADED
+        elif state in {MT5SessionState.UNAVAILABLE, MT5SessionState.FAILED}:
+            status = HealthStatus.UNAVAILABLE
+        else:
+            status = HealthStatus.UNKNOWN
+        return ComponentHealth(
+            component="mt5",
+            status=status,
+            checked_at=checked_at,
+            failure_category=("adapter" if status is HealthStatus.UNAVAILABLE else None),
+            reason_code=self._last_code,
+        )
 
     def account_information(self) -> tuple[MT5AccountSnapshot | None, tuple[str, ...]]:
         codes = self._ensure_session()

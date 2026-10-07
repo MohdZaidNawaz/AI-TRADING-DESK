@@ -922,6 +922,107 @@ registered as stale and reconciled before any later submission.
 
 Live execution remains disabled. The current final gate always returns an
 execution block and no code path calls `ExecutionAdapter.submit()` or MT5
-`order_send`. A persistent execution ledger, broker reconciliation worker,
-production authorization, and any live-submission capability remain future
-hardening work.
+`order_send`. A broker reconciliation worker, production authorization, and
+any live-submission capability remain future work.
+
+## Production readiness / hardening
+
+FRIDAY is hardened for controlled validation, not unrestricted live trading.
+The safety path remains unchanged:
+
+```
+FRIDAY -> Sentinel -> Pilot -> ExecutionIntent -> Final Execution Gate -> adapter
+```
+
+The final gate still blocks broker submission. `MT5ExecutionAdapter.submit()`
+remains a hard stop, and no component is permitted to call an MT5 order
+submission API.
+
+### Durable audit ledger
+
+`app.audit` provides a provider-neutral, SQLite-backed append-only ledger for
+safe references to execution lifecycle activity. It stores immutable event IDs,
+UTC timestamps, proposal/intent/approval/execution references, state, reason
+code, and fingerprints. It intentionally excludes passwords, API keys, tokens,
+raw provider payloads, and broker authorization responses.
+
+Set a local, access-controlled ledger path before any future
+submission-capable deployment:
+
+```powershell
+$env:FRIDAY_AUDIT_DB_PATH = "C:\secure\friday\audit.sqlite3"
+```
+
+The ledger is idempotent for an exact event and fails closed for conflicts,
+corruption, capacity exhaustion, or unavailable persistence. When supplied to
+the final gate, a persistence failure blocks the safety boundary. It is not an
+order database and does not authorize execution.
+
+### Health, retries, timeouts, and observability
+
+`app.health` records passive, bounded health observations for Alpha Vantage,
+Twelve Data, TradingView webhook ingestion, MT5, the execution adapter,
+Sentinel, and the audit store. Publishing health never creates provider traffic.
+MT5 health reflects known adapter state only; a healthy connection is never a
+trading authorization.
+
+`app.services.retry_policy` produces deterministic retry plans. Only explicit
+transient provider failures, timeouts, unavailability, and bounded rate-limit
+responses are retryable. Broker submission, unknown broker outcomes,
+authorization failures, invalid parameters, and Sentinel/risk rejections are
+never retried automatically. Existing provider HTTP timeouts remain bounded.
+
+`app.observability` emits structured, redacted logs using IDs and fingerprints.
+It rejects or drops password, secret, token, API-key, credential, and
+authorization fields. Do not add raw payloads or account details to log fields.
+
+### Configuration and readiness
+
+`validate_runtime_configuration()` checks non-secret operational settings:
+
+- `FRIDAY_AUDIT_DB_PATH` must be configured for durable audit use.
+- `FRIDAY_OPERATION_TIMEOUT_SECONDS` must be a finite value from 0 to 30.
+- `MT5_EXECUTION_MODE` accepts only `disabled`, `read_only`, `dry_run`, or
+  `live`.
+
+`live` is deliberately rejected by production-readiness validation. Credentials
+alone never activate execution. `OperationalReadinessChecker` combines valid
+configuration, Sentinel and audit availability, passive component health, kill
+switch state, and unresolved reconciliation state into one of:
+
+- `READY_FOR_DRY_RUN`
+- `READY_FOR_CONTROLLED_VALIDATION`
+- `NOT_READY`
+- `BLOCKED`
+
+Every readiness report also states `LIVE_EXECUTION_BLOCKED`.
+
+### Replay and recovery
+
+`app.replay` is an engineering replay foundation. It deterministically orders
+immutable references to evidence, specialist artifacts, proposals, Sentinel
+decisions, intents, and execution-state transitions. It does not call a
+provider, MT5, broker, or network, and it does not calculate strategy returns
+or profitability.
+
+Restart/recovery stays fail-closed: in-memory execution state cannot prove that
+an earlier broker action did not occur, so it requires reconciliation. Unknown
+or mismatched broker observations never trigger retry, replacement, position
+closure, or automatic recovery.
+
+### Controlled validation checklist
+
+Before a future manual validation step, an operator must verify all of the
+following:
+
+1. Audit persistence is configured, writable, healthy, and monitored.
+2. Sentinel, final execution gate, and kill switch are healthy; the kill switch
+   is inactive.
+3. No execution is stale or awaiting reconciliation.
+4. MT5 is tested first in `DISABLED`, then `READ_ONLY`, then `DRY_RUN` only.
+5. Account binding and explicit symbol mappings are validated without aliases.
+6. The test uses fake/demo data and has an explicit human operator.
+
+This checklist does **not** enable live trading. The final state of this phase
+is: **production-hardened, ready for controlled validation, live execution
+blocked**.

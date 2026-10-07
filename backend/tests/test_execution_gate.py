@@ -3,6 +3,7 @@ from datetime import timedelta
 from app.execution.kill_switch import ExecutionKillSwitch
 from app.execution.pilot import PilotExecutionCoordinator
 from app.execution.state_store import ExecutionStateStore
+from app.audit.store import AuditStoreUnavailable
 from app.models.execution import ExecutionIntent, ExecutionResult, ExecutionStatus
 from app.services.execution_gate import FinalExecutionGate
 from tests.test_execution import approved_execution_pair
@@ -20,6 +21,11 @@ class ConnectedAdapter:
 class ClosedMarketAdapter(ConnectedAdapter):
     def prepare(self, intent):
         return ExecutionResult(intent_id=intent.execution_intent_id, proposal_id=intent.proposal_id, status=ExecutionStatus.NOT_EXECUTED, reason_codes=("MT5_MARKET_CLOSED",), evaluated_at=intent.created_at, adapter_status="test")
+
+
+class UnavailableAudit:
+    def record(self, _event):
+        raise AuditStoreUnavailable("unavailable")
 
 
 def _intent(proposal, decision, now, **changes):
@@ -84,3 +90,13 @@ def test_pilot_routes_adapter_preparation_through_final_safety_gate() -> None:
     assert intent is not None
     assert result.reason_codes == ("EXECUTION_DISABLED",)
     assert registry.verify(proposal=proposal, decision=decision, now=now).approval_id == decision.approval_id
+
+
+def test_required_audit_persistence_failure_blocks_before_execution_lifecycle_creation() -> None:
+    proposal, decision, registry, now = approved_execution_pair()
+    gate = FinalExecutionGate(
+        approval_registry=registry, state_store=ExecutionStateStore(), kill_switch=ExecutionKillSwitch(),
+        adapter=ConnectedAdapter(), audit_service=UnavailableAudit(),
+    )
+    result = gate.evaluate_submission(proposal=proposal, decision=decision, intent=_intent(proposal, decision, now), execution_mode="live", now=now)
+    assert result.reason_codes == ("AUDIT_PERSISTENCE_UNAVAILABLE",)
