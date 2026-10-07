@@ -130,6 +130,20 @@ class ProposedTradeParameters(ProposalModel):
     risk_reward: RiskReward | None = None
     position_sizing_intent: PositionSizingIntent = PositionSizingIntent.UNSPECIFIED
     requested_risk_fraction: FiniteFloat | None = None
+    # These remain explicit caller-supplied intent inputs.  They are never
+    # calculated by Master, Sentinel, Pilot, or an execution adapter.
+    quantity: FiniteFloat | None = None
+    order_type: str | None = Field(default=None, min_length=1, max_length=32)
+    filling_mode: str | None = Field(default=None, min_length=1, max_length=32)
+    time_in_force: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("order_type", "filling_mode", "time_in_force", mode="before")
+    @classmethod
+    def normalize_execution_text(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            return normalized or None
+        return value
 
 
 class TradeProposal(ProposalModel):

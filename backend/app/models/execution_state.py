@@ -13,7 +13,7 @@ import json
 
 from pydantic import ConfigDict, Field, FiniteFloat, computed_field, field_validator
 
-from app.models.execution import ExecutionIntent
+from app.models.execution import ExecutionIntent, ExecutionResult
 from app.models.schemas import APIModel
 
 
@@ -25,6 +25,7 @@ class ExecutionLifecycleState(str, Enum):
     INTENT_CREATED = "intent_created"
     VALIDATED = "validated"
     READY_FOR_SUBMISSION = "ready_for_submission"
+    DRY_RUN_VALIDATED = "dry_run_validated"
     SUBMISSION_IN_PROGRESS = "submission_in_progress"
     SUBMITTED = "submitted"
     ACKNOWLEDGED = "acknowledged"
@@ -150,6 +151,7 @@ class ExecutionSafetyDecision(ExecutionStateModel):
     execution: ExecutionRecord
     submission_allowed: bool = False
     reason_codes: tuple[str, ...] = ()
+    adapter_result: ExecutionResult | None = None
 
 
 class ReconciliationReport(ExecutionStateModel):

@@ -13,9 +13,14 @@ from tests.test_execution import _intent
 class FakeMT5:
     SYMBOL_TRADE_MODE_DISABLED = 0
     SYMBOL_ORDER_MARKET = 1
+    SYMBOL_TRADE_EXECUTION_REQUEST = 0
+    SYMBOL_TRADE_EXECUTION_INSTANT = 1
+    SYMBOL_TRADE_EXECUTION_MARKET = 2
+    SYMBOL_TRADE_EXECUTION_EXCHANGE = 3
     ORDER_FILLING_FOK = 0
     ORDER_FILLING_IOC = 1
     ORDER_FILLING_RETURN = 2
+    ORDER_FILLING_BOC = 3
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
     TRADE_ACTION_DEAL = 1
@@ -27,8 +32,8 @@ class FakeMT5:
         self.info = SimpleNamespace(
             visible=True, digits=2, point=0.01, trade_tick_size=0.01,
             trade_tick_value=1.0, trade_contract_size=100.0, volume_min=0.1,
-            volume_max=10.0, volume_step=0.1, trade_mode=1, filling_mode=0,
-            order_mode=1,
+            volume_max=10.0, volume_step=0.1, trade_mode=1, filling_mode=1,
+            order_mode=1, trade_exemode=self.SYMBOL_TRADE_EXECUTION_MARKET,
         )
         self.tick = SimpleNamespace(bid=100.0, ask=100.1)
         self._account = SimpleNamespace(login=123, server="Broker", balance=1000.0,
@@ -154,12 +159,44 @@ def test_instrument_contract_preserves_canonical_and_broker_symbols() -> None:
 
 
 @pytest.mark.parametrize(
+    ("filling_mode", "expected"),
+    [
+        (1, ("FOK",)),
+        (2, ("IOC",)),
+        (4, ("BOOK_OR_CANCEL",)),
+        (1 | 2, ("FOK", "IOC")),
+        (2 | 4, ("IOC", "BOOK_OR_CANCEL")),
+        (1 | 2 | 4, ("FOK", "IOC", "BOOK_OR_CANCEL")),
+    ],
+)
+def test_instrument_contract_decodes_mt5_filling_capability_bits(
+    filling_mode: int, expected: tuple[str, ...]
+) -> None:
+    fake = FakeMT5()
+    fake.info.filling_mode = filling_mode
+    contract, codes = _adapter(fake).resolve_instrument("XAUUSD")
+    assert codes == () and contract is not None
+    assert contract.filling_modes == expected
+    assert "RETURN" not in contract.filling_modes
+
+
+def test_return_is_separate_from_mt5_filling_capability_bits() -> None:
+    fake = FakeMT5()
+    fake.info.filling_mode = 0
+    fake.info.trade_exemode = fake.SYMBOL_TRADE_EXECUTION_INSTANT
+    contract, codes = _adapter(fake).resolve_instrument("XAUUSD")
+    assert codes == () and contract is not None
+    assert contract.filling_modes == ("RETURN",)
+
+
+@pytest.mark.parametrize(
     ("change", "expected"),
     [
         ({"quantity": None}, "MT5_INVALID_VOLUME"), ({"quantity": 0.05}, "MT5_INVALID_VOLUME"),
         ({"quantity": 10.1}, "MT5_INVALID_VOLUME"), ({"quantity": 0.15}, "MT5_INVALID_VOLUME"),
         ({"order_type": "LIMIT"}, "MT5_UNSUPPORTED_ORDER_TYPE"),
         ({"filling_mode": "IOC"}, "MT5_UNSUPPORTED_FILLING_MODE"),
+        ({"filling_mode": "BOOK_OR_CANCEL"}, "MT5_UNSUPPORTED_FILLING_MODE"),
         ({"requested_entry": 100.001}, "MT5_INVALID_PRICE"),
     ],
 )

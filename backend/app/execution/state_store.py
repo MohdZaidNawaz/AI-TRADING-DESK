@@ -18,7 +18,7 @@ from app.models.execution_state import (
 _ALLOWED: dict[ExecutionLifecycleState, frozenset[ExecutionLifecycleState]] = {
     ExecutionLifecycleState.INTENT_CREATED: frozenset({ExecutionLifecycleState.VALIDATED, ExecutionLifecycleState.BLOCKED, ExecutionLifecycleState.EXPIRED, ExecutionLifecycleState.RECONCILIATION_REQUIRED, ExecutionLifecycleState.KILL_SWITCHED}),
     ExecutionLifecycleState.VALIDATED: frozenset({ExecutionLifecycleState.READY_FOR_SUBMISSION, ExecutionLifecycleState.BLOCKED, ExecutionLifecycleState.EXPIRED, ExecutionLifecycleState.KILL_SWITCHED}),
-    ExecutionLifecycleState.READY_FOR_SUBMISSION: frozenset({ExecutionLifecycleState.SUBMISSION_IN_PROGRESS, ExecutionLifecycleState.BLOCKED, ExecutionLifecycleState.EXPIRED, ExecutionLifecycleState.KILL_SWITCHED, ExecutionLifecycleState.RECONCILIATION_REQUIRED}),
+    ExecutionLifecycleState.READY_FOR_SUBMISSION: frozenset({ExecutionLifecycleState.DRY_RUN_VALIDATED, ExecutionLifecycleState.SUBMISSION_IN_PROGRESS, ExecutionLifecycleState.BLOCKED, ExecutionLifecycleState.EXPIRED, ExecutionLifecycleState.KILL_SWITCHED, ExecutionLifecycleState.RECONCILIATION_REQUIRED}),
     ExecutionLifecycleState.SUBMISSION_IN_PROGRESS: frozenset({ExecutionLifecycleState.SUBMITTED, ExecutionLifecycleState.REJECTED, ExecutionLifecycleState.UNKNOWN, ExecutionLifecycleState.FAILED}),
     ExecutionLifecycleState.SUBMITTED: frozenset({ExecutionLifecycleState.ACKNOWLEDGED, ExecutionLifecycleState.PARTIALLY_FILLED, ExecutionLifecycleState.FILLED, ExecutionLifecycleState.REJECTED, ExecutionLifecycleState.UNKNOWN, ExecutionLifecycleState.RECONCILIATION_REQUIRED}),
     ExecutionLifecycleState.ACKNOWLEDGED: frozenset({ExecutionLifecycleState.PARTIALLY_FILLED, ExecutionLifecycleState.FILLED, ExecutionLifecycleState.REJECTED, ExecutionLifecycleState.CANCEL_REQUESTED, ExecutionLifecycleState.UNKNOWN, ExecutionLifecycleState.RECONCILIATION_REQUIRED}),
@@ -27,6 +27,7 @@ _ALLOWED: dict[ExecutionLifecycleState, frozenset[ExecutionLifecycleState]] = {
     ExecutionLifecycleState.UNKNOWN: frozenset({ExecutionLifecycleState.RECONCILIATION_REQUIRED}),
     ExecutionLifecycleState.RECONCILIATION_REQUIRED: frozenset({ExecutionLifecycleState.ACKNOWLEDGED, ExecutionLifecycleState.PARTIALLY_FILLED, ExecutionLifecycleState.FILLED, ExecutionLifecycleState.REJECTED, ExecutionLifecycleState.CANCELLED, ExecutionLifecycleState.UNKNOWN}),
     ExecutionLifecycleState.BLOCKED: frozenset(),
+    ExecutionLifecycleState.DRY_RUN_VALIDATED: frozenset({ExecutionLifecycleState.BLOCKED}),
     ExecutionLifecycleState.KILL_SWITCHED: frozenset(),
     ExecutionLifecycleState.FILLED: frozenset(),
     ExecutionLifecycleState.REJECTED: frozenset(),

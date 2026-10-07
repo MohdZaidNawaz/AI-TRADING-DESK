@@ -70,19 +70,35 @@ class FinalExecutionGate:
         record = registered.execution
         if registered.reason_codes:
             return registered
-        if not self._audit("submission_evaluated", record=record, intent=intent, now=now):
+        normalized_mode = execution_mode.strip().lower()
+        event_name = "dry_run_validation_started" if normalized_mode == "dry_run" else "submission_evaluated"
+        if not self._audit(event_name, record=record, intent=intent, now=now):
             blocked = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.BLOCKED, now=now, reason_code="AUDIT_PERSISTENCE_UNAVAILABLE")
             return ExecutionSafetyDecision(execution=blocked, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
+        if record.state is ExecutionLifecycleState.DRY_RUN_VALIDATED and normalized_mode == "dry_run":
+            codes, prepared = self._gate_codes(proposal=proposal, decision=decision, intent=intent, execution_mode=normalized_mode, now=now)
+            if not codes and prepared is not None and prepared.status is ExecutionStatus.DRY_RUN:
+                if not self._audit("dry_run_replayed", record=record, intent=intent, now=now):
+                    return ExecutionSafetyDecision(execution=record, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
+                return ExecutionSafetyDecision(execution=record, adapter_result=prepared)
+            return ExecutionSafetyDecision(execution=record, reason_codes=codes or ("DRY_RUN_VALIDATION_UNAVAILABLE",))
         if record.state is not ExecutionLifecycleState.READY_FOR_SUBMISSION:
             return ExecutionSafetyDecision(execution=record, reason_codes=("DUPLICATE_EXECUTION",))
         with self._state_store.submission_guard(record.execution_id) as acquired:
             if not acquired:
                 return ExecutionSafetyDecision(execution=record, reason_codes=("SUBMISSION_ALREADY_IN_PROGRESS",))
-            codes = self._gate_codes(proposal=proposal, decision=decision, intent=intent, execution_mode=execution_mode, now=now)
+            codes, prepared = self._gate_codes(proposal=proposal, decision=decision, intent=intent, execution_mode=normalized_mode, now=now)
             if codes:
                 state = ExecutionLifecycleState.KILL_SWITCHED if "KILL_SWITCH_ACTIVE" in codes else ExecutionLifecycleState.BLOCKED
                 blocked = self._state_store.transition(execution_id=record.execution_id, to_state=state, now=now, reason_code=codes[0])
+                self._audit("dry_run_blocked" if normalized_mode == "dry_run" else "live_submission_blocked", record=blocked, intent=intent, now=now)
                 return ExecutionSafetyDecision(execution=blocked, reason_codes=codes)
+            if normalized_mode == "dry_run" and prepared is not None and prepared.status is ExecutionStatus.DRY_RUN:
+                validated = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.DRY_RUN_VALIDATED, now=now, reason_code="DRY_RUN_VALIDATED")
+                if not self._audit("dry_run_provider_validation_completed", record=validated, intent=intent, now=now):
+                    blocked = self._state_store.transition(execution_id=validated.execution_id, to_state=ExecutionLifecycleState.BLOCKED, now=now, reason_code="AUDIT_PERSISTENCE_UNAVAILABLE")
+                    return ExecutionSafetyDecision(execution=blocked, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE",))
+                return ExecutionSafetyDecision(execution=validated, adapter_result=prepared)
             # This invariant is deliberate: Phase 10 implements the control path,
             # not live authorization. No call to adapter.submit() is reachable.
             blocked = self._state_store.transition(execution_id=record.execution_id, to_state=ExecutionLifecycleState.BLOCKED, now=now, reason_code="EXECUTION_DISABLED")
@@ -122,11 +138,12 @@ class FinalExecutionGate:
             return False
         return True
 
-    def _gate_codes(self, *, proposal: TradeProposal, decision: SentinelDecision, intent: ExecutionIntent, execution_mode: str, now: datetime) -> tuple[str, ...]:
+    def _gate_codes(self, *, proposal: TradeProposal, decision: SentinelDecision, intent: ExecutionIntent, execution_mode: str, now: datetime) -> tuple[tuple[str, ...], ExecutionResult | None]:
         codes: list[str] = []
         if self._kill_switch.status().active:
             codes.append("KILL_SWITCH_ACTIVE")
-        if execution_mode.strip().lower() != "live":
+        normalized_mode = execution_mode.strip().lower()
+        if normalized_mode not in {"dry_run", "live"}:
             codes.append("EXECUTION_DISABLED")
         if now >= intent.expires_at:
             codes.append("INTENT_EXPIRED")
@@ -144,6 +161,7 @@ class FinalExecutionGate:
             self._approval_registry.verify(proposal=proposal, decision=decision, now=now)
         except ApprovalClaimError:
             codes.append("APPROVAL_INVALID")
+        prepared: ExecutionResult | None = None
         if self._adapter is None:
             codes.append("MT5_UNAVAILABLE")
         else:
@@ -160,4 +178,4 @@ class FinalExecutionGate:
                     codes.extend(
                         code for code in prepared.reason_codes if code != "MT5_EXECUTION_DISABLED"
                     )
-        return tuple(sorted(set(codes)))
+        return tuple(sorted(set(codes))), prepared

@@ -153,6 +153,9 @@ def _parameters(
         risk_reward=risk_reward,
         position_sizing_intent=PositionSizingIntent.RISK_FRACTION,
         requested_risk_fraction=requested_risk_fraction,
+        quantity=1.0,
+        order_type="MARKET",
+        filling_mode="FOK",
     )
 
 

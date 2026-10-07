@@ -319,9 +319,45 @@ def _canonical_symbol(value: str) -> str:
 
 
 def _filling_modes(mt5: object, info: object) -> tuple[str, ...]:
-    actual = getattr(info, "filling_mode", None)
-    modes = {"FOK": "ORDER_FILLING_FOK", "IOC": "ORDER_FILLING_IOC", "RETURN": "ORDER_FILLING_RETURN"}
-    return tuple(name for name, constant in modes.items() if actual == getattr(mt5, constant, object()))
+    """Decode MT5's ``SYMBOL_FILLING_MODE`` bitmask into safe order modes.
+
+    ``symbol_info().filling_mode`` uses capability bits (FOK=1, IOC=2,
+    BOOK_OR_CANCEL=4).  These are distinct from ``ORDER_FILLING_*`` request
+    enum values.  RETURN is not a capability bit: MT5 permits it only for
+    non-market execution modes, so it is evaluated separately below.
+    """
+    try:
+        actual = int(getattr(info, "filling_mode", 0))
+    except (TypeError, ValueError):
+        return ()
+    supported: list[str] = []
+    if actual & 1:
+        supported.append("FOK")
+    if actual & 2:
+        supported.append("IOC")
+    if actual & 4:
+        supported.append("BOOK_OR_CANCEL")
+    if _return_filling_allowed(mt5, info):
+        supported.append("RETURN")
+    return tuple(supported)
+
+
+def _return_filling_allowed(mt5: object, info: object) -> bool:
+    """Return whether MT5 permits RETURN independently of filling bits.
+
+    Unknown execution-mode metadata fails closed rather than inferring RETURN
+    from ``SYMBOL_FILLING_MODE``.
+    """
+    try:
+        execution_mode = int(getattr(info, "trade_exemode"))
+        non_market_modes = {
+            int(getattr(mt5, "SYMBOL_TRADE_EXECUTION_REQUEST")),
+            int(getattr(mt5, "SYMBOL_TRADE_EXECUTION_INSTANT")),
+            int(getattr(mt5, "SYMBOL_TRADE_EXECUTION_EXCHANGE")),
+        }
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return execution_mode in non_market_modes
 
 
 def _order_modes(mt5: object, info: object) -> tuple[str, ...]:
@@ -337,7 +373,14 @@ def _validate_intent(intent: ExecutionIntent, instrument: BrokerInstrumentContra
         codes.append("MT5_INVALID_VOLUME")
     if intent.order_type is None or intent.order_type.strip().upper() not in instrument.order_modes:
         codes.append("MT5_UNSUPPORTED_ORDER_TYPE")
-    if intent.filling_mode is None or intent.filling_mode.strip().upper() not in instrument.filling_modes:
+    filling_mode = None if intent.filling_mode is None else intent.filling_mode.strip().upper()
+    if (
+        filling_mode is None
+        or filling_mode not in instrument.filling_modes
+        # This adapter currently supports only market orders. MT5 permits BOC
+        # for limit and stop-limit orders, never for the market path below.
+        or (filling_mode == "BOOK_OR_CANCEL" and intent.order_type is not None and intent.order_type.strip().upper() == "MARKET")
+    ):
         codes.append("MT5_UNSUPPORTED_FILLING_MODE")
     if not all(_valid_price(value, instrument) for value in (intent.requested_entry, intent.stop_loss, intent.take_profit)):
         codes.append("MT5_INVALID_PRICE")

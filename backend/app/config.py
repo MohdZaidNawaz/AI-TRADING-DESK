@@ -98,10 +98,26 @@ def _non_blank(value: str | None) -> str | None:
     return normalized or None
 
 
-def get_runtime_settings() -> dict[str, str | None]:
-    """Return non-secret operational settings; execution still defaults disabled."""
-    return {
-        AUDIT_DB_PATH_ENV: _non_blank(os.getenv(AUDIT_DB_PATH_ENV)),
-        OPERATION_TIMEOUT_SECONDS_ENV: _non_blank(os.getenv(OPERATION_TIMEOUT_SECONDS_ENV)),
-        MT5_EXECUTION_MODE_ENV: _non_blank(os.getenv(MT5_EXECUTION_MODE_ENV)),
-    }
+def get_runtime_settings(
+    *,
+    env_file: Path | None = None,
+    load_env_file: bool = True,
+) -> dict[str, str | None]:
+    """Return non-secret operational settings using the established local fallback.
+
+    Process settings retain precedence.  The local backend ``.env`` is a
+    development-only fallback, matching the MT5 and provider configuration
+    convention without ever serializing secrets.
+    """
+    names = (AUDIT_DB_PATH_ENV, OPERATION_TIMEOUT_SECONDS_ENV, MT5_EXECUTION_MODE_ENV)
+    values = {name: _non_blank(os.getenv(name)) for name in names}
+    if not load_env_file or all(value is not None for value in values.values()):
+        return values
+    try:
+        file_values = dotenv_values(env_file or BACKEND_ENV_FILE)
+    except OSError:
+        return values
+    for name in names:
+        if values[name] is None:
+            values[name] = _non_blank(file_values.get(name))
+    return values
