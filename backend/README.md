@@ -1026,3 +1026,32 @@ following:
 This checklist does **not** enable live trading. The final state of this phase
 is: **production-hardened, ready for controlled validation, live execution
 blocked**.
+
+## Phase 11 — Controlled Demo Authorization
+
+Phase 11 adds a narrow, immutable pre-authorization artifact for the first
+future controlled demo order. It is an authorization record, **not** an order
+or execution instruction. The current implementation creates it only when all
+existing Sentinel, proposal, execution-intent, readiness, account, instrument,
+market-freshness, risk-limit, kill-switch, and durable-audit checks pass.
+
+The artifact is bound to one exact MT5 source account, the explicit
+`XAUUSD -> XAUUSD` mapping, one `MARKET` order with `FOK` or `IOC`, exact
+quantity, one registered unconsumed Sentinel approval, one immutable intent,
+and an explicit short window. Its expiry is the earliest of the proposal,
+Sentinel approval, controlled-demo policy, market freshness, intent, and
+execution-window expiries.
+
+The registry stores one identity only, is bounded, thread-safe, and begins in
+recovery uncertainty. A future operator/recovery workflow must explicitly
+confirm a clean state; a restart cannot silently recreate authority. Any
+previous durable authorization lifecycle record causes a fail-closed recovery
+block. Revoked, expired, consumed, or reconciliation-required artifacts cannot
+be verified.
+
+Every Phase 11 result keeps `submission_allowed=false`. The authorization
+service imports neither Pilot nor an execution adapter and cannot call
+`adapter.submit()` or MT5 `order_send()`. Sentinel approval remains
+unconsumed during authorization and verification; consumption remains reserved
+for a separately reviewed future submission boundary. `DEMO_CONTROLLED` and
+live execution remain disabled.

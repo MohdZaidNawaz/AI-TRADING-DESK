@@ -50,6 +50,7 @@ class EvidenceBundle:
 class _ApprovalRecord:
     decision: SentinelDecision
     consumed: bool = False
+    revoked: bool = False
 
 
 def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
@@ -432,6 +433,8 @@ class ApprovalRegistry:
                 raise ApprovalClaimError("Sentinel approval has expired.")
             if record.consumed:
                 raise ApprovalClaimError("Sentinel approval has already been consumed.")
+            if record.revoked:
+                raise ApprovalClaimError("Sentinel approval has been revoked.")
 
             record.consumed = True
             return VerifiedSentinelApproval(
@@ -456,11 +459,27 @@ class ApprovalRegistry:
             record = self._records.get(decision.approval_id)
             if record is None or record.decision != decision:
                 raise ApprovalClaimError("Sentinel approval is not registered.")
-            if record.consumed or decision.expires_at is None or now >= decision.expires_at:
+            if record.consumed or record.revoked or decision.expires_at is None or now >= decision.expires_at:
                 raise ApprovalClaimError("Sentinel approval is unavailable.")
             if decision.proposal_id != proposal.proposal_id or decision.proposal_fingerprint != proposal_fingerprint(proposal):
                 raise ApprovalClaimError("Sentinel approval does not match the proposal.")
             return VerifiedSentinelApproval(proposal_id=decision.proposal_id, proposal_fingerprint=decision.proposal_fingerprint, analysis_id=decision.analysis_id, evidence_fingerprint=decision.evidence_fingerprint, policy_id=decision.policy_id, policy_fingerprint=decision.policy_fingerprint, assessment_id=decision.assessment_id, assessment_fingerprint=decision.assessment_fingerprint, decision_id=decision.decision_id, approval_id=decision.approval_id, expires_at=decision.expires_at)
+
+    def revoke(self, *, approval_id: str) -> None:
+        """Invalidate a registered approval without creating a new approval path.
+
+        This narrow state is used by the controlled-demo authorization boundary
+        when a future safety workflow determines that the original Sentinel
+        decision is no longer usable.  It intentionally cannot mint or alter a
+        decision and is rejected for an already consumed approval.
+        """
+        with self._lock:
+            record = self._records.get(approval_id)
+            if record is None:
+                raise ApprovalClaimError("Sentinel approval is not registered.")
+            if record.consumed:
+                raise ApprovalClaimError("Sentinel approval has already been consumed.")
+            record.revoked = True
 
     def _cleanup(self, now: datetime) -> None:
         for approval_id, record in tuple(self._records.items()):

@@ -70,6 +70,22 @@ class ControlledDemoExecutionPolicy(DemoExecutionModel):
     max_stop_distance: FiniteFloat = Field(gt=0)
     max_order_notional: FiniteFloat = Field(gt=0)
     max_market_age_seconds: int = Field(gt=0)
+    # Stage 11 may only create a pre-authorization while an explicitly
+    # bounded policy window is present.  These fields remain optional here so
+    # the already non-authorizing Stage 3 readiness model stays backwards
+    # compatible; the authorization boundary fails closed when either is
+    # absent.
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    @field_validator("effective_at", "expires_at")
+    @classmethod
+    def normalize_policy_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("controlled demo policy timestamps require timezone awareness")
+        return value.astimezone(UTC)
 
     @field_validator("policy_id", "policy_version", "risk_currency", mode="before")
     @classmethod
@@ -97,6 +113,10 @@ class ControlledDemoExecutionPolicy(DemoExecutionModel):
             raise ValueError("controlled demo policy permits only the validated MARKET order type")
         if not set(self.allowed_filling_modes).issubset({"FOK", "IOC"}):
             raise ValueError("controlled demo policy permits only FOK or IOC filling modes")
+        if (self.effective_at is None) != (self.expires_at is None):
+            raise ValueError("controlled demo policy time bounds must be supplied together")
+        if self.effective_at is not None and self.expires_at is not None and self.effective_at >= self.expires_at:
+            raise ValueError("controlled demo policy expiry must follow its effective time")
         return self
 
     @computed_field(return_type=str)

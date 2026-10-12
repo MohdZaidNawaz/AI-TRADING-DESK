@@ -21,6 +21,7 @@ class AuditEventType(str, Enum):
     ADAPTER_AVAILABILITY = "adapter_availability"
     FAILURE = "failure"
     RECOVERY = "recovery"
+    DEMO_AUTHORIZATION = "demo_authorization"
 
 
 class AuditEvent(APIModel):
