@@ -112,6 +112,30 @@ class FinalExecutionGate:
             return ExecutionSafetyDecision(execution=recovery, reason_codes=("AUDIT_PERSISTENCE_UNAVAILABLE", "RECONCILIATION_REQUIRED"))
         return ExecutionSafetyDecision(execution=recovery, reason_codes=("STALE_EXECUTION_STATE", "RECONCILIATION_REQUIRED"))
 
+    def validate_non_submitting(
+        self,
+        *,
+        proposal: TradeProposal,
+        decision: SentinelDecision,
+        intent: ExecutionIntent,
+        now: datetime,
+    ) -> tuple[str, ...]:
+        """Inspect immutable execution lineage without registering or preparing it.
+
+        This is intentionally narrower than :meth:`evaluate_submission`: it
+        does not read an adapter, create an execution record, transition an
+        execution state, audit an execution lifecycle event, or submit an
+        order.  Controlled demo validation can therefore reuse the final
+        lineage and kill-switch checks while the global execution mode remains
+        disabled.
+        """
+        return self._core_gate_codes(
+            proposal=proposal,
+            decision=decision,
+            intent=intent,
+            now=now,
+        )
+
     def _audit(self, event_name: str, *, record, intent: ExecutionIntent, now: datetime) -> bool:
         """Persist safety-boundary references when a durable ledger is supplied.
 
@@ -139,28 +163,10 @@ class FinalExecutionGate:
         return True
 
     def _gate_codes(self, *, proposal: TradeProposal, decision: SentinelDecision, intent: ExecutionIntent, execution_mode: str, now: datetime) -> tuple[tuple[str, ...], ExecutionResult | None]:
-        codes: list[str] = []
-        if self._kill_switch.status().active:
-            codes.append("KILL_SWITCH_ACTIVE")
+        codes = list(self._core_gate_codes(proposal=proposal, decision=decision, intent=intent, now=now))
         normalized_mode = execution_mode.strip().lower()
         if normalized_mode not in {"dry_run", "live"}:
             codes.append("EXECUTION_DISABLED")
-        if now >= intent.expires_at:
-            codes.append("INTENT_EXPIRED")
-        if decision.expires_at is None or now >= decision.expires_at:
-            codes.append("APPROVAL_EXPIRED")
-        if intent.proposal_id != proposal.proposal_id or intent.proposal_fingerprint != proposal_fingerprint(proposal):
-            codes.append("PROPOSAL_MISMATCH")
-        if intent.analysis_id != proposal.analysis_id or intent.evidence_fingerprint != proposal.evidence_fingerprint:
-            codes.append("INTENT_LINEAGE_MISMATCH")
-        if intent.approval_id != decision.approval_id or intent.policy_fingerprint != decision.policy_fingerprint or intent.assessment_fingerprint != decision.assessment_fingerprint:
-            codes.append("APPROVAL_LINEAGE_MISMATCH")
-        if not intent.account_id or intent.account_id != decision.account_id:
-            codes.append("ACCOUNT_MISMATCH")
-        try:
-            self._approval_registry.verify(proposal=proposal, decision=decision, now=now)
-        except ApprovalClaimError:
-            codes.append("APPROVAL_INVALID")
         prepared: ExecutionResult | None = None
         if self._adapter is None:
             codes.append("MT5_UNAVAILABLE")
@@ -179,3 +185,33 @@ class FinalExecutionGate:
                         code for code in prepared.reason_codes if code != "MT5_EXECUTION_DISABLED"
                     )
         return tuple(sorted(set(codes))), prepared
+
+    def _core_gate_codes(
+        self,
+        *,
+        proposal: TradeProposal,
+        decision: SentinelDecision,
+        intent: ExecutionIntent,
+        now: datetime,
+    ) -> tuple[str, ...]:
+        """Return final-boundary lineage checks with no mutable side effects."""
+        codes: list[str] = []
+        if self._kill_switch.status().active:
+            codes.append("KILL_SWITCH_ACTIVE")
+        if now >= intent.expires_at:
+            codes.append("INTENT_EXPIRED")
+        if decision.expires_at is None or now >= decision.expires_at:
+            codes.append("APPROVAL_EXPIRED")
+        if intent.proposal_id != proposal.proposal_id or intent.proposal_fingerprint != proposal_fingerprint(proposal):
+            codes.append("PROPOSAL_MISMATCH")
+        if intent.analysis_id != proposal.analysis_id or intent.evidence_fingerprint != proposal.evidence_fingerprint:
+            codes.append("INTENT_LINEAGE_MISMATCH")
+        if intent.approval_id != decision.approval_id or intent.policy_fingerprint != decision.policy_fingerprint or intent.assessment_fingerprint != decision.assessment_fingerprint:
+            codes.append("APPROVAL_LINEAGE_MISMATCH")
+        if not intent.account_id or intent.account_id != decision.account_id:
+            codes.append("ACCOUNT_MISMATCH")
+        try:
+            self._approval_registry.verify(proposal=proposal, decision=decision, now=now)
+        except ApprovalClaimError:
+            codes.append("APPROVAL_INVALID")
+        return tuple(sorted(set(codes)))
