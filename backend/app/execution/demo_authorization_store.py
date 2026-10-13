@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from threading import RLock
+from typing import TYPE_CHECKING
 
 from app.models.demo_authorization import ControlledDemoAuthorization, DemoAuthorizationStatus
+
+if TYPE_CHECKING:
+    from app.models.authority_protocol import AuthorityLifecycleProtocol
 
 
 class DemoAuthorizationStoreError(ValueError):
@@ -21,12 +25,35 @@ class DemoAuthorizationStoreError(ValueError):
 class DemoAuthorizationStore:
     """Strictly bounded registry for the first and only demo identity."""
 
-    def __init__(self, *, max_records: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        max_records: int = 1,
+        authority_protocol: "AuthorityLifecycleProtocol | None" = None,
+        require_authoritative_protocol: bool = False,
+    ) -> None:
         if max_records != 1:
             raise ValueError("first controlled demo authorization store permits exactly one record")
+        if require_authoritative_protocol:
+            # Phase 13B exposes no trusted durable authorization source yet.
+            # A protocol candidate or test fake cannot be promoted by a flag.
+            raise DemoAuthorizationStoreError(
+                "AUTHORITATIVE_DURABLE_DEMO_AUTHORIZATION_BACKEND_UNAVAILABLE"
+            )
         self._records: dict[str, ControlledDemoAuthorization] = {}
         self._recovery_uncertain = True
         self._lock = RLock()
+        # Candidate-only DI seam.  Existing methods intentionally continue to
+        # use this store exclusively until the shared-authority migration.
+        self._candidate_authority_protocol = authority_protocol
+
+    @property
+    def authority_integration_state(self) -> str:
+        return (
+            "LEGACY_PROCESS_LOCAL"
+            if self._candidate_authority_protocol is None
+            else "CANDIDATE_PROTOCOL_DISCONNECTED"
+        )
 
     def confirm_clean_start(self) -> None:
         """Explicitly acknowledge a fresh, reconciled state before authorization.

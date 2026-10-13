@@ -1055,3 +1055,24 @@ service imports neither Pilot nor an execution adapter and cannot call
 unconsumed during authorization and verification; consumption remains reserved
 for a separately reviewed future submission boundary. `DEMO_CONTROLLED` and
 live execution remain disabled.
+
+### Phase 13B — Authority protocol and compatibility façade
+
+Phase 13B adds typed lifecycle requests and deterministic result contracts for
+approval and controlled-demo authorization operations. The
+`DurableAuthorityProtocolAdapter` wraps the existing SQLite lifecycle store,
+but every result is explicitly scoped as `DURABLE_LIFECYCLE_ONLY`: it is not
+proof of a current Sentinel registry decision, a live demo authorization, or
+broker state.
+
+`ApprovalRegistry` and `DemoAuthorizationStore` now accept a protocol
+candidate for dependency-injection compatibility, but do not call it. Existing
+consumers therefore remain on their process-local owners, and the candidate is
+reported as disconnected. Requests that require an authoritative durable
+backend fail closed because no source-trusted backend exists yet. A later
+reviewed phase must migrate approval, authorization, reservation, and outbox
+state into one shared transaction boundary before any durable authority claim
+is possible. The Phase 13B result contract rejects
+`PRODUCTION_AUTHORITATIVE` at construction time: a model-shaped success result
+cannot be promoted into authority by a caller. Phase 13B adds no execution
+capability.

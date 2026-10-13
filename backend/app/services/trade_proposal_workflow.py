@@ -33,6 +33,7 @@ from app.services.sentinel_production import production_checks
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
+    from app.models.authority_protocol import AuthorityLifecycleProtocol
 
 
 class ApprovalClaimError(ValueError):
@@ -352,13 +353,37 @@ def proposal_fingerprint(proposal: TradeProposal) -> str:
 class ApprovalRegistry:
     """Thread-safe, bounded volatile registry; restart always fails closed."""
 
-    def __init__(self, *, max_records: int = 1_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_records: int = 1_000,
+        authority_protocol: "AuthorityLifecycleProtocol | None" = None,
+        require_authoritative_protocol: bool = False,
+    ) -> None:
         if max_records < 1:
             raise ValueError("max_records must be positive")
+        if require_authoritative_protocol:
+            # Phase 13B deliberately has no source-trusted durable backend.
+            # Never select a candidate merely because it implements a Python
+            # protocol or returns model-shaped lifecycle results.
+            raise ApprovalClaimError("AUTHORITATIVE_DURABLE_APPROVAL_BACKEND_UNAVAILABLE")
         self._max_records = max_records
         self._records: dict[str, _ApprovalRecord] = {}
         self._proposal_approvals: dict[tuple[str, str], str] = {}
         self._lock = RLock()
+        # Kept only for dependency-injection compatibility planning.  It is
+        # never read by the lifecycle methods in this phase, so the volatile
+        # registry remains the sole active owner for existing consumers.
+        self._candidate_authority_protocol = authority_protocol
+
+    @property
+    def authority_integration_state(self) -> str:
+        """Expose the staged migration state without claiming delegation."""
+        return (
+            "LEGACY_PROCESS_LOCAL"
+            if self._candidate_authority_protocol is None
+            else "CANDIDATE_PROTOCOL_DISCONNECTED"
+        )
 
     def _record_approved_decision(
         self,
