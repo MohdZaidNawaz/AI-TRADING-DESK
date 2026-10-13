@@ -23,6 +23,7 @@ class AuditEventType(str, Enum):
     RECOVERY = "recovery"
     DEMO_AUTHORIZATION = "demo_authorization"
     DEMO_DRY_RUN = "demo_dry_run"
+    DEMO_SUBMISSION_ATTEMPT = "demo_submission_attempt"
 
 
 class AuditEvent(APIModel):
