@@ -495,10 +495,17 @@ class FridayCore:
         return self._evidence_store.snapshot(symbol=symbol)
 
 
-def create_friday_core() -> FridayCore:
+def create_friday_core(*, sentinel_gate=None) -> FridayCore:
+    """Build FRIDAY with an optionally application-composed Sentinel gate."""
+    master = MasterAgent()
     return FridayCore(
         specialists=create_specialist_agents(),
-        master=MasterAgent(),
+        master=master,
+        trade_proposal_workflow=(
+            TradeProposalWorkflow(master=master, sentinel_gate=sentinel_gate)
+            if sentinel_gate is not None
+            else None
+        ),
     )
 
 

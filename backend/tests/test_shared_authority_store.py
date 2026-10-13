@@ -32,13 +32,13 @@ def _event(*, offset: int = 0, state: str = "bootstrap_validated") -> SharedAuth
     )
 
 
-def test_fresh_and_idempotent_initialization_is_non_authoritative(tmp_path) -> None:
+def test_fresh_and_idempotent_initialization_is_sentinel_approval_owner(tmp_path) -> None:
     path = tmp_path / "shared-authority.sqlite3"
     store = SharedAuthorityStore(path)
     diagnostics = store.diagnostics()
     assert diagnostics.available is True
-    assert diagnostics.mode is SharedAuthorityMode.BOOTSTRAP_NON_AUTHORITATIVE
-    assert diagnostics.schema_version == "1"
+    assert diagnostics.mode is SharedAuthorityMode.SENTINEL_APPROVAL_OWNER
+    assert diagnostics.schema_version == "2"
     assert diagnostics.migration_state == "READY"
     assert store.foreign_keys_enabled() is True
 
@@ -77,6 +77,85 @@ def test_schema_reserves_normalized_future_authority_tables_and_foreign_keys(tmp
             )
     finally:
         connection.close()
+
+
+def test_valid_v1_bootstrap_migrates_atomically_to_sentinel_approval_ownership(tmp_path) -> None:
+    import app.execution.shared_authority_store as module
+
+    path = tmp_path / "v1-bootstrap.sqlite3"
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        module._create_canonical_schema(connection, schema_version="1")
+        connection.execute(
+            "INSERT INTO shared_authority_schema_metadata (key, value) VALUES "
+            "('schema_version', '1'), ('migration_state', 'READY')"
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_schema_migrations "
+            "(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+            (1, "shared_authority_bootstrap", module._migration_checksum(1), NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_cutover_state (singleton_id, state, updated_at) "
+            "VALUES (1, 'bootstrap_non_authoritative', ?)",
+            (NOW.isoformat(),),
+        )
+    finally:
+        connection.close()
+
+    migrated = SharedAuthorityStore(path)
+    assert migrated.diagnostics().schema_version == "2"
+    assert migrated.mode is SharedAuthorityMode.SENTINEL_APPROVAL_OWNER
+    with sqlite3.connect(path) as verified:
+        assert verified.execute(
+            "SELECT state FROM shared_authority_cutover_state WHERE singleton_id = 1"
+        ).fetchone() == ("sentinel_approval_owner",)
+        assert verified.execute(
+            "SELECT name FROM shared_authority_schema_migrations WHERE version = 2"
+        ).fetchone() == ("sentinel_approval_ownership",)
+
+
+def test_v1_to_v2_migration_commit_failure_leaves_v1_unmodified(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.execution.shared_authority_store as module
+
+    path = tmp_path / "failed-v1-migration.sqlite3"
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        module._create_canonical_schema(connection, schema_version="1")
+        connection.execute(
+            "INSERT INTO shared_authority_schema_metadata (key, value) VALUES "
+            "('schema_version', '1'), ('migration_state', 'READY')"
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_schema_migrations "
+            "(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+            (1, "shared_authority_bootstrap", module._migration_checksum(1), NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_cutover_state (singleton_id, state, updated_at) "
+            "VALUES (1, 'bootstrap_non_authoritative', ?)",
+            (NOW.isoformat(),),
+        )
+    finally:
+        connection.close()
+
+    def fail_commit(_connection) -> None:
+        raise sqlite3.OperationalError("injected migration commit failure")
+
+    monkeypatch.setattr(SharedAuthorityStore, "_commit", staticmethod(fail_commit))
+    with pytest.raises(SharedAuthorityUnavailable):
+        SharedAuthorityStore(path)
+    with sqlite3.connect(path) as verified:
+        assert verified.execute(
+            "SELECT value FROM shared_authority_schema_metadata WHERE key = 'schema_version'"
+        ).fetchone() == ("1",)
+        assert verified.execute(
+            "SELECT state FROM shared_authority_cutover_state WHERE singleton_id = 1"
+        ).fetchone() == ("bootstrap_non_authoritative",)
 
 
 @pytest.mark.parametrize("kind", ("corrupt", "partial", "unsupported", "migrating"))

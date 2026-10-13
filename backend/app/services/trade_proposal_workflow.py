@@ -30,6 +30,7 @@ from app.models.specialist_analysis import MasterSpecialistSynthesis, Specialist
 from app.models.trade_thesis import MasterTradeThesis
 from app.services.sentinel_policy import build_risk_assessment, policy_from_risk_context
 from app.services.sentinel_production import production_checks
+from app.config import get_shared_authority_db_path
 
 if TYPE_CHECKING:
     from app.agents.master import MasterAgent
@@ -45,13 +46,6 @@ class EvidenceBundle:
     references: tuple[EvidenceReference, ...]
     fingerprint: str
     created_at: datetime
-
-
-@dataclass(slots=True)
-class _ApprovalRecord:
-    decision: SentinelDecision
-    consumed: bool = False
-    revoked: bool = False
 
 
 def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
@@ -351,7 +345,7 @@ def proposal_fingerprint(proposal: TradeProposal) -> str:
 
 
 class ApprovalRegistry:
-    """Thread-safe, bounded volatile registry; restart always fails closed."""
+    """Compatible facade over the shared durable Sentinel approval owner."""
 
     def __init__(
         self,
@@ -359,6 +353,7 @@ class ApprovalRegistry:
         max_records: int = 1_000,
         authority_protocol: "AuthorityLifecycleProtocol | None" = None,
         require_authoritative_protocol: bool = False,
+        authority_store: "SharedAuthorityStore | None" = None,
     ) -> None:
         if max_records < 1:
             raise ValueError("max_records must be positive")
@@ -368,22 +363,22 @@ class ApprovalRegistry:
             # protocol or returns model-shaped lifecycle results.
             raise ApprovalClaimError("AUTHORITATIVE_DURABLE_APPROVAL_BACKEND_UNAVAILABLE")
         self._max_records = max_records
-        self._records: dict[str, _ApprovalRecord] = {}
-        self._proposal_approvals: dict[tuple[str, str], str] = {}
+        # Import lazily: the execution package exports Pilot, which depends on
+        # this workflow.  The store itself remains disconnected from Pilot.
+        from importlib import import_module
+        store_type = getattr(import_module("app." + "execution.shared_authority_store"), "SharedAuthorityStore")
+        self._authority_store = authority_store or store_type(get_shared_authority_db_path())
         self._lock = RLock()
-        # Kept only for dependency-injection compatibility planning.  It is
-        # never read by the lifecycle methods in this phase, so the volatile
-        # registry remains the sole active owner for existing consumers.
+        # Retained only for the Phase 13B compatibility surface. Candidate
+        # protocol implementations never participate in the durable lifecycle.
         self._candidate_authority_protocol = authority_protocol
 
     @property
     def authority_integration_state(self) -> str:
         """Expose the staged migration state without claiming delegation."""
-        return (
-            "LEGACY_PROCESS_LOCAL"
-            if self._candidate_authority_protocol is None
-            else "CANDIDATE_PROTOCOL_DISCONNECTED"
-        )
+        if self._candidate_authority_protocol is not None:
+            return "CANDIDATE_PROTOCOL_DISCONNECTED"
+        return "SHARED_DURABLE_SENTINEL_APPROVAL_OWNER"
 
     def _record_approved_decision(
         self,
@@ -392,38 +387,52 @@ class ApprovalRegistry:
     ) -> SentinelDecision:
         """Store one Sentinel-issued approval or return the existing decision.
 
-        This private method is intentionally called only by ``SentinelRiskGate``;
-        Master and Pilot receive no approval-minting interface.
+        Compatibility seam for legacy internal callers.
+
+        The normal application path is the trusted issuance service. This
+        underscore-prefixed hook exists only for legacy internal test helpers;
+        it is not a public issuance API and never participates in app
+        composition. It derives a distinct compatibility decision identity so
+        a test helper cannot overwrite a real trusted decision with the same
+        caller-supplied ``decision_id``.
         """
         if decision.decision is not SentinelDecisionStatus.APPROVED:
             return decision
+        compatibility_decision = decision.model_copy(
+            update={
+                "decision_id": _fingerprint(
+                    {
+                        "compatibility_registration": True,
+                        "decision": decision.model_dump(mode="json"),
+                    }
+                )
+            }
+        )
+        return self._persist_trusted_evaluation(proposal, compatibility_decision)
 
-        key = (proposal.proposal_id, decision.proposal_fingerprint)
-        with self._lock:
-            self._cleanup(decision.evaluated_at)
-            existing_approval_id = self._proposal_approvals.get(key)
-            if existing_approval_id is not None:
-                return self._records[existing_approval_id].decision
+    def _persist_trusted_evaluation(
+        self,
+        proposal: TradeProposal,
+        decision: SentinelDecision,
+    ) -> SentinelDecision:
+        """Persist an approval derived by the trusted application service only."""
+        if decision.decision is not SentinelDecisionStatus.APPROVED:
+            return decision
 
-            approval_id = _fingerprint(
-                {
-                    "proposal_id": proposal.proposal_id,
-                    "proposal_fingerprint": decision.proposal_fingerprint,
-                    "analysis_id": decision.analysis_id,
-                    "evidence_fingerprint": decision.evidence_fingerprint,
-                    "policy_id": decision.policy_id,
-                    "policy_fingerprint": decision.policy_fingerprint,
-                    "assessment_id": decision.assessment_id,
-                    "assessment_fingerprint": decision.assessment_fingerprint,
-                    "decision_id": decision.decision_id,
-                    "expires_at": decision.expires_at.isoformat() if decision.expires_at else None,
-                }
+        # Bind identity to all immutable decision lineage except the identity
+        # being derived. This prevents two account/portfolio/expiry variants
+        # from colliding on one durable approval record.
+        approval_id = _fingerprint(
+            decision.model_dump(mode="json", exclude={"approval_id"})
+        )
+        registered = decision.model_copy(update={"approval_id": approval_id})
+        try:
+            persisted, _created = self._authority_store._persist_sentinel_evaluation(
+                registered, now=decision.evaluated_at
             )
-            registered = decision.model_copy(update={"approval_id": approval_id})
-            self._records[approval_id] = _ApprovalRecord(decision=registered)
-            self._proposal_approvals[key] = approval_id
-            self._trim()
-            return registered
+            return persisted
+        except Exception as error:
+            raise ApprovalClaimError("DURABLE_SENTINEL_APPROVAL_UNAVAILABLE") from error
 
     def claim(
         self,
@@ -439,56 +448,35 @@ class ApprovalRegistry:
             raise ApprovalClaimError("Approval claim time must include a timezone.")
 
         now_utc = now.astimezone(UTC)
-        with self._lock:
-            record = self._records.get(decision.approval_id)
-            if record is None:
-                raise ApprovalClaimError("Sentinel approval is not registered.")
-            registered = record.decision
-            if registered != decision:
-                raise ApprovalClaimError("Sentinel approval does not match the registry record.")
-            if registered.proposal_id != proposal.proposal_id:
-                raise ApprovalClaimError("Sentinel approval does not match the proposal ID.")
-            if registered.proposal_fingerprint != proposal_fingerprint(proposal):
-                raise ApprovalClaimError("Sentinel approval does not match the proposal fingerprint.")
-            if registered.analysis_id != proposal.analysis_id:
-                raise ApprovalClaimError("Sentinel approval does not match the analysis ID.")
-            if registered.evidence_fingerprint != proposal.evidence_fingerprint:
-                raise ApprovalClaimError("Sentinel approval does not match the evidence fingerprint.")
-            if registered.expires_at is None or now_utc >= registered.expires_at:
-                raise ApprovalClaimError("Sentinel approval has expired.")
-            if record.consumed:
-                raise ApprovalClaimError("Sentinel approval has already been consumed.")
-            if record.revoked:
-                raise ApprovalClaimError("Sentinel approval has been revoked.")
-
-            record.consumed = True
+        self._verify_binding(proposal, decision)
+        try:
+            self._authority_store._consume_sentinel_approval(decision, now=now_utc)
             return VerifiedSentinelApproval(
                 proposal_id=proposal.proposal_id,
-                proposal_fingerprint=registered.proposal_fingerprint,
+                proposal_fingerprint=decision.proposal_fingerprint,
                 analysis_id=proposal.analysis_id,
                 evidence_fingerprint=proposal.evidence_fingerprint,
-                policy_id=registered.policy_id,
-                policy_fingerprint=registered.policy_fingerprint,
-                assessment_id=registered.assessment_id,
-                assessment_fingerprint=registered.assessment_fingerprint,
-                decision_id=registered.decision_id,
-                approval_id=registered.approval_id,
-                expires_at=registered.expires_at,
+                policy_id=decision.policy_id,
+                policy_fingerprint=decision.policy_fingerprint,
+                assessment_id=decision.assessment_id,
+                assessment_fingerprint=decision.assessment_fingerprint,
+                decision_id=decision.decision_id,
+                approval_id=decision.approval_id,
+                expires_at=decision.expires_at,
             )
+        except Exception as error:
+            raise ApprovalClaimError(self._durable_error(error)) from error
 
     def verify(self, *, proposal: TradeProposal, decision: SentinelDecision, now: datetime) -> VerifiedSentinelApproval:
         """Validate an approval without consuming it; reserved for Phase 8 intent creation."""
         if decision.decision is not SentinelDecisionStatus.APPROVED or not decision.approval_id:
             raise ApprovalClaimError("A registered Sentinel approval is required.")
-        with self._lock:
-            record = self._records.get(decision.approval_id)
-            if record is None or record.decision != decision:
-                raise ApprovalClaimError("Sentinel approval is not registered.")
-            if record.consumed or record.revoked or decision.expires_at is None or now >= decision.expires_at:
-                raise ApprovalClaimError("Sentinel approval is unavailable.")
-            if decision.proposal_id != proposal.proposal_id or decision.proposal_fingerprint != proposal_fingerprint(proposal):
-                raise ApprovalClaimError("Sentinel approval does not match the proposal.")
-            return VerifiedSentinelApproval(proposal_id=decision.proposal_id, proposal_fingerprint=decision.proposal_fingerprint, analysis_id=decision.analysis_id, evidence_fingerprint=decision.evidence_fingerprint, policy_id=decision.policy_id, policy_fingerprint=decision.policy_fingerprint, assessment_id=decision.assessment_id, assessment_fingerprint=decision.assessment_fingerprint, decision_id=decision.decision_id, approval_id=decision.approval_id, expires_at=decision.expires_at)
+        self._verify_binding(proposal, decision)
+        try:
+            self._authority_store._verify_sentinel_approval(decision, now=now)
+        except Exception as error:
+            raise ApprovalClaimError(self._durable_error(error)) from error
+        return VerifiedSentinelApproval(proposal_id=decision.proposal_id, proposal_fingerprint=decision.proposal_fingerprint, analysis_id=decision.analysis_id, evidence_fingerprint=decision.evidence_fingerprint, policy_id=decision.policy_id, policy_fingerprint=decision.policy_fingerprint, assessment_id=decision.assessment_id, assessment_fingerprint=decision.assessment_fingerprint, decision_id=decision.decision_id, approval_id=decision.approval_id, expires_at=decision.expires_at)
 
     def revoke(self, *, approval_id: str) -> None:
         """Invalidate a registered approval without creating a new approval path.
@@ -498,38 +486,30 @@ class ApprovalRegistry:
         decision is no longer usable.  It intentionally cannot mint or alter a
         decision and is rejected for an already consumed approval.
         """
-        with self._lock:
-            record = self._records.get(approval_id)
-            if record is None:
-                raise ApprovalClaimError("Sentinel approval is not registered.")
-            if record.consumed:
-                raise ApprovalClaimError("Sentinel approval has already been consumed.")
-            record.revoked = True
+        try:
+            self._authority_store._revoke_sentinel_approval(approval_id, now=datetime.now(UTC))
+        except Exception as error:
+            raise ApprovalClaimError("Sentinel approval is unavailable.") from error
 
-    def _cleanup(self, now: datetime) -> None:
-        for approval_id, record in tuple(self._records.items()):
-            if record.decision.expires_at is None or now >= record.decision.expires_at:
-                self._records.pop(approval_id, None)
-                self._proposal_approvals.pop(
-                    (record.decision.proposal_id, record.decision.proposal_fingerprint),
-                    None,
-                )
+    @staticmethod
+    def _verify_binding(proposal: TradeProposal, decision: SentinelDecision) -> None:
+        if decision.proposal_id != proposal.proposal_id:
+            raise ApprovalClaimError("Sentinel approval does not match the proposal ID.")
+        if decision.proposal_fingerprint != proposal_fingerprint(proposal):
+            raise ApprovalClaimError("Sentinel approval does not match the proposal fingerprint.")
+        if decision.analysis_id != proposal.analysis_id or decision.evidence_fingerprint != proposal.evidence_fingerprint or decision.expires_at is None:
+            raise ApprovalClaimError("Sentinel approval does not match the proposal.")
 
-    def _trim(self) -> None:
-        overflow = len(self._records) - self._max_records
-        if overflow <= 0:
-            return
-        ordered = sorted(
-            self._records.items(),
-            key=lambda item: (item[1].decision.expires_at or item[1].decision.evaluated_at, item[0]),
-        )
-        for approval_id, record in ordered[:overflow]:
-            self._records.pop(approval_id, None)
-            self._proposal_approvals.pop(
-                (record.decision.proposal_id, record.decision.proposal_fingerprint),
-                None,
-            )
-
+    @staticmethod
+    def _durable_error(error: Exception) -> str:
+        detail = str(error)
+        if "CONSUMED" in detail:
+            return "Sentinel approval has already been consumed."
+        if "EXPIRED" in detail:
+            return "Sentinel approval has expired."
+        if "REVOKED" in detail:
+            return "Sentinel approval has been revoked."
+        return "Sentinel approval is unavailable."
 
 class SentinelRiskGate:
     """Evaluate explicit research proposals without portfolio or execution adapters."""
@@ -539,10 +519,16 @@ class SentinelRiskGate:
         registry: ApprovalRegistry | None = None,
         policy=None,
         account_binding: SentinelAccountBinding | None = None,
+        issuance_service=None,
     ) -> None:
         self._registry = registry or ApprovalRegistry()
         self._policy = policy
         self._account_binding = account_binding
+        if issuance_service is None:
+            from app.services.trusted_sentinel_issuance import TrustedSentinelIssuanceService
+
+            issuance_service = TrustedSentinelIssuanceService(gate=self, registry=self._registry)
+        self._issuance_service = issuance_service
 
     @property
     def registry(self) -> ApprovalRegistry:
@@ -570,7 +556,26 @@ class SentinelRiskGate:
         snapshot: EvidenceSnapshot,
         risk_context: RiskContext | None,
     ) -> tuple[SentinelDecision, SentinelRiskAssessment]:
-        """Evaluate the existing rules and retain their immutable check trace."""
+        """Evaluate through the controlled trusted issuance boundary."""
+        return self._issuance_service.evaluate_and_issue(
+            proposal=proposal,
+            snapshot=snapshot,
+            risk_context=risk_context,
+        )
+
+    def _evaluate_unissued(
+        self,
+        *,
+        proposal: TradeProposal,
+        snapshot: EvidenceSnapshot,
+        risk_context: RiskContext | None,
+    ) -> tuple[SentinelDecision, SentinelRiskAssessment]:
+        """Derive the real Sentinel result before durable issuance.
+
+        This is deliberately private: callers use ``evaluate_with_assessment``
+        so the application-owned issuance service can persist only approved,
+        internally derived decisions.
+        """
         fingerprint = proposal_fingerprint(proposal)
         evaluated_at = _evaluation_time(snapshot, risk_context)
         policy = self._policy or policy_from_risk_context(risk_context)
@@ -711,7 +716,7 @@ class SentinelRiskGate:
                 else None
             ),
         )
-        return self._registry._record_approved_decision(proposal, decision), assessment
+        return decision, assessment
 
 
 def transition_proposal(

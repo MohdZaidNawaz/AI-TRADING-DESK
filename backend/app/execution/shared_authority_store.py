@@ -1,10 +1,9 @@
-"""Phase 13C-1 shared-authority SQLite schema and fail-closed bootstrap.
+"""Fail-closed shared SQLite ownership for durable Sentinel approvals.
 
-This module deliberately owns *only* the future schema, migration checks, and
-bootstrap lifecycle/outbox plumbing.  It is not connected to Sentinel,
-controlled-demo authorization, Pilot, adapters, MT5, API routes, or submission.
-No public method accepts an approval, authorization, reservation, or execution
-request; therefore persisted caller input cannot be promoted to authority here.
+The private approval lifecycle primitives are used only by the application-owned
+trusted Sentinel issuance service. This module has no Pilot, adapter, MT5,
+broker, API-route, or submission dependency, and it does not own controlled
+demo authorizations or execution reservations in this phase.
 """
 
 from __future__ import annotations
@@ -28,9 +27,10 @@ from app.models.shared_authority import (
     SharedAuthorityMode,
     SharedAuthorityOutboxEvent,
 )
+from app.models.proposals import SentinelDecision, SentinelDecisionStatus
 
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _MIGRATION_STATE_READY = "READY"
 _MIGRATION_STATE_MIGRATING = "MIGRATING"
 _BOOTSTRAP_ENTITY_ID = "shared-authority-schema-bootstrap"
@@ -122,7 +122,7 @@ class SharedAuthorityStore:
 
     @property
     def mode(self) -> SharedAuthorityMode:
-        return SharedAuthorityMode.BOOTSTRAP_NON_AUTHORITATIVE
+        return SharedAuthorityMode.SENTINEL_APPROVAL_OWNER
 
     def diagnostics(self) -> SharedAuthorityDiagnostics:
         if not self._available:
@@ -141,6 +141,7 @@ class SharedAuthorityStore:
                 )
             return SharedAuthorityDiagnostics(
                 available=True,
+                mode=self.mode,
                 schema_version=metadata.get("schema_version"),
                 migration_state=metadata.get("migration_state"),
             )
@@ -157,6 +158,184 @@ class SharedAuthorityStore:
         with self._connection() as connection:
             row = connection.execute("PRAGMA foreign_keys").fetchone()
             return bool(row and row[0] == 1)
+
+    # These underscore-prefixed operations are intentionally not a public
+    # issuance API. The application-owned trusted issuance service is their
+    # sole production caller and derives decisions from normal proposal,
+    # evidence, and risk inputs. Python privacy is not cryptographic isolation
+    # from arbitrary in-process code; this is controlled app composition.
+    def _persist_sentinel_evaluation(
+        self, decision: SentinelDecision, *, now: datetime
+    ) -> tuple[SentinelDecision, bool]:
+        if decision.decision is not SentinelDecisionStatus.APPROVED or not decision.approval_id:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_REQUIRED")
+        if decision.expires_at is None or now.tzinfo is None or now.utcoffset() is None:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_INVALID")
+        now = now.astimezone(UTC)
+        if now >= decision.expires_at:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_EXPIRED")
+        fingerprint = _decision_fingerprint(decision)
+        entity_id = "shared-sentinel-approval-" + decision.approval_id
+        with self._lock:
+            try:
+                with self._transaction() as connection:
+                    existing = connection.execute(
+                        "SELECT semantic_fingerprint FROM shared_authority_entities WHERE entity_id = ?",
+                        (entity_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing[0] != fingerprint:
+                            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_CONFLICT")
+                        return decision, False
+                    connection.execute(
+                        "INSERT INTO shared_authority_entities (entity_id, entity_kind, status, lifecycle_version, semantic_fingerprint, created_at, updated_at) VALUES (?, ?, 'active', 1, ?, ?, ?)",
+                        (entity_id, SharedAuthorityEntityKind.SENTINEL_APPROVAL.value, fingerprint, now.isoformat(), now.isoformat()),
+                    )
+                    connection.execute(
+                        "INSERT INTO shared_sentinel_approvals (entity_id, approval_id, decision_id, proposal_id, proposal_fingerprint, analysis_id, evidence_fingerprint, policy_id, policy_fingerprint, assessment_id, assessment_fingerprint, account_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (entity_id, decision.approval_id, decision.decision_id, decision.proposal_id, decision.proposal_fingerprint, decision.analysis_id, decision.evidence_fingerprint, decision.policy_id, decision.policy_fingerprint, decision.assessment_id, decision.assessment_fingerprint, decision.account_id, decision.expires_at.isoformat()),
+                    )
+                    self._append_sentinel_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        approval_id=decision.approval_id,
+                        decision_fingerprint=fingerprint,
+                        status="active",
+                        from_status=None,
+                        version=1,
+                        event_state="sentinel_approval_issued",
+                        now=now,
+                    )
+                    return decision, True
+            except SharedAuthorityStoreError:
+                raise
+            except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
+                self._fail_closed("SHARED_SENTINEL_APPROVAL_UNAVAILABLE")
+                raise SharedAuthorityUnavailable("shared Sentinel approval unavailable") from error
+
+    def _verify_sentinel_approval(self, decision: SentinelDecision, *, now: datetime) -> None:
+        self._sentinel_state(decision, now=now, consume=False)
+
+    def _consume_sentinel_approval(self, decision: SentinelDecision, *, now: datetime) -> None:
+        self._sentinel_state(decision, now=now, consume=True)
+
+    def _revoke_sentinel_approval(self, approval_id: str, *, now: datetime) -> None:
+        if not approval_id.strip() or now.tzinfo is None or now.utcoffset() is None:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_REVOCATION_INVALID")
+        entity_id = "shared-sentinel-approval-" + approval_id
+        with self._lock:
+            try:
+                with self._transaction() as connection:
+                    row = connection.execute(
+                        "SELECT status, lifecycle_version, semantic_fingerprint "
+                        "FROM shared_authority_entities WHERE entity_id = ?",
+                        (entity_id,),
+                    ).fetchone()
+                    if row is None or row[0] != "active":
+                        raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_UNAVAILABLE")
+                    version = int(row[1]) + 1
+                    occurred_at = now.astimezone(UTC)
+                    connection.execute(
+                        "UPDATE shared_authority_entities SET status = 'revoked', "
+                        "lifecycle_version = ?, updated_at = ? WHERE entity_id = ?",
+                        (version, occurred_at.isoformat(), entity_id),
+                    )
+                    self._append_sentinel_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        approval_id=approval_id,
+                        decision_fingerprint=str(row[2]),
+                        status="revoked",
+                        from_status="active",
+                        version=version,
+                        event_state="sentinel_approval_revoked",
+                        now=occurred_at,
+                    )
+            except SharedAuthorityStoreError:
+                raise
+            except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
+                self._fail_closed("SHARED_SENTINEL_REVOCATION_UNAVAILABLE")
+                raise SharedAuthorityUnavailable("shared Sentinel approval unavailable") from error
+
+    def _sentinel_state(self, decision: SentinelDecision, *, now: datetime, consume: bool) -> None:
+        if not decision.approval_id or now.tzinfo is None or now.utcoffset() is None:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_INVALID")
+        now = now.astimezone(UTC)
+        entity_id = "shared-sentinel-approval-" + decision.approval_id
+        terminal_error: str | None = None
+        with self._lock:
+            with self._transaction() as connection:
+                row = connection.execute(
+                    "SELECT status, lifecycle_version, semantic_fingerprint "
+                    "FROM shared_authority_entities WHERE entity_id = ?",
+                    (entity_id,),
+                ).fetchone()
+                if row is None or row[2] != _decision_fingerprint(decision):
+                    raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_LINEAGE_MISMATCH")
+                if row[0] != "active":
+                    raise SharedAuthorityConflict(
+                        "SHARED_SENTINEL_APPROVAL_" + str(row[0]).upper()
+                    )
+                fingerprint = _decision_fingerprint(decision)
+                if decision.expires_at is None or now >= decision.expires_at:
+                    version = int(row[1]) + 1
+                    connection.execute("UPDATE shared_authority_entities SET status = 'expired', lifecycle_version = ?, updated_at = ? WHERE entity_id = ?", (version, now.isoformat(), entity_id))
+                    self._append_sentinel_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        approval_id=decision.approval_id,
+                        decision_fingerprint=fingerprint,
+                        status="expired",
+                        from_status="active",
+                        version=version,
+                        event_state="sentinel_approval_expired",
+                        now=now,
+                    )
+                    # Commit the expiry transition and its outbox record before
+                    # reporting the terminal result to the caller.
+                    terminal_error = "SHARED_SENTINEL_APPROVAL_EXPIRED"
+                elif consume:
+                    version = int(row[1]) + 1
+                    connection.execute("UPDATE shared_authority_entities SET status = 'consumed', lifecycle_version = ?, updated_at = ? WHERE entity_id = ?", (version, now.isoformat(), entity_id))
+                    self._append_sentinel_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        approval_id=decision.approval_id,
+                        decision_fingerprint=fingerprint,
+                        status="consumed",
+                        from_status="active",
+                        version=version,
+                        event_state="sentinel_approval_consumed",
+                        now=now,
+                    )
+        if terminal_error is not None:
+            raise SharedAuthorityConflict(terminal_error)
+
+    def _append_sentinel_lifecycle(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        entity_id: str,
+        approval_id: str,
+        decision_fingerprint: str,
+        status: str,
+        from_status: str | None,
+        version: int,
+        event_state: str,
+        now: datetime,
+    ) -> None:
+        fingerprint = _fingerprint(
+            {
+                "approval_id": approval_id,
+                "status": status,
+                "version": version,
+                "decision_fingerprint": decision_fingerprint,
+            }
+        )
+        event_id = "shared-sentinel-event-" + fingerprint
+        connection.execute("INSERT INTO shared_authority_lifecycle_events (event_id, entity_id, lifecycle_version, from_status, to_status, event_state, reason_code, occurred_at, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, entity_id, version, from_status, status, event_state, "SENTINEL_DURABLE_AUTHORITY", now.isoformat(), fingerprint))
+        outbox_id = "shared-authority-outbox-" + sha256(f"{event_id}:{version}".encode()).hexdigest()
+        connection.execute("INSERT INTO shared_authority_outbox (outbox_id, lifecycle_event_id, entity_id, lifecycle_version, event_state, reason_code, occurred_at, fingerprint, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)", (outbox_id, event_id, entity_id, version, event_state, "SENTINEL_DURABLE_AUTHORITY", now.isoformat(), fingerprint))
 
     def record_bootstrap_lifecycle(
         self, event: SharedAuthorityBootstrapEvent
@@ -238,10 +417,11 @@ class SharedAuthorityStore:
         try:
             with self._connection() as connection:
                 rows = connection.execute(
-                    """SELECT outbox_id, lifecycle_event_id, entity_id, lifecycle_version,
-                    event_state, reason_code, occurred_at, fingerprint
-                    FROM shared_authority_outbox
-                    ORDER BY lifecycle_version, outbox_id"""
+                    """SELECT o.outbox_id, o.lifecycle_event_id, e.entity_kind, o.entity_id,
+                    o.lifecycle_version, o.event_state, o.reason_code, o.occurred_at, o.fingerprint
+                    FROM shared_authority_outbox AS o
+                    JOIN shared_authority_entities AS e ON e.entity_id = o.entity_id
+                    ORDER BY o.lifecycle_version, o.outbox_id"""
                 ).fetchall()
                 return tuple(self._outbox_from_row(row) for row in rows)
         except (sqlite3.DatabaseError, ValueError, TypeError) as error:
@@ -252,10 +432,12 @@ class SharedAuthorityStore:
         try:
             with self._connection() as connection:
                 rows = connection.execute(
-                    """SELECT outbox_id, lifecycle_event_id, entity_id, lifecycle_version,
-                    event_state, reason_code, occurred_at, fingerprint
-                    FROM shared_authority_outbox WHERE delivered_at IS NULL
-                    ORDER BY lifecycle_version, outbox_id"""
+                    """SELECT o.outbox_id, o.lifecycle_event_id, e.entity_kind, o.entity_id,
+                    o.lifecycle_version, o.event_state, o.reason_code, o.occurred_at, o.fingerprint
+                    FROM shared_authority_outbox AS o
+                    JOIN shared_authority_entities AS e ON e.entity_id = o.entity_id
+                    WHERE o.delivered_at IS NULL
+                    ORDER BY o.lifecycle_version, o.outbox_id"""
                 ).fetchall()
                 return tuple(self._outbox_from_row(row) for row in rows)
         except (sqlite3.DatabaseError, ValueError, TypeError) as error:
@@ -316,7 +498,16 @@ class SharedAuthorityStore:
                     if not tables:
                         self._apply_initial_schema(connection)
                     else:
-                        self._verify_existing_schema(connection, tables)
+                        metadata = dict(
+                            connection.execute(
+                                "SELECT key, value FROM shared_authority_schema_metadata"
+                            ).fetchall()
+                        )
+                        if metadata.get("schema_version") == "1":
+                            self._verify_existing_schema(connection, tables, schema_version="1")
+                            self._apply_v2_migration(connection)
+                        else:
+                            self._verify_existing_schema(connection, tables)
                 finally:
                     connection.close()
         except SharedAuthorityStoreError:
@@ -345,9 +536,14 @@ class SharedAuthorityStore:
                 (1, "shared_authority_bootstrap", _migration_checksum(1), now),
             )
             connection.execute(
+                "INSERT INTO shared_authority_schema_migrations "
+                "(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+                (2, "sentinel_approval_ownership", _migration_checksum(2), now),
+            )
+            connection.execute(
                 "INSERT INTO shared_authority_cutover_state "
                 "(singleton_id, state, updated_at) VALUES (1, ?, ?)",
-                (SharedAuthorityMode.BOOTSTRAP_NON_AUTHORITATIVE.value, now),
+                (SharedAuthorityMode.SENTINEL_APPROVAL_OWNER.value, now),
             )
             connection.execute(
                 "UPDATE shared_authority_schema_metadata SET value = ? WHERE key = 'migration_state'",
@@ -359,7 +555,50 @@ class SharedAuthorityStore:
             connection.rollback()
             raise
 
-    def _verify_existing_schema(self, connection: sqlite3.Connection, tables: set[str]) -> None:
+    def _apply_v2_migration(self, connection: sqlite3.Connection) -> None:
+        """Atomically cut over a valid v1 bootstrap database to v2 ownership."""
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            now = datetime.now(UTC).isoformat()
+            connection.execute(
+                "UPDATE shared_authority_schema_metadata SET value = ? "
+                "WHERE key = 'migration_state'",
+                (_MIGRATION_STATE_MIGRATING,),
+            )
+            connection.execute(
+                "ALTER TABLE shared_authority_cutover_state RENAME TO "
+                "shared_authority_cutover_state_v1"
+            )
+            connection.execute(_canonical_table_sql("2")[2])
+            connection.execute(
+                "INSERT INTO shared_authority_cutover_state (singleton_id, state, updated_at) "
+                "VALUES (1, ?, ?)",
+                (SharedAuthorityMode.SENTINEL_APPROVAL_OWNER.value, now),
+            )
+            connection.execute("DROP TABLE shared_authority_cutover_state_v1")
+            connection.execute(
+                "INSERT INTO shared_authority_schema_migrations "
+                "(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+                (2, "sentinel_approval_ownership", _migration_checksum(2), now),
+            )
+            connection.execute(
+                "UPDATE shared_authority_schema_metadata SET value = ? WHERE key = 'schema_version'",
+                (_SCHEMA_VERSION,),
+            )
+            connection.execute(
+                "UPDATE shared_authority_schema_metadata SET value = ? WHERE key = 'migration_state'",
+                (_MIGRATION_STATE_READY,),
+            )
+            self._verify_existing_schema(connection, _table_names(connection))
+            self._commit(connection)
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _verify_existing_schema(
+        self, connection: sqlite3.Connection, tables: set[str], *, schema_version: str | None = None
+    ) -> None:
+        expected_version = schema_version or _SCHEMA_VERSION
         if not _REQUIRED_TABLES.issubset(tables):
             raise SharedAuthorityUnavailable("shared authority schema is missing or partially migrated")
         if not _REQUIRED_INDEXES.issubset(_index_names(connection)):
@@ -367,7 +606,7 @@ class SharedAuthorityStore:
         metadata = dict(
             connection.execute("SELECT key, value FROM shared_authority_schema_metadata").fetchall()
         )
-        if metadata.get("schema_version") != _SCHEMA_VERSION:
+        if metadata.get("schema_version") != expected_version:
             raise SharedAuthorityUnavailable("unsupported shared authority schema version")
         if metadata.get("migration_state") != _MIGRATION_STATE_READY:
             raise SharedAuthorityUnavailable("shared authority migration is incomplete")
@@ -376,17 +615,28 @@ class SharedAuthorityStore:
         ).fetchone()
         if migration != ("shared_authority_bootstrap", _migration_checksum(1)):
             raise SharedAuthorityUnavailable("shared authority migration history is invalid")
+        if expected_version == "2":
+            migration_v2 = connection.execute(
+                "SELECT name, checksum FROM shared_authority_schema_migrations WHERE version = 2"
+            ).fetchone()
+            if migration_v2 != ("sentinel_approval_ownership", _migration_checksum(2)):
+                raise SharedAuthorityUnavailable("shared authority migration history is invalid")
         cutover = connection.execute(
             "SELECT state FROM shared_authority_cutover_state WHERE singleton_id = 1"
         ).fetchone()
-        if cutover != (SharedAuthorityMode.BOOTSTRAP_NON_AUTHORITATIVE.value,):
+        expected_mode = (
+            SharedAuthorityMode.BOOTSTRAP_NON_AUTHORITATIVE
+            if expected_version == "1"
+            else SharedAuthorityMode.SENTINEL_APPROVAL_OWNER
+        )
+        if cutover != (expected_mode.value,):
             raise SharedAuthorityUnavailable("shared authority cutover state is invalid")
         if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise SharedAuthorityUnavailable("shared authority database integrity check failed")
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise SharedAuthorityUnavailable("shared authority foreign-key integrity check failed")
 
-        expected_tables, expected_indexes = _canonical_schema_structure()
+        expected_tables, expected_indexes = _canonical_schema_structure(expected_version)
         actual_tables = {
             table_name: _table_structure(connection, table_name)
             for table_name in _REQUIRED_TABLES
@@ -449,9 +699,11 @@ class SharedAuthorityStore:
         self, connection: sqlite3.Connection, event_id: str
     ) -> SharedAuthorityOutboxEvent:
         row = connection.execute(
-            """SELECT outbox_id, lifecycle_event_id, entity_id, lifecycle_version,
-            event_state, reason_code, occurred_at, fingerprint
-            FROM shared_authority_outbox WHERE lifecycle_event_id = ?""",
+            """SELECT o.outbox_id, o.lifecycle_event_id, e.entity_kind, o.entity_id,
+            o.lifecycle_version, o.event_state, o.reason_code, o.occurred_at, o.fingerprint
+            FROM shared_authority_outbox AS o
+            JOIN shared_authority_entities AS e ON e.entity_id = o.entity_id
+            WHERE o.lifecycle_event_id = ?""",
             (event_id,),
         ).fetchone()
         if row is None:
@@ -463,13 +715,13 @@ class SharedAuthorityStore:
         return SharedAuthorityOutboxEvent(
             outbox_id=str(row[0]),
             lifecycle_event_id=str(row[1]),
-            entity_kind=SharedAuthorityEntityKind.SCHEMA_BOOTSTRAP,
-            entity_id=str(row[2]),
-            lifecycle_version=int(row[3]),
-            event_state=str(row[4]),
-            reason_code=str(row[5]),
-            occurred_at=datetime.fromisoformat(str(row[6])),
-            fingerprint=str(row[7]),
+            entity_kind=SharedAuthorityEntityKind(str(row[2])),
+            entity_id=str(row[3]),
+            lifecycle_version=int(row[4]),
+            event_state=str(row[5]),
+            reason_code=str(row[6]),
+            occurred_at=datetime.fromisoformat(str(row[7])),
+            fingerprint=str(row[8]),
         )
 
     @contextmanager
@@ -517,13 +769,24 @@ class SharedAuthorityStore:
 
 
 def _migration_checksum(version: int) -> str:
-    if version != 1:
+    if version not in (1, 2):
         raise ValueError("unsupported shared authority migration version")
     schema = "|".join(
         _normalize_sql(sql)
-        for sql in (*_canonical_table_sql(), *_canonical_index_sql())
+        for sql in (*_canonical_table_sql(str(version)), *_canonical_index_sql())
     )
     return sha256(f"shared-authority-migration:{version}:{schema}".encode()).hexdigest()
+
+
+def _decision_fingerprint(decision: SentinelDecision) -> str:
+    """Derive lineage from the evaluated decision; never accept a supplied hash."""
+    return _fingerprint(decision.model_dump(mode="json"))
+
+
+def _fingerprint(value: object) -> str:
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str).encode()
+    ).hexdigest()
 
 
 def _table_names(connection: sqlite3.Connection) -> set[str]:
@@ -610,15 +873,15 @@ def _index_structure(connection: sqlite3.Connection, index_name: str) -> _IndexS
     )
 
 
-@lru_cache(maxsize=1)
-def _canonical_schema_structure() -> tuple[
+@lru_cache(maxsize=2)
+def _canonical_schema_structure(schema_version: str = _SCHEMA_VERSION) -> tuple[
     dict[str, _TableStructure], dict[str, _IndexStructure]
 ]:
     """Derive the expected introspection signature from the same canonical DDL."""
     connection = sqlite3.connect(":memory:", isolation_level=None)
     try:
         connection.execute("PRAGMA foreign_keys = ON")
-        _create_canonical_schema(connection)
+        _create_canonical_schema(connection, schema_version=schema_version)
         return (
             {name: _table_structure(connection, name) for name in _REQUIRED_TABLES},
             {name: _index_structure(connection, name) for name in _REQUIRED_INDEXES},
@@ -627,15 +890,24 @@ def _canonical_schema_structure() -> tuple[
         connection.close()
 
 
-def _create_canonical_schema(connection: sqlite3.Connection) -> None:
+def _create_canonical_schema(
+    connection: sqlite3.Connection, *, schema_version: str = _SCHEMA_VERSION
+) -> None:
     """Create canonical objects used by both bootstrap and strict verification."""
-    for statement in _canonical_table_sql():
+    for statement in _canonical_table_sql(schema_version):
         connection.execute(statement)
     for statement in _canonical_index_sql():
         connection.execute(statement)
 
 
-def _canonical_table_sql() -> tuple[str, ...]:
+def _canonical_table_sql(schema_version: str = _SCHEMA_VERSION) -> tuple[str, ...]:
+    if schema_version not in {"1", "2"}:
+        raise ValueError("unsupported shared authority schema version")
+    cutover_states = (
+        "'bootstrap_non_authoritative'"
+        if schema_version == "1"
+        else "'bootstrap_non_authoritative', 'sentinel_approval_owner'"
+    )
     return (
         "CREATE TABLE shared_authority_schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         """CREATE TABLE shared_authority_schema_migrations (
@@ -646,7 +918,7 @@ def _canonical_table_sql() -> tuple[str, ...]:
         )""",
         """CREATE TABLE shared_authority_cutover_state (
             singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
-            state TEXT NOT NULL CHECK (state = 'bootstrap_non_authoritative'),
+            state TEXT NOT NULL CHECK (state IN (""" + cutover_states + """)),
             updated_at TEXT NOT NULL
         )""",
         """CREATE TABLE shared_authority_entities (

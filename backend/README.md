@@ -1100,3 +1100,37 @@ is possible. The Phase 13B result contract rejects
 `PRODUCTION_AUTHORITATIVE` at construction time: a model-shaped success result
 cannot be promoted into authority by a caller. Phase 13B adds no execution
 capability.
+
+### Phase 13C-2 — Trusted Sentinel issuance and durable approval ownership
+
+Phase 13C-2 makes the shared SQLite authority database the sole **durable
+owner of Sentinel approvals**. The application composition root creates one
+verified `SharedAuthorityStore`, injects it into the `ApprovalRegistry`
+compatibility facade, and constructs the Sentinel gate around the
+application-owned `TrustedSentinelIssuanceService`. Normal callers provide a
+proposal, immutable evidence snapshot, and risk context; the service executes
+the existing Sentinel evaluation and persists only an internally derived
+`APPROVED` decision.
+
+Approval issuance, the active lifecycle row, immutable lifecycle history, and
+its local outbox event commit in one SQLite transaction. Verification is
+read-only; consumption, expiry, and revocation use deterministic durable state
+and survive restart. A malformed schema, unavailable database, failed
+transaction, mismatched proposal/evidence/policy/assessment lineage, expiry,
+or terminal lifecycle state fails closed. Legacy process-local approvals are
+not adopted: an approval must be reissued by trusted Sentinel evaluation.
+
+This is a controlled application architecture, not a cryptographic security
+boundary against arbitrary hostile Python code in the same process. The public
+issuance service does not accept caller-created `SentinelDecision` objects;
+private storage hooks are reserved for the composition-owned service and are
+not a public authority API. The Phase 13B protocol remains
+`DURABLE_LIFECYCLE_ONLY` and is not a production verifier.
+
+Controlled-demo authorization remains in its separate process-local store;
+durable reservation, approval/authorization cross-store consumption, trusted
+broker metadata, market freshness, portfolio-state verification, and external
+broker reconciliation remain separate blockers. The outbox remains
+at-least-once to external projectors. Phase 13C-2 imports neither Pilot nor an
+execution adapter, does not initialize MT5, and does not enable demo or live
+submission.

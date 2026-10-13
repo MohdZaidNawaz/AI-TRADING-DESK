@@ -14,6 +14,7 @@ MT5_PATH_ENV = "MT5_PATH"
 MT5_EXECUTION_MODE_ENV = "MT5_EXECUTION_MODE"
 AUDIT_DB_PATH_ENV = "FRIDAY_AUDIT_DB_PATH"
 OPERATION_TIMEOUT_SECONDS_ENV = "FRIDAY_OPERATION_TIMEOUT_SECONDS"
+SHARED_AUTHORITY_DB_PATH_ENV = "FRIDAY_SHARED_AUTHORITY_DB_PATH"
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
@@ -121,3 +122,16 @@ def get_runtime_settings(
         if values[name] is None:
             values[name] = _non_blank(file_values.get(name))
     return values
+
+
+def get_shared_authority_db_path() -> Path:
+    """Return the non-secret durable approval database path.
+
+    A process value may select an explicit local path.  The safe default lives
+    under the already ignored backend runtime directory; failure to initialize
+    this database is handled as an approval fail-closed condition.
+    """
+    configured = _non_blank(os.getenv(SHARED_AUTHORITY_DB_PATH_ENV))
+    if configured is not None:
+        return Path(configured)
+    return BACKEND_ENV_FILE.parent / "runtime" / "shared_authority.sqlite3"

@@ -18,9 +18,10 @@ from app.models.schemas import APIModel
 
 
 class SharedAuthorityMode(str, Enum):
-    """The only mode supported by the Phase 13C-1 store."""
+    """Explicit cutover states for the shared authority database."""
 
     BOOTSTRAP_NON_AUTHORITATIVE = "bootstrap_non_authoritative"
+    SENTINEL_APPROVAL_OWNER = "sentinel_approval_owner"
 
 
 class SharedAuthorityEntityKind(str, Enum):
