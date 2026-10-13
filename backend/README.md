@@ -1056,6 +1056,61 @@ unconsumed during authorization and verification; consumption remains reserved
 for a separately reviewed future submission boundary. `DEMO_CONTROLLED` and
 live execution remain disabled.
 
+## Phase 13 — Durable Reservation and Recovery
+
+Phase 13 provides a **test-only**, SQLite-backed reservation and audit-outbox
+foundation. A reservation row, its immutable lifecycle record, and its local
+outbox event are committed in one SQLite transaction. Projection to the
+existing audit ledger is intentionally idempotent, but is not described as an
+atomic cross-database transaction.
+
+The store has no default evaluator: construction fails closed unless an
+explicit typed, test-only evaluator is supplied. This evaluator is **not an
+authority boundary**: arbitrary Python code can implement it, and its result is
+only a `test_only_validated` structural check. It cannot prove the current
+state of any external or process-local source and can never create production
+authorization or submission authority. A future production boundary requires
+independently trusted integrations for the approval registry, controlled-demo
+authorization store, broker instrument metadata, market freshness, and
+portfolio-risk state.
+
+The test-only evaluator structurally binds the exact reservation fingerprint
+and complete safety-evidence fingerprint, including instrument limits, market
+freshness, portfolio limits, Sentinel lineage, authorization lineage, account
+binding, and expiry. These facts are rechecked before each readiness-increasing
+transition. Missing, malformed, stale, or mismatched test output moves the
+reservation to reconciliation-required when that state can be persisted; it
+never advances the reservation.
+
+Reservations use an explicit lifecycle and recover conservatively. An expired
+pre-attempt reservation is persisted as `EXPIRED`; any unfinished or unknown
+attempt is persisted as `RECONCILIATION_REQUIRED`. Recovery never retries,
+replaces, or submits an order.
+
+This is not live-execution-ready. The test-only reservation does not share an
+atomic transaction with durable Sentinel approval ownership or the
+process-local controlled-demo authorization store. Phase 13 does not import
+Pilot, MT5, a broker adapter, or an API route. Global execution and
+`DEMO_CONTROLLED` remain disabled.
+
+### Phase 13A — Durable approval and demo-authorization state
+
+Phase 13A adds a bounded SQLite lifecycle store for **internal** copies of
+registered Sentinel approvals and issued controlled-demo authorizations. Each
+record retains immutable source lineage, status, lifecycle version, timestamps,
+and a local audit-outbox event in one SQLite transaction. Verification is
+read-only; consume, revoke, expiry, and reconciliation-required transitions
+are serialized and persisted.
+
+This is intentionally a lifecycle foundation, not a replacement for the
+shared durable Sentinel-approval owner or the process-local
+`DemoAuthorizationStore`. No execution consumer reads from this store, and it
+does not establish cross-store atomic consumption, broker authority, Pilot
+access, adapter submission, MT5 access, or an API execution route. Missing,
+corrupted, unsupported, or unavailable SQLite state fails closed. Reopening
+the store preserves known terminal state; it never recreates expired, revoked,
+consumed, or reconciliation-required authority.
+
 ### Phase 13C-1 — Shared durable authority schema bootstrap
 
 Phase 13C-1 adds a separate, versioned SQLite schema intended to become the
