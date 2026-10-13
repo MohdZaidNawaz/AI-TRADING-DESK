@@ -1056,6 +1056,30 @@ unconsumed during authorization and verification; consumption remains reserved
 for a separately reviewed future submission boundary. `DEMO_CONTROLLED` and
 live execution remain disabled.
 
+### Phase 13C-1 — Shared durable authority schema bootstrap
+
+Phase 13C-1 adds a separate, versioned SQLite schema intended to become the
+future consolidation target for Sentinel approvals, controlled-demo
+authorizations, execution reservations, lifecycle history, and a durable
+outbox. It currently exposes only schema readiness diagnostics and a safe
+bootstrap lifecycle/outbox primitive used to verify local SQLite transaction
+behavior. It cannot register, verify, revoke, consume, or otherwise activate
+an approval, authorization, reservation, Pilot path, adapter, MT5 connection,
+or broker submission.
+
+The database enables foreign keys on every connection, verifies the canonical
+SQLite table, column, constraint, foreign-key, unique-index, and named-index
+structure before reporting ready, rejects unsupported or incomplete migrations,
+and has no in-memory fallback. Lifecycle and local outbox records are written
+in one SQLite transaction. Projection to any future audit ledger is separate
+and **at-least-once**: if the external projector succeeds but local delivery
+acknowledgement fails, replay invokes it again. Projectors must deduplicate the
+stable outbox ID when duplicate external effects are unacceptable; no
+cross-database atomicity or exactly-once delivery is claimed. Existing
+`ApprovalRegistry`, `DemoAuthorizationStore`,
+`DurableAuthorityStore`, and test-only `DurableReservationStore` remain
+disconnected active/inactive owners exactly as before this bootstrap phase.
+
 ### Phase 13B — Authority protocol and compatibility façade
 
 Phase 13B adds typed lifecycle requests and deterministic result contracts for
