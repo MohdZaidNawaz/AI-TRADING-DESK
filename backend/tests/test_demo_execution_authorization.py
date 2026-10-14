@@ -29,9 +29,12 @@ from app.models.trusted_execution_evidence import (
 )
 from app.services.demo_execution_authorization import DemoExecutionAuthorizationService
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
+from app.services.sentinel_policy_authority import SentinelPortfolioRiskPolicyVerifier
+from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
 from app.services.trade_proposal_workflow import ApprovalRegistry, proposal_fingerprint
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 from tests.test_demo_execution_readiness import ACCOUNT, NOW, _context, _pair, _policy
+from tests.test_sentinel_policy_authority import _test_policy_record
 
 
 class _ControlledTestEvidenceProvider:
@@ -80,6 +83,12 @@ class _ControlledTestEvidenceProvider:
 
 def _trusted_evidence(context):
     return TrustedExecutionEvidenceService(_ControlledTestEvidenceProvider(context))
+
+
+def _sentinel_risk(policy):
+    return SentinelPortfolioRiskEvidenceVerifier(
+        SentinelPortfolioRiskPolicyVerifier.for_test((_test_policy_record(policy),))
+    )
 
 
 def _inputs(tmp_path, **changes: object):
@@ -136,6 +145,7 @@ def _inputs(tmp_path, **changes: object):
         execution_state_store=state_store,
         audit_service=audit,
         trusted_execution_evidence=_trusted_evidence(context),
+        sentinel_risk_evidence=_sentinel_risk(policy),
     )
     values: dict[str, object] = {
         "policy": policy,
@@ -198,6 +208,23 @@ def test_unconfigured_or_stale_trusted_evidence_blocks_without_creating_authoriz
     assert "DEMO_TRUSTED_EVIDENCE_UNAVAILABLE" in blocked.reason_codes
     assert store.count == 0
 
+
+def test_configured_execution_evidence_cannot_replace_policy_authority(tmp_path) -> None:
+    service, store, registry, audit, state_store, values = _inputs(tmp_path)
+    unavailable_policy = DemoExecutionAuthorizationService(
+        approval_registry=registry,
+        readiness_gate=service._readiness_gate,
+        kill_switch=service._kill_switch,
+        authorization_store=store,
+        execution_state_store=state_store,
+        audit_service=audit,
+        trusted_execution_evidence=service._trusted_execution_evidence,
+    )
+    blocked = unavailable_policy.authorize_demo_execution(**values)
+    assert blocked.authorization is None
+    assert "SENTINEL_RISK_POLICY_AUTHORITY_UNAVAILABLE" in blocked.reason_codes
+    assert store.count == 0
+
     stale = DemoExecutionAuthorizationService(
         approval_registry=registry,
         readiness_gate=service._readiness_gate,
@@ -229,6 +256,7 @@ def test_verification_recomputes_the_earliest_expiry(tmp_path) -> None:
         execution_state_store=state_store,
         audit_service=audit,
         trusted_execution_evidence=service._trusted_execution_evidence,
+        sentinel_risk_evidence=service._sentinel_risk_evidence,
     )
     outcome = verifier.verify_authorization(
         authorization_id=tampered.authorization_id,
@@ -360,6 +388,7 @@ def test_policy_risk_and_exposure_limits_are_preserved(tmp_path, policy_change, 
     values["policy"] = _policy(
         effective_at=NOW - timedelta(minutes=1), expires_at=NOW + timedelta(minutes=10), **policy_change
     )
+    service._sentinel_risk_evidence = _sentinel_risk(values["policy"])
     if context_change:
         values["context"] = _context(**context_change)
     result = service.authorize_demo_execution(**values)
@@ -405,6 +434,7 @@ def test_audit_is_required_for_success_but_failure_never_creates_authority(tmp_p
         execution_state_store=state_store,
         audit_service=None,
         trusted_execution_evidence=service._trusted_execution_evidence,
+        sentinel_risk_evidence=service._sentinel_risk_evidence,
     )
     result = no_audit.authorize_demo_execution(**values)
     assert result.authorization is None
@@ -459,6 +489,7 @@ def test_duplicate_second_identity_restart_and_statuses_fail_closed(tmp_path) ->
         audit_service=audit,
         execution_state_store=_state,
         trusted_execution_evidence=service._trusted_execution_evidence,
+        sentinel_risk_evidence=service._sentinel_risk_evidence,
     )
     restarted_result = restarted.authorize_demo_execution(**values)
     assert "DEMO_AUTHORIZATION_RECOVERY_REQUIRED" in restarted_result.reason_codes
@@ -496,6 +527,7 @@ def test_revocation_expiry_and_recovery_uncertainty_fail_closed(tmp_path) -> Non
         kill_switch=service._kill_switch, authorization_store=uncertain, audit_service=AuditService(AuditStore(tmp_path / "other.sqlite3")),
         execution_state_store=service._execution_state_store,
         trusted_execution_evidence=service._trusted_execution_evidence,
+        sentinel_risk_evidence=service._sentinel_risk_evidence,
     )
     outcome = service_uncertain.authorize_demo_execution(**values)
     assert "DEMO_AUTHORIZATION_RECOVERY_REQUIRED" in outcome.reason_codes

@@ -21,7 +21,7 @@ from app.services.demo_first_order_execution import (
 from app.services.execution_gate import FinalExecutionGate
 from app.audit.store import AuditStoreError
 from app.services.trade_proposal_workflow import ApprovalClaimError
-from tests.test_demo_execution_authorization import _inputs
+from tests.test_demo_execution_authorization import _inputs, _sentinel_risk
 from tests.test_demo_execution_readiness import ACCOUNT, NOW, _account, _context, _instrument, _policy
 
 
@@ -60,6 +60,7 @@ def _setup(tmp_path, *, outcome: TestOnlyAdapterOutcome = TestOnlyAdapterOutcome
     )
     intent = values["intent"].model_copy(update={"quantity": 0.01})
     values.update({"policy": policy, "intent": intent})
+    service._sentinel_risk_evidence = _sentinel_risk(policy)
     authorized = service.authorize_demo_execution(**values).authorization
     assert authorized is not None
     permit = FirstDemoTestPermit(

@@ -1256,3 +1256,39 @@ that fail if initialization, login, or `order_send` is reached. Even with an
 already-connected read-only source, live/demo submission remains disabled; a
 future shared atomic authority/reservation/consumption transaction and an
 authoritative portfolio-risk input source are still required.
+
+### Sentinel portfolio-risk policy governance
+
+The controlled-demo portfolio-risk calculator now resolves an exact immutable
+policy version through `SentinelPortfolioRiskPolicyVerifier` before it uses any
+risk limit. The canonical policy fingerprint covers the existing account,
+instrument, currency, order/filling, volume, exposure, monetary-risk, notional,
+freshness, effective-window, and calculation-semantics fields. The verifier
+recomputes this fingerprint and binds a successful non-authorizing risk record
+to the exact policy source, approval reference, calculation version, proposal,
+intent, Sentinel decision, account, instrument, positions, and market evidence.
+Caller-provided limits and hashes are comparison inputs only and cannot replace
+source-resolved content.
+
+This repository does **not** currently contain an independently verifiable
+policy-approval authority. Sentinel's trusted issuance service owns trade
+approval decisions; it does not approve controlled-demo policy versions. The
+production policy source is therefore unavailable by default, and controlled-
+demo authorization fails closed with an explicit policy-authority diagnostic.
+A hash, local database row, environment variable, caller flag, or Python
+protocol implementation is not treated as policy approval.
+
+`LocalSentinelPolicyCatalog` provides restart-safe local history for canonical
+policy versions, revocation, and atomic supersession. It enforces one active
+version per policy identity, immutable version content, explicit effective
+intervals, SQLite foreign keys, strict schema verification, and durable
+lifecycle events without an in-memory fallback. Its records are permanently
+labelled `LOCAL_GOVERNANCE_ONLY` and are not accepted as execution authority.
+Test-only sources require an explicit test factory and remain non-authorizing;
+selecting a test source through the normal verifier fails closed.
+
+Tests use synthetic policy and execution evidence only. They do not initialize
+MT5, connect to a broker, or call an order API. Live and controlled-demo
+submission remain disabled. Atomic approval, demo-authorization, reservation,
+and consumption is still a separate unresolved boundary, and production use
+also requires a genuine independently approved policy source.

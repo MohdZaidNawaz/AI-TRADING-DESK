@@ -14,15 +14,25 @@ from app.models.demo_execution import ControlledDemoExecutionPolicy
 from app.models.execution import ExecutionIntent
 from app.models.proposals import SentinelDecision, SentinelDecisionStatus, TradeDirection, TradeProposal
 from app.models.sentinel_risk_evidence import SentinelPortfolioRiskEvidence, SentinelRiskEvidenceStatus
+from app.models.sentinel_policy_authority import SentinelPolicyResolutionStatus
 from app.models.trusted_execution_evidence import ValidatedExecutionEvidence
+from app.services.sentinel_policy_authority import (
+    CONTROLLED_DEMO_RISK_CALCULATION_VERSION,
+    SentinelPortfolioRiskPolicyVerifier,
+)
 from app.services.trade_proposal_workflow import proposal_fingerprint
 
 
-_CALCULATION_VERSION = "controlled_demo_risk_v1"
-
-
 class SentinelPortfolioRiskEvidenceVerifier:
-    """Pure verifier for policy-bound risk inputs; it has no I/O dependencies."""
+    """Recompute risk only after exact policy source verification."""
+
+    def __init__(
+        self,
+        policy_authority: SentinelPortfolioRiskPolicyVerifier | None = None,
+    ) -> None:
+        # Production composition is deliberately unavailable until an
+        # independently approved policy source exists.
+        self._policy_authority = policy_authority or SentinelPortfolioRiskPolicyVerifier()
 
     def verify(
         self,
@@ -37,6 +47,29 @@ class SentinelPortfolioRiskEvidenceVerifier:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("Sentinel risk evidence verification requires timezone awareness")
         now = now.astimezone(UTC)
+        policy_resolution = self._policy_authority.resolve(
+            candidate=policy,
+            evaluated_at=now,
+        )
+        if policy_resolution.status not in {
+            SentinelPolicyResolutionStatus.AUTHORITATIVE,
+            SentinelPolicyResolutionStatus.TEST_ONLY_VALIDATED,
+        }:
+            return _unavailable_policy_result(
+                policy=policy,
+                proposal=proposal,
+                decision=decision,
+                intent=intent,
+                evidence=evidence,
+                now=now,
+                source_id=policy_resolution.source_id,
+                reason_codes=policy_resolution.reason_codes,
+            )
+        record = policy_resolution.record
+        assert record is not None and record.approval is not None
+        # Use only source-resolved canonical content for all calculations.  The
+        # candidate is comparison input and cannot override limits.
+        policy = record.policy
         codes: list[str] = []
         if not evidence.ready:
             codes.append("SENTINEL_RISK_EVIDENCE_INPUT_UNAVAILABLE")
@@ -91,7 +124,11 @@ class SentinelPortfolioRiskEvidenceVerifier:
             policy_id=policy.policy_id,
             policy_version=policy.policy_version,
             policy_fingerprint=policy.fingerprint,
-            calculation_version=_CALCULATION_VERSION,
+            policy_source_id=policy_resolution.source_id,
+            policy_authority_level=policy_resolution.authority_level,
+            policy_approval_reference=record.approval.approval_reference,
+            policy_approval_fingerprint=record.approval.policy_content_fingerprint,
+            calculation_version=CONTROLLED_DEMO_RISK_CALCULATION_VERSION,
             proposal_id=proposal.proposal_id,
             proposal_fingerprint=proposal_fingerprint(proposal),
             analysis_id=proposal.analysis_id,
@@ -113,6 +150,48 @@ class SentinelPortfolioRiskEvidenceVerifier:
             evaluated_at=now,
             reason_codes=tuple(sorted(set(codes))),
         )
+
+
+def _unavailable_policy_result(
+    *,
+    policy: ControlledDemoExecutionPolicy,
+    proposal: TradeProposal,
+    decision: SentinelDecision,
+    intent: ExecutionIntent,
+    evidence: ValidatedExecutionEvidence,
+    now: datetime,
+    source_id: str,
+    reason_codes: tuple[str, ...],
+) -> SentinelPortfolioRiskEvidence:
+    codes = tuple(reason_codes or ("SENTINEL_RISK_POLICY_AUTHORITY_UNAVAILABLE",))
+    return SentinelPortfolioRiskEvidence(
+        status=SentinelRiskEvidenceStatus.UNAVAILABLE,
+        policy_id=policy.policy_id,
+        policy_version=policy.policy_version,
+        policy_fingerprint=policy.fingerprint,
+        policy_source_id=source_id,
+        calculation_version=CONTROLLED_DEMO_RISK_CALCULATION_VERSION,
+        proposal_id=proposal.proposal_id,
+        proposal_fingerprint=proposal_fingerprint(proposal),
+        analysis_id=proposal.analysis_id,
+        evidence_fingerprint=proposal.evidence_fingerprint,
+        decision_id=decision.decision_id,
+        approval_id=decision.approval_id or "unavailable-approval",
+        execution_intent_id=intent.execution_intent_id,
+        execution_intent_fingerprint=intent.fingerprint,
+        account_id=intent.account_id or "unavailable-account",
+        canonical_symbol=intent.symbol,
+        broker_symbol=policy.instrument.broker_symbol,
+        risk_currency=policy.risk_currency,
+        trusted_evidence_fingerprint=evidence.fingerprint,
+        position_snapshot_fingerprint=(
+            None
+            if evidence.portfolio_risk_inputs is None
+            else evidence.portfolio_risk_inputs.position_snapshot_fingerprint
+        ),
+        evaluated_at=now,
+        reason_codes=codes,
+    )
 
 
 class _Metrics:

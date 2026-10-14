@@ -11,6 +11,7 @@ import json
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.models.schemas import APIModel
+from app.models.sentinel_policy_authority import SentinelPolicyAuthorityLevel
 
 
 class SentinelRiskEvidenceStatus(str, Enum):
@@ -30,6 +31,12 @@ class SentinelPortfolioRiskEvidence(SentinelRiskEvidenceModel):
     policy_id: str = Field(min_length=1, max_length=160)
     policy_version: str = Field(min_length=1, max_length=80)
     policy_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    policy_source_id: str | None = Field(default=None, min_length=1, max_length=160)
+    policy_authority_level: SentinelPolicyAuthorityLevel = SentinelPolicyAuthorityLevel.UNAVAILABLE
+    policy_approval_reference: str | None = Field(default=None, min_length=1, max_length=160)
+    policy_approval_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     calculation_version: str = Field(min_length=1, max_length=80)
     proposal_id: str = Field(min_length=1, max_length=120)
     proposal_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
@@ -71,6 +78,22 @@ class SentinelPortfolioRiskEvidence(SentinelRiskEvidenceModel):
             raise ValueError("Sentinel risk evidence cannot grant execution authority")
         if self.status is SentinelRiskEvidenceStatus.VALIDATED and self.reason_codes:
             raise ValueError("validated Sentinel risk evidence cannot contain failure codes")
+        if self.status is SentinelRiskEvidenceStatus.VALIDATED and (
+            self.policy_source_id is None
+            or self.policy_authority_level
+            not in {
+                SentinelPolicyAuthorityLevel.TEST_ONLY,
+                SentinelPolicyAuthorityLevel.INDEPENDENTLY_APPROVED,
+            }
+            or self.policy_approval_reference is None
+            or self.policy_approval_fingerprint is None
+        ):
+            raise ValueError("validated Sentinel risk evidence requires policy authority lineage")
+        if (
+            self.status is SentinelRiskEvidenceStatus.VALIDATED
+            and self.policy_approval_fingerprint != self.policy_fingerprint
+        ):
+            raise ValueError("policy approval lineage must bind the evaluated policy")
         if self.status is not SentinelRiskEvidenceStatus.VALIDATED and not self.reason_codes:
             raise ValueError("unavailable or rejected Sentinel risk evidence requires reason codes")
         return self

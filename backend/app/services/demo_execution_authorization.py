@@ -737,7 +737,12 @@ class DemoExecutionAuthorizationService:
                     state=name,
                     reason_code=reason_code,
                     provenance_fingerprint=fingerprint,
-                    details=(("submission_allowed", "false"), ("authorization_id", authorization.authorization_id if authorization is not None else "none")),
+                    details=(
+                        ("submission_allowed", "false"),
+                        ("authorization_id", authorization.authorization_id if authorization is not None else "none"),
+                        ("policy_id", policy.policy_id if policy is not None else "none"),
+                        ("policy_version", policy.policy_version if policy is not None else "none"),
+                    ),
                 )
             )
         except (AuditStoreError, TypeError, ValueError):
