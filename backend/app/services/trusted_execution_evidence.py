@@ -154,6 +154,16 @@ def _validate(response: ProviderExecutionEvidence, request: ExecutionEvidenceReq
             codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_STALE")
         if risk_inputs.position_snapshot_fingerprint != _positions_fingerprint(response.positions):
             codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_LINEAGE_MISMATCH")
+        if (
+            request.required_risk_policy_id
+            and risk_inputs.policy_id != request.required_risk_policy_id
+        ):
+            codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_POLICY_MISMATCH")
+        if (
+            request.required_risk_policy_fingerprint
+            and risk_inputs.policy_fingerprint != request.required_risk_policy_fingerprint
+        ):
+            codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_POLICY_MISMATCH")
     return sorted(set(codes))
 
 

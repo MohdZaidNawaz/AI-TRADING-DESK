@@ -34,6 +34,8 @@ from app.models.execution_state import ExecutionLifecycleState, build_execution_
 from app.models.proposals import SentinelDecision, TradeProposal
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
 from app.services.trade_proposal_workflow import ApprovalClaimError, ApprovalRegistry, proposal_fingerprint
+from app.models.trusted_execution_evidence import ExecutionEvidenceRequest, ValidatedExecutionEvidence
+from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 
 
 _PREAUTH_ONLY_CODE = "DEMO_CONTROLLED_DISABLED"
@@ -70,6 +72,7 @@ class DemoExecutionAuthorizationService:
         authorization_store: DemoAuthorizationStore,
         execution_state_store: ExecutionStateStore | None = None,
         audit_service: AuditService | None = None,
+        trusted_execution_evidence: TrustedExecutionEvidenceService | None = None,
     ) -> None:
         self._approval_registry = approval_registry
         self._readiness_gate = readiness_gate
@@ -77,6 +80,11 @@ class DemoExecutionAuthorizationService:
         self._authorization_store = authorization_store
         self._execution_state_store = execution_state_store
         self._audit_service = audit_service
+        # No configured provider means authorization remains unavailable rather
+        # than treating the caller's readiness model as source evidence.
+        self._trusted_execution_evidence = (
+            trusted_execution_evidence or TrustedExecutionEvidenceService()
+        )
 
     def authorize_demo_execution(
         self,
@@ -123,12 +131,25 @@ class DemoExecutionAuthorizationService:
             return DemoAuthorizationResult(evaluated_at=now_utc, reason_codes=tuple(codes))
 
         assert proposal is not None and decision is not None and intent is not None and context is not None
+        trusted_context, evidence_codes = self._trusted_context(
+            policy=policy,
+            intent=intent,
+            caller_context=context,
+            now=now_utc,
+        )
+        if trusted_context is None or evidence_codes:
+            return DemoAuthorizationResult(
+                evaluated_at=now_utc,
+                reason_codes=tuple(
+                    sorted(set(evidence_codes or ("DEMO_TRUSTED_EVIDENCE_UNAVAILABLE",)))
+                ),
+            )
         expiry = _earliest_expiry(
             proposal=proposal,
             decision=decision,
             intent=intent,
             policy=policy,
-            context=context,
+            context=trusted_context,
             execution_window_end=_require_aware(execution_window_end),
         )
         authorization = ControlledDemoAuthorization(
@@ -380,13 +401,22 @@ class DemoExecutionAuthorizationService:
             codes.append("DEMO_READINESS_CONTEXT_REQUIRED")
 
         if proposal is not None and decision is not None and intent is not None and context is not None:
-            codes.extend(self._lineage_codes(policy=policy, proposal=proposal, decision=decision, intent=intent, context=context))
+            trusted_context, evidence_codes = self._trusted_context(
+                policy=policy,
+                intent=intent,
+                caller_context=context,
+                now=now,
+            )
+            codes.extend(evidence_codes)
+            if trusted_context is None:
+                return sorted(set(codes))
+            codes.extend(self._lineage_codes(policy=policy, proposal=proposal, decision=decision, intent=intent, context=trusted_context))
             readiness = self._readiness_gate.evaluate(
                 policy=policy,
                 proposal=proposal,
                 decision=decision,
                 intent=intent,
-                context=context,
+                context=trusted_context,
                 now=now,
             )
             # A disabled runtime is expected for this pre-authorization stage;
@@ -394,7 +424,7 @@ class DemoExecutionAuthorizationService:
             codes.extend(code for code in readiness.reason_codes if code != _PREAUTH_ONLY_CODE)
             if self._kill_switch.status().active:
                 codes.append("KILL_SWITCH_ACTIVE")
-            codes.extend(self._state_codes(intent=intent, context=context, now=now))
+            codes.extend(self._state_codes(intent=intent, context=trusted_context, now=now))
             try:
                 verified = self._approval_registry.verify(proposal=proposal, decision=decision, now=now)
                 if not _approval_matches_intent(verified, intent):
@@ -407,7 +437,7 @@ class DemoExecutionAuthorizationService:
                     decision=decision,
                     intent=intent,
                     policy=policy,
-                    context=context,
+                    context=trusted_context,
                     execution_window_end=_require_aware(execution_window_end),
                 )
                 if expiry <= now:
@@ -433,6 +463,15 @@ class DemoExecutionAuthorizationService:
             codes.append("DEMO_AUTHORIZATION_EXPIRED")
         if proposal is None or decision is None or intent is None or context is None:
             codes.append("DEMO_AUTHORIZATION_VERIFICATION_INPUT_MISSING")
+            return sorted(set(codes))
+        trusted_context, evidence_codes = self._trusted_context(
+            policy=policy,
+            intent=intent,
+            caller_context=context,
+            now=now,
+        )
+        codes.extend(evidence_codes)
+        if trusted_context is None:
             return sorted(set(codes))
         if (
             authorization.policy_id != policy.policy_id
@@ -466,7 +505,7 @@ class DemoExecutionAuthorizationService:
                 decision=decision,
                 intent=intent,
                 policy=policy,
-                context=context,
+                context=trusted_context,
                 execution_window_end=authorization.execution_window_end,
             )
         ):
@@ -477,7 +516,7 @@ class DemoExecutionAuthorizationService:
                 proposal=proposal,
                 decision=decision,
                 intent=intent,
-                context=context,
+                context=trusted_context,
                 requested_mode=DemoExecutionMode.DEMO_CONTROLLED,
                 runtime_execution_mode=runtime_execution_mode,
                 execution_window_start=authorization.execution_window_start,
@@ -486,6 +525,111 @@ class DemoExecutionAuthorizationService:
             )
         )
         return sorted(set(codes))
+
+    def _trusted_context(
+        self,
+        *,
+        policy: ControlledDemoExecutionPolicy,
+        intent: ExecutionIntent,
+        caller_context: DemoReadinessContext,
+        now: datetime,
+    ) -> tuple[DemoReadinessContext | None, list[str]]:
+        """Read facts from the configured boundary; caller facts are comparison-only.
+
+        This bridge does not promote provider output into approval or execution
+        authority. It only prevents `DemoReadinessContext` from becoming an
+        unverified substitute for source-bound account, instrument, quote, or
+        position observations.
+        """
+        request = ExecutionEvidenceRequest(
+            account=policy.allowed_account,
+            canonical_symbol=policy.instrument.canonical_symbol,
+            broker_symbol=policy.instrument.broker_symbol,
+            max_age_seconds=policy.max_market_age_seconds,
+            expected_market_unit=policy.risk_currency,
+            required_order_type=intent.order_type,
+            required_filling_mode=intent.filling_mode,
+            required_risk_policy_id=policy.policy_id,
+            required_risk_policy_fingerprint=policy.fingerprint,
+        )
+        evidence = self._trusted_execution_evidence.assess(request, now=now)
+        if not evidence.ready:
+            mapped_codes = {
+                "EXECUTION_EVIDENCE_ORDER_TYPE_UNSUPPORTED": "DEMO_UNSUPPORTED_ORDER_TYPE",
+                "EXECUTION_EVIDENCE_FILLING_MODE_UNSUPPORTED": "DEMO_UNSUPPORTED_FILLING_MODE",
+            }
+            return None, [
+                "DEMO_TRUSTED_EVIDENCE_UNAVAILABLE",
+                *(mapped_codes.get(code, code) for code in evidence.reason_codes),
+            ]
+        context = self._context_from_evidence(evidence)
+        if context is None:
+            return None, ["DEMO_TRUSTED_EVIDENCE_INCOMPLETE"]
+        codes: list[str] = []
+        if (
+            caller_context.account != context.account
+            or caller_context.account_id != context.account_id
+            or caller_context.instrument != context.instrument
+            or caller_context.positions != context.positions
+            or caller_context.market_observed_at != context.market_observed_at
+        ):
+            codes.append("DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE")
+            # Preserve the established, sanitized failure diagnostics without
+            # allowing those caller facts to participate in authorization.
+            if caller_context.account.account != policy.allowed_account:
+                codes.append("DEMO_ACCOUNT_MISMATCH")
+            if (
+                caller_context.instrument.canonical_symbol
+                != policy.instrument.canonical_symbol
+                or caller_context.instrument.broker_symbol
+                != policy.instrument.broker_symbol
+            ):
+                codes.append("DEMO_SYMBOL_MISMATCH")
+            if (
+                caller_context.market_observed_at > now
+                or now - caller_context.market_observed_at
+                > timedelta(seconds=policy.max_market_age_seconds)
+            ):
+                codes.append("DEMO_MARKET_DATA_STALE")
+            if (
+                intent.quantity is not None
+                and (
+                    intent.quantity < caller_context.instrument.minimum_volume
+                    or intent.quantity > caller_context.instrument.maximum_volume
+                    or (intent.quantity - caller_context.instrument.minimum_volume)
+                    % caller_context.instrument.volume_step
+                    != 0
+                )
+            ):
+                codes.append("FIRST_DEMO_BROKER_VOLUME_INVALID")
+        if self._execution_state_store is None:
+            codes.append("DEMO_EXECUTION_STATE_UNAVAILABLE")
+        return context, codes
+
+    def _context_from_evidence(
+        self, evidence: ValidatedExecutionEvidence
+    ) -> DemoReadinessContext | None:
+        if (
+            evidence.account is None
+            or evidence.instrument is None
+            or evidence.market is None
+            or evidence.source_observed_at is None
+        ):
+            return None
+        history = (
+            self._execution_state_store.snapshot()
+            if self._execution_state_store is not None
+            else ()
+        )
+        return DemoReadinessContext(
+            account=evidence.account,
+            account_id=evidence.account.account.account_id,
+            instrument=evidence.instrument,
+            positions=evidence.positions,
+            execution_history=history,
+            market_observed_at=evidence.market.observed_at,
+            captured_at=evidence.source_observed_at,
+        )
 
     @staticmethod
     def _lineage_codes(

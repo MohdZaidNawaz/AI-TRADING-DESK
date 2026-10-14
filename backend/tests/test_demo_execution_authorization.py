@@ -6,7 +6,9 @@ No test initializes MT5, calls an adapter, or performs any network activity.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 import inspect
+import json
 
 import pytest
 from pydantic import ValidationError
@@ -19,10 +21,65 @@ from app.execution.state_store import ExecutionStateStore
 from app.models.demo_authorization import DemoAuthorizationStatus
 from app.models.demo_execution import DemoExecutionMode
 from app.models.execution_state import ExecutionLifecycleState, build_execution_record
+from app.models.trusted_execution_evidence import (
+    ExecutionEvidenceAvailability,
+    MarketReferenceObservation,
+    PortfolioRiskInputObservation,
+    ProviderExecutionEvidence,
+)
 from app.services.demo_execution_authorization import DemoExecutionAuthorizationService
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
 from app.services.trade_proposal_workflow import ApprovalRegistry, proposal_fingerprint
+from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 from tests.test_demo_execution_readiness import ACCOUNT, NOW, _context, _pair, _policy
+
+
+class _ControlledTestEvidenceProvider:
+    """Test-only source; production composition uses the unavailable default."""
+
+    provider_id = "controlled_demo_authorization_test_source"
+
+    def __init__(self, context):
+        self._context = context
+
+    def read(self, request):
+        positions = self._context.positions
+        position_payload = [
+            position.model_dump(mode="json")
+            for position in sorted(positions, key=lambda item: item.ticket)
+        ]
+        position_fingerprint = sha256(
+            json.dumps(position_payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest()
+        return ProviderExecutionEvidence(
+            availability=ExecutionEvidenceAvailability.AVAILABLE,
+            provider_id=self.provider_id,
+            observed_at=self._context.captured_at,
+            instrument=self._context.instrument,
+            market=MarketReferenceObservation(
+                canonical_symbol=self._context.instrument.canonical_symbol,
+                broker_symbol=self._context.instrument.broker_symbol,
+                bid="100.00",
+                ask="100.10",
+                unit=self._context.account.currency,
+                observed_at=self._context.market_observed_at,
+            ),
+            account=self._context.account,
+            positions=positions,
+            portfolio_risk_inputs=PortfolioRiskInputObservation(
+                account=self._context.account.account,
+                position_snapshot_fingerprint=position_fingerprint,
+                # This explicit fake reflects the request scope only in tests;
+                # production has no configured provider by default.
+                policy_id=request.required_risk_policy_id or "controlled-test-policy",
+                policy_fingerprint=request.required_risk_policy_fingerprint or "a" * 64,
+                observed_at=self._context.captured_at,
+            ),
+        )
+
+
+def _trusted_evidence(context):
+    return TrustedExecutionEvidenceService(_ControlledTestEvidenceProvider(context))
 
 
 def _inputs(tmp_path, **changes: object):
@@ -78,6 +135,7 @@ def _inputs(tmp_path, **changes: object):
         authorization_store=store,
         execution_state_store=state_store,
         audit_service=audit,
+        trusted_execution_evidence=_trusted_evidence(context),
     )
     values: dict[str, object] = {
         "policy": policy,
@@ -125,6 +183,38 @@ def test_valid_artifact_is_pre_authorized_only_and_expiry_uses_earliest_dependen
     assert store.get(authorization.authorization_id).status is DemoAuthorizationStatus.AUTHORIZED
 
 
+def test_unconfigured_or_stale_trusted_evidence_blocks_without_creating_authorization(tmp_path) -> None:
+    service, store, registry, audit, state_store, values = _inputs(tmp_path)
+    unavailable = DemoExecutionAuthorizationService(
+        approval_registry=registry,
+        readiness_gate=service._readiness_gate,
+        kill_switch=service._kill_switch,
+        authorization_store=store,
+        execution_state_store=state_store,
+        audit_service=audit,
+    )
+    blocked = unavailable.authorize_demo_execution(**values)
+    assert blocked.authorization is None
+    assert "DEMO_TRUSTED_EVIDENCE_UNAVAILABLE" in blocked.reason_codes
+    assert store.count == 0
+
+    stale = DemoExecutionAuthorizationService(
+        approval_registry=registry,
+        readiness_gate=service._readiness_gate,
+        kill_switch=service._kill_switch,
+        authorization_store=store,
+        execution_state_store=state_store,
+        audit_service=audit,
+        trusted_execution_evidence=_trusted_evidence(
+            _context(market_observed_at=NOW - timedelta(minutes=1))
+        ),
+    )
+    stale_result = stale.authorize_demo_execution(**values)
+    assert stale_result.authorization is None
+    assert "EXECUTION_EVIDENCE_MARKET_STALE" in stale_result.reason_codes
+    assert store.count == 0
+
+
 def test_verification_recomputes_the_earliest_expiry(tmp_path) -> None:
     service, _store, _registry, audit, state_store, values, result = _authorize(tmp_path)
     authorization = result.authorization
@@ -138,6 +228,7 @@ def test_verification_recomputes_the_earliest_expiry(tmp_path) -> None:
         authorization_store=isolated_store,
         execution_state_store=state_store,
         audit_service=audit,
+        trusted_execution_evidence=service._trusted_execution_evidence,
     )
     outcome = verifier.verify_authorization(
         authorization_id=tampered.authorization_id,
@@ -157,7 +248,7 @@ def test_verification_recomputes_the_earliest_expiry(tmp_path) -> None:
         ({"intent": _pair()[3].model_copy(update={"quantity": 2.0})}, "DEMO_VOLUME_LIMIT"),
         ({"intent": _pair()[3].model_copy(update={"order_type": "LIMIT"})}, "DEMO_UNSUPPORTED_ORDER_TYPE"),
         ({"intent": _pair()[3].model_copy(update={"filling_mode": "BOOK_OR_CANCEL"})}, "DEMO_UNSUPPORTED_FILLING_MODE"),
-        ({"context": _context(market_observed_at=NOW - timedelta(minutes=1))}, "DEMO_MARKET_DATA_STALE"),
+        ({"context": _context(market_observed_at=NOW - timedelta(minutes=1))}, "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE"),
         ({"intent": _pair()[3].model_copy(update={"stop_loss": None})}, "DEMO_INVALID_PRICE"),
         ({"intent": _pair()[3].model_copy(update={"take_profit": None})}, "DEMO_INVALID_PRICE"),
     ],
@@ -193,11 +284,11 @@ def test_wrong_account_and_broker_binding_fail_closed(tmp_path) -> None:
     wrong_account = service.authorize_demo_execution(
         **{**values, "context": _context(account=_account(other), account_id=other.account_id)}
     )
-    assert "DEMO_ACCOUNT_MISMATCH" in wrong_account.reason_codes
+    assert "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE" in wrong_account.reason_codes
     wrong_broker = service.authorize_demo_execution(
         **{**values, "context": _context(instrument=_instrument(broker_symbol="XAUUSD.a"))}
     )
-    assert "DEMO_SYMBOL_MISMATCH" in wrong_broker.reason_codes
+    assert "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE" in wrong_broker.reason_codes
     assert store.count == 0
 
 
@@ -210,7 +301,7 @@ def test_wrong_broker_server_and_explicit_symbol_alias_fail_closed(tmp_path) -> 
     broker_mismatch = service.authorize_demo_execution(
         **{**values, "context": _context(account=_account(wrong_server), account_id=wrong_server.account_id)}
     )
-    assert "DEMO_ACCOUNT_MISMATCH" in broker_mismatch.reason_codes
+    assert "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE" in broker_mismatch.reason_codes
     alias = values["intent"].model_copy(update={"symbol": "XAU/USD"})
     alias_result = service.authorize_demo_execution(**{**values, "intent": alias})
     assert "DEMO_SYMBOL_MISMATCH" in alias_result.reason_codes
@@ -254,7 +345,7 @@ def test_missing_or_expired_sentinel_and_execution_intent_fail_closed(tmp_path) 
 @pytest.mark.parametrize(
     ("policy_change", "context_change", "code"),
     [
-        ({"max_total_open_volume": 1.1}, {"positions": ()}, "DEMO_TOTAL_OPEN_VOLUME_LIMIT"),
+        ({"max_total_open_volume": 1.1}, {"positions": ()}, "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE"),
         ({"max_open_positions": 0}, {}, "DEMO_POSITION_COUNT_LIMIT"),
         ({"max_order_notional": 10.0}, {}, "DEMO_NOTIONAL_LIMIT"),
         ({"max_stop_distance": 1.0}, {}, "DEMO_STOP_DISTANCE_LIMIT"),
@@ -263,7 +354,7 @@ def test_missing_or_expired_sentinel_and_execution_intent_fail_closed(tmp_path) 
 )
 def test_policy_risk_and_exposure_limits_are_preserved(tmp_path, policy_change, context_change, code: str) -> None:
     service, store, _registry, _audit, _state, values = _inputs(tmp_path)
-    if code == "DEMO_TOTAL_OPEN_VOLUME_LIMIT":
+    if code == "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE":
         from tests.test_demo_execution_readiness import _position
         context_change = {"positions": (_position(1), _position(2))}
     values["policy"] = _policy(
@@ -283,7 +374,7 @@ def test_missing_monetary_inputs_and_policy_or_window_expiry_fail_closed(tmp_pat
     missing_money = service.authorize_demo_execution(
         **{**values, "context": _context(instrument=_instrument(tick_value=None))}
     )
-    assert "DEMO_RISK_INPUTS_UNAVAILABLE" in missing_money.reason_codes
+    assert "DEMO_CALLER_CONTEXT_CONFLICTS_TRUSTED_EVIDENCE" in missing_money.reason_codes
     expired_policy = _policy(
         effective_at=NOW - timedelta(minutes=2), expires_at=NOW - timedelta(seconds=1)
     )
@@ -313,6 +404,7 @@ def test_audit_is_required_for_success_but_failure_never_creates_authority(tmp_p
         authorization_store=store,
         execution_state_store=state_store,
         audit_service=None,
+        trusted_execution_evidence=service._trusted_execution_evidence,
     )
     result = no_audit.authorize_demo_execution(**values)
     assert result.authorization is None
@@ -365,16 +457,18 @@ def test_duplicate_second_identity_restart_and_statuses_fail_closed(tmp_path) ->
         kill_switch=service._kill_switch,
         authorization_store=restarted_store,
         audit_service=audit,
+        execution_state_store=_state,
+        trusted_execution_evidence=service._trusted_execution_evidence,
     )
     restarted_result = restarted.authorize_demo_execution(**values)
     assert "DEMO_AUTHORIZATION_RECOVERY_REQUIRED" in restarted_result.reason_codes
 
 
 def test_execution_history_duplicate_and_window_limit_block_authorization(tmp_path) -> None:
-    service, store, _registry, _audit, _state, values = _inputs(tmp_path)
+    service, store, _registry, _audit, state_store, values = _inputs(tmp_path)
     history_record = build_execution_record(values["intent"], execution_mode="demo_controlled", now=NOW)
-    duplicate_context = _context(execution_history=(history_record,))
-    result = service.authorize_demo_execution(**{**values, "context": duplicate_context})
+    state_store.create_or_get(history_record)
+    result = service.authorize_demo_execution(**values)
     assert "DEMO_DUPLICATE_EXECUTION" in result.reason_codes
     assert "DEMO_EXECUTION_WINDOW_LIMIT" in result.reason_codes
     assert store.count == 0
@@ -400,6 +494,8 @@ def test_revocation_expiry_and_recovery_uncertainty_fail_closed(tmp_path) -> Non
     service_uncertain = DemoExecutionAuthorizationService(
         approval_registry=service._approval_registry, readiness_gate=service._readiness_gate,
         kill_switch=service._kill_switch, authorization_store=uncertain, audit_service=AuditService(AuditStore(tmp_path / "other.sqlite3")),
+        execution_state_store=service._execution_state_store,
+        trusted_execution_evidence=service._trusted_execution_evidence,
     )
     outcome = service_uncertain.authorize_demo_execution(**values)
     assert "DEMO_AUTHORIZATION_RECOVERY_REQUIRED" in outcome.reason_codes

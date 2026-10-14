@@ -1220,3 +1220,14 @@ fakes exist only in isolated tests. When trusted evidence is required,
 operational readiness reports `TRUSTED_EXECUTION_EVIDENCE_UNAVAILABLE` instead
 of reporting execution readiness. Durable demo authorization, reservations,
 external broker reconciliation, and all demo/live submission remain disabled.
+
+The controlled-demo authorization service now requests this evidence internally
+for every create and verification operation. Its legacy caller-provided
+`DemoReadinessContext` is comparison-only: conflicting account, instrument,
+position, or market facts are rejected and cannot override provider-bound
+observations. The default unconfigured provider blocks authorization with
+`DEMO_TRUSTED_EVIDENCE_UNAVAILABLE`; successful test paths inject explicit
+test-only providers. The durable reservation store remains separately
+test-only because neither a real evidence provider nor atomic durable
+authorization-and-reservation consumption is available. Recovery therefore
+continues to fail closed and requires reconciliation rather than retry.

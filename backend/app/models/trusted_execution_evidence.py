@@ -38,6 +38,10 @@ class ExecutionEvidenceRequest(TrustedExecutionEvidenceModel):
     expected_market_unit: str | None = Field(default=None, min_length=1, max_length=32)
     required_order_type: str | None = Field(default=None, min_length=1, max_length=40)
     required_filling_mode: str | None = Field(default=None, min_length=1, max_length=40)
+    required_risk_policy_id: str | None = Field(default=None, min_length=1, max_length=160)
+    required_risk_policy_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
 
     @field_validator(
         "canonical_symbol",
@@ -45,6 +49,7 @@ class ExecutionEvidenceRequest(TrustedExecutionEvidenceModel):
         "expected_market_unit",
         "required_order_type",
         "required_filling_mode",
+        "required_risk_policy_id",
         mode="before",
     )
     @classmethod

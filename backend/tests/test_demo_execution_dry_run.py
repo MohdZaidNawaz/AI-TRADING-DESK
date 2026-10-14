@@ -198,9 +198,10 @@ def test_expiry_kill_switch_risk_freshness_and_duplicate_state_fail_closed(tmp_p
 
     service, _store, _registry, _audit, state_store, values, authorization, workflow, adapter, _result = _fresh(tmp_path, "duplicate")
     duplicate = build_execution_record(values["intent"], execution_mode="demo_controlled", now=NOW)
-    repeated = _validate(workflow, authorization, values, context=_context(execution_history=(duplicate,)))
+    state_store.create_or_get(duplicate)
+    repeated = _validate(workflow, authorization, values)
     assert "DEMO_DUPLICATE_EXECUTION" in repeated.reason_codes
-    assert state_store.count == 0 and adapter.calls == 0
+    assert state_store.count == 1 and adapter.calls == 0
 
 
 def test_authorization_lifecycle_and_reconciliation_block(tmp_path) -> None:

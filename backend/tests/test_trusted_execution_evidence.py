@@ -239,6 +239,18 @@ def test_requested_market_unit_is_provider_validated() -> None:
     assert "EXECUTION_EVIDENCE_MARKET_UNIT_MISMATCH" in result.reason_codes
 
 
+def test_portfolio_risk_lineage_must_bind_the_requested_policy() -> None:
+    result = TrustedExecutionEvidenceService(_FakeProvider(_response())).assess(
+        _request(
+            required_risk_policy_id="another-policy",
+            required_risk_policy_fingerprint="c" * 64,
+        ),
+        now=NOW,
+    )
+    assert result.ready is False
+    assert "EXECUTION_EVIDENCE_PORTFOLIO_RISK_POLICY_MISMATCH" in result.reason_codes
+
+
 def test_core_composes_unavailable_boundary_and_readiness_blocks_when_required() -> None:
     assert create_friday_core().trusted_execution_evidence.provider_id == "unconfigured_read_only_execution_evidence"
     from app.health.models import ComponentHealth, HealthStatus

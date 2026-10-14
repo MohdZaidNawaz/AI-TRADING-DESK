@@ -73,6 +73,11 @@ class ExecutionStateStore:
         with self._lock:
             return self._transitions.get(execution_id, ())
 
+    def snapshot(self) -> tuple[ExecutionRecord, ...]:
+        """Return a deterministic read-only view for safety validation."""
+        with self._lock:
+            return tuple(self._records[key] for key in sorted(self._records))
+
     def transition(
         self,
         *,
