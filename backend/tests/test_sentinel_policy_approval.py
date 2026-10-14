@@ -155,8 +155,15 @@ def test_missing_trust_anchor_is_typed_unavailable_and_non_authorizing() -> None
         evaluated_at=NOW,
     )
     assert result.status is SentinelPolicyApprovalVerificationStatus.UNAVAILABLE
-    assert result.reason_codes == ("SENTINEL_POLICY_APPROVAL_TRUST_ANCHOR_UNAVAILABLE",)
+    assert result.reason_codes == (
+        "SENTINEL_POLICY_APPROVAL_SOURCE_UNAVAILABLE",
+        "SENTINEL_POLICY_APPROVAL_TRUST_ANCHOR_UNAVAILABLE",
+        "SENTINEL_POLICY_GOVERNANCE_UNCONFIGURED",
+    )
     assert result.readiness.policy_source_configured is True
+    assert result.readiness.governance_contract_configured is False
+    assert result.readiness.approval_source_configured is False
+    assert result.readiness.revocation_status_available is False
     assert result.readiness.trust_anchor_configured is False
     assert result.readiness.production_policy_resolution_available is False
     assert result.execution_authority is False
@@ -214,6 +221,9 @@ def test_malformed_or_mismatched_test_verifier_result_fails_closed() -> None:
                 verified_at=NOW,
                 readiness=SentinelPolicyApprovalReadiness(
                     policy_source_configured=True,
+                    governance_contract_configured=True,
+                    approval_source_configured=True,
+                    revocation_status_available=True,
                     approval_artifact_available=True,
                     approver_verified=True,
                     policy_fingerprint_verified=True,

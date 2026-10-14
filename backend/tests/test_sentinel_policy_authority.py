@@ -140,6 +140,9 @@ class _TestApprovalVerifier:
             verified_at=evaluated_at,
             readiness=SentinelPolicyApprovalReadiness(
                 policy_source_configured=policy_source_configured,
+                governance_contract_configured=True,
+                approval_source_configured=True,
+                revocation_status_available=True,
                 trust_anchor_configured=False,
                 approval_artifact_available=True,
                 approver_verified=True,

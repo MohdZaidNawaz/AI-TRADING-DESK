@@ -1327,6 +1327,47 @@ replacement also require an authoritative durable source; the existing local
 policy catalog remains history-only. Atomic policy approval, trade approval,
 demo authorization, reservation, and consumption remains unresolved.
 
+#### Formal governance and trust configuration
+
+`SentinelPolicyGovernanceRecord` defines the governance decision that must
+exist before an approval verifier can become authoritative: named approver and
+organizational role, approval/revocation capabilities, exact policy/environment/
+account/instrument scope, validity and lifecycle, audit responsibilities, and
+the required trust-anchor mechanism. `UNCONFIGURED`,
+`LOCAL_DECLARATION_ONLY`, and `TEST_ONLY` records are explicitly non-
+authoritative. An `INDEPENDENTLY_VERIFIED` record requires a non-test approval
+mechanism and a public trust-anchor descriptor whose identity and provenance
+were established outside the repository. Model construction, a local row, or
+a matching fingerprint does not prove that external establishment occurred.
+
+The typed `SentinelPolicyGovernanceSource` and
+`SentinelPolicyApprovalLifecycleSource` contracts separate the governance
+decision from the current approval/revocation record. Production composition
+uses only unavailable implementations. Arbitrary protocol implementations are
+reported as untrusted rather than inferred to be authority. Readiness now
+distinguishes governance-contract configuration, authoritative approval-source
+configuration, current revocation availability, trust-anchor verification,
+artifact availability, approver verification, fingerprint binding, lifecycle,
+and scope. Every item is required for production policy resolution.
+
+The unsigned decision template is
+[`docs/sentinel-policy-governance-decision.template.md`](docs/sentinel-policy-governance-decision.template.md).
+Completing or committing it cannot authorize a policy. A legitimate decision-
+maker must approve the named approver and scope, establish the public trust
+identity independently, define key custody or external-service ownership, and
+name the durable approval/revocation source. A separate reviewed integration is
+then required; production startup cannot select a fixture or local catalog.
+
+Current transaction boundaries remain intentionally separate: governance and
+policy catalogs are history/configuration boundaries; Sentinel trade approval
+uses the shared authority SQLite store; controlled-demo authorization,
+reservation, audit projection, and broker reconciliation retain their existing
+owners and guarantees. The repository does not claim atomicity across those
+stores. A crash or ambiguity between stores must continue to fail closed and
+require reconciliation. Consolidation into one tested SQLite transaction may
+be feasible only after an authoritative policy source exists and migration can
+preserve existing records, ownership, outbox, revocation, and recovery rules.
+
 Tests use synthetic policy and execution evidence only. They do not initialize
 MT5, connect to a broker, or call an order API. Live and controlled-demo
 submission remain disabled. Atomic approval, demo-authorization, reservation,

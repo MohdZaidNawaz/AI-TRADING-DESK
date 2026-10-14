@@ -47,6 +47,13 @@ class SentinelPolicyApprovalVerificationStatus(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class SentinelPolicyApprovalSourceStatus(str, Enum):
+    AVAILABLE = "available"
+    NOT_FOUND = "not_found"
+    UNAVAILABLE = "unavailable"
+    CONFLICT = "conflict"
+
+
 class SentinelPolicyApprovalScope(SentinelPolicyApprovalModel):
     """Exact scope for which a policy approval is claimed."""
 
@@ -178,8 +185,55 @@ class SentinelPolicyApprovalState(SentinelPolicyApprovalModel):
         return _fingerprint(self.model_dump(mode="json", exclude={"state_fingerprint"}))
 
 
+class SentinelPolicyApprovalSourceResult(SentinelPolicyApprovalModel):
+    status: SentinelPolicyApprovalSourceStatus
+    source_id: str = Field(min_length=1, max_length=160)
+    requested_policy_id: str = Field(min_length=1, max_length=160)
+    requested_policy_version: str = Field(min_length=1, max_length=80)
+    requested_artifact_id: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    resolved_at: datetime
+    state: SentinelPolicyApprovalState | None = None
+    reason_codes: tuple[str, ...] = ()
+
+    @field_validator("requested_policy_id", "requested_policy_version", mode="before")
+    @classmethod
+    def normalize_request(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("resolved_at")
+    @classmethod
+    def normalize_resolved_at(cls, value: datetime) -> datetime:
+        return _utc(value)
+
+    @field_validator("reason_codes")
+    @classmethod
+    def stable_codes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted(set(value)))
+
+    @model_validator(mode="after")
+    def validate_result(self) -> "SentinelPolicyApprovalSourceResult":
+        if self.status is SentinelPolicyApprovalSourceStatus.AVAILABLE:
+            if self.state is None or self.reason_codes:
+                raise ValueError("available approval-source result requires one state and no failures")
+            artifact = self.state.artifact
+            if (
+                artifact.policy_id != self.requested_policy_id
+                or artifact.policy_version != self.requested_policy_version
+                or artifact.approval_artifact_id != self.requested_artifact_id
+            ):
+                raise ValueError("approval-source result must bind the exact request")
+        elif self.state is not None or not self.reason_codes:
+            raise ValueError("unavailable approval-source result requires failures and no state")
+        return self
+
+
 class SentinelPolicyApprovalReadiness(SentinelPolicyApprovalModel):
     policy_source_configured: bool = False
+    governance_contract_configured: bool = False
+    approval_source_configured: bool = False
+    revocation_status_available: bool = False
     trust_anchor_configured: bool = False
     approval_artifact_available: bool = False
     approver_verified: bool = False
@@ -192,6 +246,9 @@ class SentinelPolicyApprovalReadiness(SentinelPolicyApprovalModel):
     def no_partial_production_readiness(self) -> "SentinelPolicyApprovalReadiness":
         required = (
             self.policy_source_configured,
+            self.governance_contract_configured,
+            self.approval_source_configured,
+            self.revocation_status_available,
             self.trust_anchor_configured,
             self.approval_artifact_available,
             self.approver_verified,

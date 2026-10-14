@@ -15,11 +15,10 @@ from typing import Protocol, runtime_checkable
 from app.models.demo_execution import ControlledDemoExecutionPolicy
 from app.models.sentinel_policy_approval import (
     SentinelPolicyApprovalLifecycle,
-    SentinelPolicyApprovalReadiness,
     SentinelPolicyApprovalState,
     SentinelPolicyApprovalVerification,
-    SentinelPolicyApprovalVerificationStatus,
 )
+from app.services.sentinel_policy_governance import SentinelPolicyGovernanceBoundary
 
 
 @runtime_checkable
@@ -37,6 +36,9 @@ class SentinelPolicyApprovalVerifier(Protocol):
 class UnavailableSentinelPolicyApprovalVerifier:
     """Production default until governance supplies a legitimate trust anchor."""
 
+    def __init__(self) -> None:
+        self._governance = SentinelPolicyGovernanceBoundary()
+
     def verify(
         self,
         *,
@@ -45,19 +47,11 @@ class UnavailableSentinelPolicyApprovalVerifier:
         policy_source_configured: bool,
         evaluated_at: datetime,
     ) -> SentinelPolicyApprovalVerification:
-        del policy
-        now = _utc(evaluated_at)
-        return SentinelPolicyApprovalVerification(
-            status=SentinelPolicyApprovalVerificationStatus.UNAVAILABLE,
-            artifact_id=approval.artifact.approval_artifact_id,
-            artifact_fingerprint=approval.artifact.canonical_payload_fingerprint,
-            approver_id=approval.artifact.approver_id,
-            verified_at=now,
-            readiness=SentinelPolicyApprovalReadiness(
-                policy_source_configured=policy_source_configured,
-                approval_artifact_available=True,
-            ),
-            reason_codes=("SENTINEL_POLICY_APPROVAL_TRUST_ANCHOR_UNAVAILABLE",),
+        return self._governance.assess(
+            approval=approval,
+            policy=policy,
+            policy_source_configured=policy_source_configured,
+            evaluated_at=_utc(evaluated_at),
         )
 
 
