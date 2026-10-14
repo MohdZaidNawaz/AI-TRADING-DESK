@@ -7,6 +7,7 @@ from enum import Enum
 
 from app.health.models import ComponentHealth, HealthStatus
 from app.models.execution_state import ExecutionLifecycleState, ExecutionRecord
+from app.models.trusted_execution_evidence import ValidatedExecutionEvidence
 from app.services.config_validation import ConfigurationValidation
 
 
@@ -37,6 +38,8 @@ class OperationalReadinessChecker:
         sentinel_available: bool,
         audit_available: bool,
         require_mt5: bool = False,
+        trusted_evidence: ValidatedExecutionEvidence | None = None,
+        require_trusted_evidence: bool = False,
     ) -> ReadinessReport:
         codes: list[str] = list(configuration.reason_codes)
         if not sentinel_available:
@@ -56,6 +59,12 @@ class OperationalReadinessChecker:
             item = by_component.get("mt5")
             if item is None or item.status is not HealthStatus.HEALTHY:
                 codes.append("MT5_UNAVAILABLE")
+        if require_trusted_evidence and (
+            trusted_evidence is None
+            or not trusted_evidence.ready
+            or trusted_evidence.execution_authority is not False
+        ):
+            codes.append("TRUSTED_EXECUTION_EVIDENCE_UNAVAILABLE")
         if codes:
             blocking = {"KILL_SWITCH_ACTIVE", "UNRESOLVED_RECONCILIATION", "LIVE_EXECUTION_BLOCKED"}
             status = ReadinessStatus.BLOCKED if any(code in blocking for code in codes) else ReadinessStatus.NOT_READY

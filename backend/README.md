@@ -1189,3 +1189,34 @@ broker reconciliation remain separate blockers. The outbox remains
 at-least-once to external projectors. Phase 13C-2 imports neither Pilot nor an
 execution adapter, does not initialize MT5, and does not enable demo or live
 submission.
+
+### Phase 13F — Read-only trusted execution-evidence boundary
+
+Phase 13F adds a provider-bound, read-only validation boundary for instrument
+constraints, market references, account/position snapshots, and validated
+portfolio-risk input lineage under their exact account and symbol scope.
+`FridayCore` composes one
+`TrustedExecutionEvidenceService`; its default provider is explicitly
+unconfigured and returns no observations. It therefore reports evidence as
+unavailable rather than using caller-supplied readiness-context values,
+synthetic prices, or a cached fallback.
+
+Configured providers must return typed observations with their configured
+provider identity. The service calculates deterministic fingerprints from
+validated data, rejects stale/future observations, symbol/account mismatches,
+invalid broker constraints, inconsistent positions, malformed responses, and
+provider failures. A validated result is still non-authorizing: it cannot
+issue approvals, authorizations, reservations, or submissions. The boundary is
+application-level provenance validation, not cryptographic protection against
+hostile code already executing inside the process.
+
+Portfolio-risk input lineage binds the exact source-position snapshot and a
+policy fingerprint, but it deliberately contains no `safe` assertion. A later
+trusted policy/risk service must independently evaluate those validated inputs
+before any execution-readiness claim is possible.
+
+No live read-only broker provider is configured in this repository. Controlled
+fakes exist only in isolated tests. When trusted evidence is required,
+operational readiness reports `TRUSTED_EXECUTION_EVIDENCE_UNAVAILABLE` instead
+of reporting execution readiness. Durable demo authorization, reservations,
+external broker reconciliation, and all demo/live submission remain disabled.

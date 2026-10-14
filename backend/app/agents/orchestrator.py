@@ -46,6 +46,7 @@ from app.services.derived_features import (
     DEFAULT_DERIVED_FEATURE_REQUESTS,
     DerivedFeatureService,
 )
+from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,7 @@ class FridayCore:
         derived_feature_requests: tuple[DerivedFeatureRequest, ...] | None = None,
         trade_proposal_workflow: TradeProposalWorkflow | None = None,
         proposal_assembly_service: ProposalAssemblyService | None = None,
+        trusted_execution_evidence: TrustedExecutionEvidenceService | None = None,
     ) -> None:
         self._specialists = specialists
         self._master = master
@@ -103,6 +105,7 @@ class FridayCore:
             master=self._master
         )
         self._proposal_assembly_service = proposal_assembly_service or ProposalAssemblyService()
+        self._trusted_execution_evidence = trusted_execution_evidence or TrustedExecutionEvidenceService()
         self._recent_market_events: deque[NormalizedDataEvent] = deque(maxlen=100)
         self._event_lock = Lock()
 
@@ -494,8 +497,13 @@ class FridayCore:
         """Expose an immutable, provider-neutral snapshot for internal consumers."""
         return self._evidence_store.snapshot(symbol=symbol)
 
+    @property
+    def trusted_execution_evidence(self) -> TrustedExecutionEvidenceService:
+        """Application-composed, read-only evidence boundary; unavailable by default."""
+        return self._trusted_execution_evidence
 
-def create_friday_core(*, sentinel_gate=None) -> FridayCore:
+
+def create_friday_core(*, sentinel_gate=None, trusted_execution_evidence=None) -> FridayCore:
     """Build FRIDAY with an optionally application-composed Sentinel gate."""
     master = MasterAgent()
     return FridayCore(
@@ -506,6 +514,7 @@ def create_friday_core(*, sentinel_gate=None) -> FridayCore:
             if sentinel_gate is not None
             else None
         ),
+        trusted_execution_evidence=trusted_execution_evidence,
     )
 
 
