@@ -5,10 +5,9 @@ from datetime import timedelta
 
 from app.models.sentinel_risk_evidence import SentinelRiskEvidenceStatus
 from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
-from app.services.sentinel_policy_authority import SentinelPortfolioRiskPolicyVerifier
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 from tests.test_demo_execution_readiness import NOW, _pair, _policy
-from tests.test_sentinel_policy_authority import _test_policy_record
+from tests.test_sentinel_policy_authority import _test_policy_record, _test_policy_verifier
 from tests.test_trusted_execution_evidence import _FakeProvider, _request, _response
 
 
@@ -49,7 +48,7 @@ def _inputs():
 def test_recomputes_policy_metrics_from_validated_evidence_without_authorizing() -> None:
     policy, proposal, decision, intent, evidence = _inputs()
     result = SentinelPortfolioRiskEvidenceVerifier(
-        SentinelPortfolioRiskPolicyVerifier.for_test((_test_policy_record(policy),))
+        _test_policy_verifier((_test_policy_record(policy),))
     ).verify(
         policy=policy, proposal=proposal, decision=decision, intent=intent, evidence=evidence, now=NOW
     )
@@ -62,7 +61,7 @@ def test_policy_or_stale_evidence_mismatch_fails_closed() -> None:
     policy, proposal, decision, intent, evidence = _inputs()
     bad_policy = policy.model_copy(update={"policy_id": "other-policy"})
     result = SentinelPortfolioRiskEvidenceVerifier(
-        SentinelPortfolioRiskPolicyVerifier.for_test((_test_policy_record(policy),))
+        _test_policy_verifier((_test_policy_record(policy),))
     ).verify(
         policy=bad_policy, proposal=proposal, decision=decision, intent=intent, evidence=evidence, now=NOW
     )
@@ -87,7 +86,7 @@ def test_caller_cannot_override_source_resolved_risk_limits() -> None:
     source_record = _test_policy_record(policy)
     altered = policy.model_copy(update={"max_order_notional": policy.max_order_notional + 1})
     result = SentinelPortfolioRiskEvidenceVerifier(
-        SentinelPortfolioRiskPolicyVerifier.for_test((source_record,))
+        _test_policy_verifier((source_record,))
     ).verify(
         policy=altered, proposal=proposal, decision=decision, intent=intent, evidence=evidence, now=NOW
     )

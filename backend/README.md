@@ -1287,6 +1287,46 @@ labelled `LOCAL_GOVERNANCE_ONLY` and are not accepted as execution authority.
 Test-only sources require an explicit test factory and remain non-authorizing;
 selecting a test source through the normal verifier fails closed.
 
+#### Independent policy-approval boundary
+
+`SentinelPolicyApprovalArtifact` is an immutable `sentinel-policy-approval/v1`
+claim bound to the exact policy ID, policy version, canonical policy
+fingerprint, approver identity, validity interval, and account/mode/instrument/
+currency scope. Its deterministic payload fingerprint deliberately excludes
+the proof bytes; the artifact ID binds both that canonical payload and the
+proof. Detached-signature claims must identify the verification key and the
+supported signature algorithm. Constructing or storing any artifact proves
+only content integrity—it does not establish the approver's identity or
+authority.
+
+Approval lifecycle is represented separately as immutable active, revoked, or
+superseded state. Policy resolution checks exact identity/content, effective
+time, lifecycle, and scope before risk calculations. Readiness reports policy
+source, trust-anchor, artifact, approver, fingerprint, lifecycle, scope, and
+production-resolution availability as separate safe booleans; partial
+readiness can never advertise production availability. Risk evidence retains
+the approval artifact ID, canonical artifact fingerprint, approver ID, and
+policy binding without granting execution authority.
+
+There is currently **no authorized independent policy approver, approved public
+verification key, key-management integration, or external governance service**
+configured for FRIDAY. Consequently the production approval verifier is always
+typed `UNAVAILABLE`, and production policy resolution remains blocked. A local
+catalog row, Git hash, environment value, trade-proposal approval, approval-
+shaped object, approver name, or signature-shaped string is not a trust anchor.
+No current policy approval artifact has been manufactured.
+
+Tests define their fake verifier inside the test suite and can reach only
+`TEST_ONLY_VERIFIED`; that status remains non-authorizing and cannot advertise
+production readiness. Normal construction rejects the test policy source.
+Activation requires an explicit governance decision naming the authorized
+approver and scope, plus a reviewed production verifier backed by that
+authority's established public-key/KMS or attestation trust configuration.
+Private signing material must remain outside the repository. Revocation and
+replacement also require an authoritative durable source; the existing local
+policy catalog remains history-only. Atomic policy approval, trade approval,
+demo authorization, reservation, and consumption remains unresolved.
+
 Tests use synthetic policy and execution evidence only. They do not initialize
 MT5, connect to a broker, or call an order API. Live and controlled-demo
 submission remain disabled. Atomic approval, demo-authorization, reservation,

@@ -16,6 +16,11 @@ from pydantic import ConfigDict, Field, computed_field, field_validator, model_v
 
 from app.models.demo_execution import ControlledDemoExecutionPolicy
 from app.models.schemas import APIModel
+from app.models.sentinel_policy_approval import (
+    SentinelPolicyApprovalMechanism,
+    SentinelPolicyApprovalReadiness,
+    SentinelPolicyApprovalState,
+)
 
 
 class SentinelPolicyAuthorityModel(APIModel):
@@ -40,11 +45,6 @@ class SentinelPolicySourceKind(str, Enum):
     LOCAL_SQLITE_CATALOG = "local_sqlite_catalog"
     TEST_FIXTURE = "test_fixture"
     TRUSTED_GOVERNANCE = "trusted_governance"
-
-
-class SentinelPolicyApprovalMechanism(str, Enum):
-    TEST_FIXTURE = "test_fixture"
-    INDEPENDENT_GOVERNANCE = "independent_governance"
 
 
 class SentinelPolicyResolutionStatus(str, Enum):
@@ -80,21 +80,6 @@ class SentinelPolicyProvenance(SentinelPolicyAuthorityModel):
         return tuple(sorted(result))
 
 
-class SentinelPolicyApprovalEvidence(SentinelPolicyAuthorityModel):
-    mechanism: SentinelPolicyApprovalMechanism
-    approval_reference: str = Field(min_length=1, max_length=160)
-    approved_by: str = Field(min_length=1, max_length=160)
-    approved_at: datetime
-    policy_content_fingerprint: str = Field(
-        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
-    )
-
-    @field_validator("approved_at")
-    @classmethod
-    def normalize_time(cls, value: datetime) -> datetime:
-        return _utc(value)
-
-
 class SentinelPortfolioRiskPolicyRecord(SentinelPolicyAuthorityModel):
     """One versioned policy record plus honest provenance and lifecycle.
 
@@ -115,7 +100,7 @@ class SentinelPortfolioRiskPolicyRecord(SentinelPolicyAuthorityModel):
     lifecycle_version: int = Field(ge=1)
     authority_level: SentinelPolicyAuthorityLevel
     provenance: SentinelPolicyProvenance
-    approval: SentinelPolicyApprovalEvidence | None = None
+    approval: SentinelPolicyApprovalState | None = None
     registered_at: datetime
     lifecycle_changed_at: datetime
     revoked_reason: str | None = Field(default=None, min_length=1, max_length=160)
@@ -154,17 +139,23 @@ class SentinelPortfolioRiskPolicyRecord(SentinelPolicyAuthorityModel):
         elif self.authority_level is SentinelPolicyAuthorityLevel.TEST_ONLY:
             if self.provenance.source_kind is not SentinelPolicySourceKind.TEST_FIXTURE:
                 raise ValueError("test-only policy records require test-fixture provenance")
-            if self.approval is None or self.approval.mechanism is not SentinelPolicyApprovalMechanism.TEST_FIXTURE:
+            if self.approval is None or self.approval.artifact.mechanism is not SentinelPolicyApprovalMechanism.TEST_FIXTURE:
                 raise ValueError("test-only policy records require explicit test approval evidence")
         elif self.authority_level is SentinelPolicyAuthorityLevel.INDEPENDENTLY_APPROVED:
             if self.provenance.source_kind is not SentinelPolicySourceKind.TRUSTED_GOVERNANCE:
                 raise ValueError("independently approved policies require trusted governance provenance")
-            if self.approval is None or self.approval.mechanism is not SentinelPolicyApprovalMechanism.INDEPENDENT_GOVERNANCE:
+            if self.approval is None or self.approval.artifact.mechanism is SentinelPolicyApprovalMechanism.TEST_FIXTURE:
                 raise ValueError("independently approved policies require independent approval evidence")
         else:
             raise ValueError("unavailable authority cannot create a policy record")
-        if self.approval is not None and self.approval.policy_content_fingerprint != self.policy.fingerprint:
-            raise ValueError("policy approval evidence must bind the canonical policy content")
+        if self.approval is not None:
+            artifact = self.approval.artifact
+            if (
+                artifact.policy_id != self.policy.policy_id
+                or artifact.policy_version != self.policy.policy_version
+                or artifact.policy_fingerprint != self.policy.fingerprint
+            ):
+                raise ValueError("policy approval evidence must bind the canonical policy identity and content")
         return self
 
     @computed_field(return_type=str)
@@ -194,6 +185,7 @@ class SentinelPolicyResolution(SentinelPolicyAuthorityModel):
     source_id: str = Field(min_length=1, max_length=160)
     resolved_at: datetime
     record: SentinelPortfolioRiskPolicyRecord | None = None
+    approval_readiness: SentinelPolicyApprovalReadiness = SentinelPolicyApprovalReadiness()
     reason_codes: tuple[str, ...] = ()
     execution_authority: Literal[False] = False
 
@@ -220,9 +212,13 @@ class SentinelPolicyResolution(SentinelPolicyAuthorityModel):
         if self.status is SentinelPolicyResolutionStatus.AUTHORITATIVE:
             if self.authority_level is not SentinelPolicyAuthorityLevel.INDEPENDENTLY_APPROVED:
                 raise ValueError("authoritative resolution requires independent policy approval")
+            if not self.approval_readiness.production_policy_resolution_available:
+                raise ValueError("authoritative resolution requires complete approval readiness")
         elif self.status is SentinelPolicyResolutionStatus.TEST_ONLY_VALIDATED:
             if self.authority_level is not SentinelPolicyAuthorityLevel.TEST_ONLY:
                 raise ValueError("test-only resolution requires test-only authority level")
+            if self.approval_readiness.production_policy_resolution_available:
+                raise ValueError("test-only resolution cannot advertise production readiness")
         elif self.authority_level is SentinelPolicyAuthorityLevel.INDEPENDENTLY_APPROVED:
             raise ValueError("failed resolution cannot advertise independent authority")
         return self

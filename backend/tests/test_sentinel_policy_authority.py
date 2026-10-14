@@ -11,8 +11,6 @@ from pydantic import ValidationError
 
 from app.models.demo_execution import ControlledDemoExecutionPolicy
 from app.models.sentinel_policy_authority import (
-    SentinelPolicyApprovalEvidence,
-    SentinelPolicyApprovalMechanism,
     SentinelPolicyAuthorityLevel,
     SentinelPolicyLifecycle,
     SentinelPolicyProvenance,
@@ -20,6 +18,17 @@ from app.models.sentinel_policy_authority import (
     SentinelPolicySourceKind,
     SentinelPortfolioRiskPolicyRecord,
 )
+from app.models.sentinel_policy_approval import (
+    SentinelPolicyApprovalArtifact,
+    SentinelPolicyApprovalLifecycle,
+    SentinelPolicyApprovalMechanism,
+    SentinelPolicyApprovalReadiness,
+    SentinelPolicyApprovalScope,
+    SentinelPolicyApprovalState,
+    SentinelPolicyApprovalVerification,
+    SentinelPolicyApprovalVerificationStatus,
+)
+from app.services.sentinel_policy_approval import approval_binding_codes
 from app.services.sentinel_policy_authority import (
     SentinelPortfolioRiskPolicyVerifier,
     TestOnlySentinelPolicySource,
@@ -54,18 +63,100 @@ def _test_policy_record(
             source_kind=SentinelPolicySourceKind.TEST_FIXTURE,
             source_version="v1",
         ),
-        "approval": SentinelPolicyApprovalEvidence(
-            mechanism=SentinelPolicyApprovalMechanism.TEST_FIXTURE,
-            approval_reference="pytest-only-approval",
-            approved_by="pytest-fixture",
-            approved_at=NOW - timedelta(minutes=1),
-            policy_content_fingerprint=policy.fingerprint,
-        ),
+        "approval": _test_approval_state(policy),
         "registered_at": NOW - timedelta(minutes=1),
         "lifecycle_changed_at": NOW - timedelta(minutes=1),
     }
     values.update(changes)
     return SentinelPortfolioRiskPolicyRecord(**values)
+
+
+def _test_approval_state(
+    policy: ControlledDemoExecutionPolicy,
+    **changes: object,
+) -> SentinelPolicyApprovalState:
+    artifact_values: dict[str, object] = {
+        "policy_id": policy.policy_id,
+        "policy_version": policy.policy_version,
+        "policy_fingerprint": policy.fingerprint,
+        "approver_id": "PYTEST-INDEPENDENT-APPROVER",
+        "mechanism": SentinelPolicyApprovalMechanism.TEST_FIXTURE,
+        "proof": "PYTEST-ONLY-VERIFIED-PROOF",
+        "approved_at": NOW - timedelta(minutes=1),
+        "effective_at": NOW - timedelta(minutes=2),
+        "expires_at": NOW + timedelta(minutes=10),
+        "scope": SentinelPolicyApprovalScope(
+            account_ids=(policy.allowed_account.account_id,),
+            execution_modes=(policy.mode.value,),
+            canonical_symbols=(policy.instrument.canonical_symbol,),
+            risk_currencies=(policy.risk_currency,),
+        ),
+    }
+    state_changes = {
+        key: changes.pop(key)
+        for key in tuple(changes)
+        if key in {"lifecycle", "lifecycle_version", "registered_at", "lifecycle_changed_at", "revoked_reason", "superseded_by_artifact_id"}
+    }
+    artifact_values.update(changes)
+    artifact = SentinelPolicyApprovalArtifact(**artifact_values)
+    state_values: dict[str, object] = {
+        "artifact": artifact,
+        "registered_at": NOW - timedelta(minutes=1),
+        "lifecycle_changed_at": NOW - timedelta(minutes=1),
+    }
+    state_values.update(state_changes)
+    return SentinelPolicyApprovalState(**state_values)
+
+
+class _TestApprovalVerifier:
+    """Test-file-only verifier; its result can never be production authority."""
+
+    def verify(self, *, approval, policy, policy_source_configured, evaluated_at):
+        codes = list(approval_binding_codes(
+            approval=approval, policy=policy, evaluated_at=evaluated_at
+        ))
+        if approval.artifact.approver_id != "PYTEST-INDEPENDENT-APPROVER":
+            codes.append("SENTINEL_POLICY_APPROVER_UNAUTHORIZED")
+        if approval.artifact.proof != "PYTEST-ONLY-VERIFIED-PROOF":
+            codes.append("SENTINEL_POLICY_APPROVAL_PROOF_INVALID")
+        if codes:
+            return SentinelPolicyApprovalVerification(
+                status=SentinelPolicyApprovalVerificationStatus.REJECTED,
+                artifact_id=approval.artifact.approval_artifact_id,
+                artifact_fingerprint=approval.artifact.canonical_payload_fingerprint,
+                approver_id=approval.artifact.approver_id,
+                verified_at=evaluated_at,
+                readiness=SentinelPolicyApprovalReadiness(
+                    policy_source_configured=policy_source_configured,
+                    approval_artifact_available=True,
+                ),
+                reason_codes=tuple(codes),
+            )
+        return SentinelPolicyApprovalVerification(
+            status=SentinelPolicyApprovalVerificationStatus.TEST_ONLY_VERIFIED,
+            artifact_id=approval.artifact.approval_artifact_id,
+            artifact_fingerprint=approval.artifact.canonical_payload_fingerprint,
+            approver_id=approval.artifact.approver_id,
+            verified_at=evaluated_at,
+            readiness=SentinelPolicyApprovalReadiness(
+                policy_source_configured=policy_source_configured,
+                trust_anchor_configured=False,
+                approval_artifact_available=True,
+                approver_verified=True,
+                policy_fingerprint_verified=True,
+                approval_lifecycle_valid=True,
+                approval_scope_valid=True,
+                production_policy_resolution_available=False,
+            ),
+        )
+
+
+def _test_policy_verifier(
+    records: tuple[SentinelPortfolioRiskPolicyRecord, ...],
+) -> SentinelPortfolioRiskPolicyVerifier:
+    return SentinelPortfolioRiskPolicyVerifier.for_test(
+        records, approval_verifier=_TestApprovalVerifier()
+    )
 
 
 def _local_policy_record(
@@ -104,13 +195,7 @@ def test_approval_must_bind_exact_policy_content() -> None:
     with pytest.raises(ValidationError, match="bind"):
         _test_policy_record(
             policy,
-            approval=SentinelPolicyApprovalEvidence(
-                mechanism=SentinelPolicyApprovalMechanism.TEST_FIXTURE,
-                approval_reference="forged",
-                approved_by="test",
-                approved_at=NOW,
-                policy_content_fingerprint="0" * 64,
-            ),
+            approval=_test_approval_state(policy, policy_fingerprint="0" * 64),
         )
 
     payload = _test_policy_record(policy).model_dump(exclude_computed_fields=True)
@@ -165,14 +250,17 @@ def test_test_source_requires_explicit_test_factory_and_exact_content() -> None:
     ).resolve(candidate=policy, evaluated_at=NOW)
     assert accidentally_selected.status is SentinelPolicyResolutionStatus.UNAVAILABLE
 
-    verified = SentinelPortfolioRiskPolicyVerifier.for_test((record,)).resolve(
+    verified = _test_policy_verifier((record,)).resolve(
         candidate=policy, evaluated_at=NOW
     )
     assert verified.status is SentinelPolicyResolutionStatus.TEST_ONLY_VALIDATED
     assert verified.record == record and verified.execution_authority is False
+    assert verified.approval_readiness.approver_verified is True
+    assert verified.approval_readiness.policy_fingerprint_verified is True
+    assert verified.approval_readiness.production_policy_resolution_available is False
 
     altered = policy.model_copy(update={"max_order_notional": policy.max_order_notional + 1})
-    rejected = SentinelPortfolioRiskPolicyVerifier.for_test((record,)).resolve(
+    rejected = _test_policy_verifier((record,)).resolve(
         candidate=altered, evaluated_at=NOW
     )
     assert rejected.status is SentinelPolicyResolutionStatus.REJECTED
@@ -188,7 +276,7 @@ def test_test_source_requires_explicit_test_factory_and_exact_content() -> None:
 def test_effective_start_is_inclusive_and_expiry_is_exclusive() -> None:
     policy = _bounded_policy()
     record = _test_policy_record(policy)
-    verifier = SentinelPortfolioRiskPolicyVerifier.for_test((record,))
+    verifier = _test_policy_verifier((record,))
     assert verifier.resolve(
         candidate=policy, evaluated_at=policy.effective_at
     ).status is SentinelPolicyResolutionStatus.TEST_ONLY_VALIDATED
@@ -218,7 +306,7 @@ def test_effective_start_is_inclusive_and_expiry_is_exclusive() -> None:
 )
 def test_lifecycle_and_effective_boundaries_fail_closed(record_change, at, code: str) -> None:
     record = _test_policy_record(**record_change)
-    result = SentinelPortfolioRiskPolicyVerifier.for_test((record,)).resolve(
+    result = _test_policy_verifier((record,)).resolve(
         candidate=record.policy, evaluated_at=at
     )
     assert result.status is SentinelPolicyResolutionStatus.REJECTED

@@ -19,9 +19,20 @@ from app.models.sentinel_policy_authority import (
     SentinelPolicyResolutionStatus,
     SentinelPortfolioRiskPolicyRecord,
 )
+from app.models.sentinel_policy_approval import (
+    SentinelPolicyApprovalReadiness,
+    SentinelPolicyApprovalVerification,
+    SentinelPolicyApprovalVerificationStatus,
+)
+from app.services.sentinel_policy_approval import (
+    SentinelPolicyApprovalVerifier,
+    UnavailableSentinelPolicyApprovalVerifier,
+    approval_binding_codes,
+)
 
 
 CONTROLLED_DEMO_RISK_CALCULATION_VERSION = "controlled_demo_risk_v1"
+_TEST_ONLY_CONSTRUCTION_TOKEN = object()
 
 
 class SentinelPolicySourceError(RuntimeError):
@@ -87,16 +98,25 @@ class SentinelPortfolioRiskPolicyVerifier:
         self,
         source: SentinelPortfolioRiskPolicySource | None = None,
         *,
-        allow_test_source: bool = False,
+        approval_verifier: SentinelPolicyApprovalVerifier | None = None,
+        _test_only_token: object | None = None,
     ) -> None:
         self._source = source or UnavailableSentinelPolicySource()
-        self._allow_test_source = allow_test_source
+        self._approval_verifier = approval_verifier or UnavailableSentinelPolicyApprovalVerifier()
+        self._allow_test_source = _test_only_token is _TEST_ONLY_CONSTRUCTION_TOKEN
 
     @classmethod
     def for_test(
-        cls, records: tuple[SentinelPortfolioRiskPolicyRecord, ...]
+        cls,
+        records: tuple[SentinelPortfolioRiskPolicyRecord, ...],
+        *,
+        approval_verifier: SentinelPolicyApprovalVerifier,
     ) -> "SentinelPortfolioRiskPolicyVerifier":
-        return cls(TestOnlySentinelPolicySource(records), allow_test_source=True)
+        return cls(
+            TestOnlySentinelPolicySource(records),
+            approval_verifier=approval_verifier,
+            _test_only_token=_TEST_ONLY_CONSTRUCTION_TOKEN,
+        )
 
     @property
     def source_id(self) -> str:
@@ -138,6 +158,32 @@ class SentinelPortfolioRiskPolicyVerifier:
                 "SENTINEL_RISK_POLICY_VERSION_UNAVAILABLE",
             )
         codes = _record_codes(record=record, candidate=candidate, evaluated_at=now)
+        approval_result = None
+        if record.approval is not None:
+            try:
+                approval_result = self._approval_verifier.verify(
+                    approval=record.approval,
+                    policy=record.policy,
+                    policy_source_configured=True,
+                    evaluated_at=now,
+                )
+            except Exception:
+                codes.append("SENTINEL_POLICY_APPROVAL_VERIFIER_UNAVAILABLE")
+            else:
+                if not isinstance(approval_result, SentinelPolicyApprovalVerification):
+                    approval_result = None
+                    codes.append("SENTINEL_POLICY_APPROVAL_VERIFIER_RESULT_INVALID")
+                elif (
+                    approval_result.artifact_id != record.approval.artifact.approval_artifact_id
+                    or approval_result.artifact_fingerprint
+                    != record.approval.artifact.canonical_payload_fingerprint
+                    or approval_result.approver_id != record.approval.artifact.approver_id
+                ):
+                    codes.append("SENTINEL_POLICY_APPROVAL_VERIFICATION_LINEAGE_MISMATCH")
+                elif approval_result.status is not SentinelPolicyApprovalVerificationStatus.TEST_ONLY_VERIFIED:
+                    codes.extend(approval_result.reason_codes or ("SENTINEL_POLICY_APPROVAL_UNVERIFIED",))
+                    if approval_result.status is SentinelPolicyApprovalVerificationStatus.AUTHORITATIVE:
+                        codes.append("SENTINEL_POLICY_APPROVAL_TEST_BOUNDARY_VIOLATION")
         if codes:
             return SentinelPolicyResolution(
                 status=SentinelPolicyResolutionStatus.REJECTED,
@@ -147,8 +193,17 @@ class SentinelPortfolioRiskPolicyVerifier:
                 requested_policy_fingerprint=candidate.fingerprint,
                 source_id=self.source_id,
                 resolved_at=now,
+                approval_readiness=(
+                    approval_result.readiness
+                    if approval_result is not None
+                    else SentinelPolicyApprovalReadiness(
+                        policy_source_configured=True,
+                        approval_artifact_available=record.approval is not None,
+                    )
+                ),
                 reason_codes=tuple(codes),
             )
+        assert approval_result is not None
         return SentinelPolicyResolution(
             status=SentinelPolicyResolutionStatus.TEST_ONLY_VALIDATED,
             authority_level=SentinelPolicyAuthorityLevel.TEST_ONLY,
@@ -158,6 +213,7 @@ class SentinelPortfolioRiskPolicyVerifier:
             source_id=self.source_id,
             resolved_at=now,
             record=record,
+            approval_readiness=approval_result.readiness,
         )
 
     def _failed(
@@ -203,8 +259,16 @@ def _record_codes(
         codes.append("SENTINEL_RISK_POLICY_CONTENT_MISMATCH")
     if record.policy_content_fingerprint != policy.fingerprint:
         codes.append("SENTINEL_RISK_POLICY_FINGERPRINT_MISMATCH")
-    if record.approval is None or record.approval.policy_content_fingerprint != policy.fingerprint:
+    if record.approval is None:
         codes.append("SENTINEL_RISK_POLICY_APPROVAL_BINDING_INVALID")
+    else:
+        codes.extend(
+            approval_binding_codes(
+                approval=record.approval,
+                policy=policy,
+                evaluated_at=evaluated_at,
+            )
+        )
     if record.calculation_version != CONTROLLED_DEMO_RISK_CALCULATION_VERSION:
         codes.append("SENTINEL_RISK_POLICY_CALCULATION_VERSION_MISMATCH")
     if policy.effective_at is None or policy.expires_at is None:

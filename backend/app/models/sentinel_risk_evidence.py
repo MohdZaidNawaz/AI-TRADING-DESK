@@ -37,6 +37,10 @@ class SentinelPortfolioRiskEvidence(SentinelRiskEvidenceModel):
     policy_approval_fingerprint: str | None = Field(
         default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
+    policy_approval_artifact_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    policy_approver_id: str | None = Field(default=None, min_length=1, max_length=160)
     calculation_version: str = Field(min_length=1, max_length=80)
     proposal_id: str = Field(min_length=1, max_length=120)
     proposal_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
@@ -87,6 +91,8 @@ class SentinelPortfolioRiskEvidence(SentinelRiskEvidenceModel):
             }
             or self.policy_approval_reference is None
             or self.policy_approval_fingerprint is None
+            or self.policy_approval_artifact_fingerprint is None
+            or self.policy_approver_id is None
         ):
             raise ValueError("validated Sentinel risk evidence requires policy authority lineage")
         if (

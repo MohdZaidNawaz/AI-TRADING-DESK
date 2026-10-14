@@ -29,12 +29,11 @@ from app.models.trusted_execution_evidence import (
 )
 from app.services.demo_execution_authorization import DemoExecutionAuthorizationService
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
-from app.services.sentinel_policy_authority import SentinelPortfolioRiskPolicyVerifier
 from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
 from app.services.trade_proposal_workflow import ApprovalRegistry, proposal_fingerprint
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 from tests.test_demo_execution_readiness import ACCOUNT, NOW, _context, _pair, _policy
-from tests.test_sentinel_policy_authority import _test_policy_record
+from tests.test_sentinel_policy_authority import _test_policy_record, _test_policy_verifier
 
 
 class _ControlledTestEvidenceProvider:
@@ -87,7 +86,7 @@ def _trusted_evidence(context):
 
 def _sentinel_risk(policy):
     return SentinelPortfolioRiskEvidenceVerifier(
-        SentinelPortfolioRiskPolicyVerifier.for_test((_test_policy_record(policy),))
+        _test_policy_verifier((_test_policy_record(policy),))
     )
 
 
