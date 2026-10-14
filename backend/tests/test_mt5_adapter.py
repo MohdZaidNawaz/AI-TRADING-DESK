@@ -5,7 +5,7 @@ import pytest
 from app import config
 from app.execution.mt5_adapter import MT5ExecutionAdapter, MT5Settings
 from app.models.execution import ExecutionStatus
-from app.models.mt5 import MT5ExecutionMode
+from app.models.mt5 import MT5ExecutionMode, MT5SessionState
 from app.models.portfolio_risk import SourceAccountKey
 from tests.test_execution import _intent
 
@@ -210,3 +210,41 @@ def test_market_closed_and_account_mismatch_are_rejected() -> None:
     closed = FakeMT5(); closed.tick = None
     assert "MT5_MARKET_CLOSED" in _adapter(closed).prepare(_intent_for_mt5()).reason_codes
     assert "MT5_ACCOUNT_UNAVAILABLE" in _adapter().prepare(_intent_for_mt5(account_id="other")).reason_codes
+
+
+def test_read_only_evidence_never_initializes_or_submits_and_requires_connected_runtime() -> None:
+    fake = FakeMT5()
+    fake.initialize_calls = 0
+    fake.login_calls = 0
+    original_initialize, original_login = fake.initialize, fake.login
+    fake.initialize = lambda **kwargs: (setattr(fake, "initialize_calls", fake.initialize_calls + 1), original_initialize(**kwargs))[1]
+    fake.login = lambda *args, **kwargs: (setattr(fake, "login_calls", fake.login_calls + 1), original_login(*args, **kwargs))[1]
+    fake.tick.time_msc = 1_790_000_000_000
+    adapter = _adapter(fake)
+
+    disconnected, codes = adapter.read_only_evidence_snapshot(
+        canonical_symbol="XAUUSD", broker_symbol="XAUUSD.a"
+    )
+    assert disconnected is None and codes == ("MT5_READ_ONLY_RUNTIME_NOT_CONNECTED",)
+    assert fake.initialize_calls == fake.login_calls == fake.order_send_calls == 0
+
+    adapter._state = MT5SessionState.CONNECTED
+    snapshot, codes = adapter.read_only_evidence_snapshot(
+        canonical_symbol="XAUUSD", broker_symbol="XAUUSD.a"
+    )
+    assert codes == () and snapshot is not None
+    assert snapshot.instrument.broker_symbol == "XAUUSD.a"
+    assert fake.initialize_calls == fake.login_calls == fake.order_send_calls == 0
+
+
+def test_read_only_evidence_rejects_malformed_quote_without_reconnecting() -> None:
+    fake = FakeMT5()
+    fake.tick.time_msc = 1_790_000_000_000
+    fake.tick.bid, fake.tick.ask = 101.0, 100.0
+    adapter = _adapter(fake)
+    adapter._state = MT5SessionState.CONNECTED
+    snapshot, codes = adapter.read_only_evidence_snapshot(
+        canonical_symbol="XAUUSD", broker_symbol="XAUUSD.a"
+    )
+    assert snapshot is None and codes == ("MT5_READ_ONLY_EVIDENCE_MALFORMED",)
+    assert fake.order_send_calls == 0

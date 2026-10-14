@@ -1231,3 +1231,28 @@ test-only providers. The durable reservation store remains separately
 test-only because neither a real evidence provider nor atomic durable
 authorization-and-reservation consumption is available. Recovery therefore
 continues to fail closed and requires reconciliation rather than retry.
+
+### Passive MT5 evidence and Sentinel portfolio-risk verification
+
+`MT5ReadOnlyExecutionEvidenceProvider` is an opt-in provider-specific adapter
+for a runtime that is already connected by another explicitly authorized
+owner. It calls only the adapter's passive evidence snapshot method; it never
+initializes MT5, logs in, selects a symbol, calls an order method, or changes
+terminal/account state. A disconnected runtime returns an explicit unavailable
+result. The default FRIDAY composition remains the no-I/O unavailable provider.
+
+The passive snapshot records sanitized account, exact mapped instrument,
+bid/ask, source quote time, retrieval time, positions, and pending-order facts.
+It intentionally does **not** claim that MT5 establishes Sentinel policy or
+portfolio-risk correctness. `SentinelPortfolioRiskEvidenceVerifier` separately
+recomputes the existing controlled-demo policy's volume, monetary-risk,
+notional, position-count, aggregate-risk, price-direction, account, instrument,
+currency, proposal, intent, approval, and trusted-evidence bindings. Its
+immutable result is non-authorizing and fails closed for missing, stale,
+mismatched, or unverifiable input.
+
+No real terminal was initialized to test this phase. Tests use strict fakes
+that fail if initialization, login, or `order_send` is reached. Even with an
+already-connected read-only source, live/demo submission remains disabled; a
+future shared atomic authority/reservation/consumption transaction and an
+authoritative portfolio-risk input source are still required.

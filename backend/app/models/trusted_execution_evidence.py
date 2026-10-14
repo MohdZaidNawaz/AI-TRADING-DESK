@@ -130,6 +130,10 @@ class ProviderExecutionEvidence(TrustedExecutionEvidenceModel):
     availability: ExecutionEvidenceAvailability
     provider_id: str = Field(min_length=1, max_length=80)
     observed_at: datetime
+    # A source timestamp and the local retrieval timestamp are distinct.  The
+    # latter is optional for legacy/non-runtime providers, but an adapter that
+    # reads a live runtime must retain it for provenance diagnostics.
+    retrieved_at: datetime | None = None
     reason_codes: tuple[str, ...] = ()
     instrument: BrokerInstrumentContract | None = None
     market: MarketReferenceObservation | None = None
@@ -138,9 +142,11 @@ class ProviderExecutionEvidence(TrustedExecutionEvidenceModel):
     pending_orders: tuple[MT5OrderStatusSnapshot, ...] = ()
     portfolio_risk_inputs: PortfolioRiskInputObservation | None = None
 
-    @field_validator("observed_at")
+    @field_validator("observed_at", "retrieved_at")
     @classmethod
-    def utc_time(cls, value: datetime) -> datetime:
+    def utc_time(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("provider evidence timestamp requires timezone awareness")
         return value.astimezone(UTC)
@@ -167,6 +173,7 @@ class ValidatedExecutionEvidence(TrustedExecutionEvidenceModel):
     provider_id: str
     evaluated_at: datetime
     source_observed_at: datetime | None = None
+    source_retrieved_at: datetime | None = None
     instrument: BrokerInstrumentContract | None = None
     market: MarketReferenceObservation | None = None
     account: MT5AccountSnapshot | None = None
@@ -177,7 +184,7 @@ class ValidatedExecutionEvidence(TrustedExecutionEvidenceModel):
     ready: bool = False
     execution_authority: bool = False
 
-    @field_validator("evaluated_at", "source_observed_at")
+    @field_validator("evaluated_at", "source_observed_at", "source_retrieved_at")
     @classmethod
     def utc_time(cls, value: datetime | None) -> datetime | None:
         if value is None:

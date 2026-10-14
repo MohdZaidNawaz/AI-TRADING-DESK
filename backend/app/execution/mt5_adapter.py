@@ -21,6 +21,7 @@ from app.models.mt5 import (
     BrokerInstrumentContract,
     MT5AccountSnapshot,
     MT5ExecutionMode,
+    MT5ReadOnlyEvidenceSnapshot,
     MT5OrderStatusSnapshot,
     MT5PositionSnapshot,
     MT5SessionState,
@@ -201,6 +202,80 @@ class MT5ExecutionAdapter:
             return contract, ("MT5_MARKET_CLOSED",)
         return contract, ()
 
+    def read_only_evidence_snapshot(
+        self, *, canonical_symbol: str, broker_symbol: str
+    ) -> tuple[MT5ReadOnlyEvidenceSnapshot | None, tuple[str, ...]]:
+        """Read passive terminal facts without initializing or logging in.
+
+        This intentionally never calls ``_ensure_session``. It is usable only
+        after an independently authorized runtime owner has connected the
+        adapter; a disconnected terminal produces an unavailable result.
+        """
+        if self._state is not MT5SessionState.CONNECTED or self._mt5 is None:
+            return None, ("MT5_READ_ONLY_RUNTIME_NOT_CONNECTED",)
+        canonical = _canonical_symbol(canonical_symbol)
+        expected = self._symbol_mappings.get(canonical)
+        if expected is None:
+            return None, ("MT5_SYMBOL_MAPPING_MISSING",)
+        if len(expected) != 1 or expected[0] != broker_symbol:
+            return None, ("MT5_SYMBOL_MAPPING_MISMATCH",)
+        try:
+            account = self._account_snapshot()
+            info = getattr(self._mt5, "symbol_info")(broker_symbol)
+            if account is None:
+                return None, ("MT5_ACCOUNT_UNAVAILABLE",)
+            # Passive evidence must not call symbol_select(), because that
+            # changes terminal watch-list state.
+            if info is None or not bool(getattr(info, "visible", False)):
+                return None, ("MT5_SYMBOL_NOT_VISIBLE",)
+            tick = getattr(self._mt5, "symbol_info_tick")(broker_symbol)
+            if tick is None:
+                return None, ("MT5_MARKET_CLOSED",)
+            quote_at = _tick_timestamp(tick)
+            if quote_at is None:
+                return None, ("MT5_QUOTE_TIMESTAMP_UNAVAILABLE",)
+            disabled_mode = getattr(self._mt5, "SYMBOL_TRADE_MODE_DISABLED", 0)
+            contract = BrokerInstrumentContract(
+                canonical_symbol=canonical, broker_symbol=broker_symbol,
+                digits=int(getattr(info, "digits")), point=float(getattr(info, "point")),
+                tick_size=float(getattr(info, "trade_tick_size", getattr(info, "point"))),
+                tick_value=_optional_number(info, "trade_tick_value"),
+                contract_size=_optional_number(info, "trade_contract_size"),
+                minimum_volume=float(getattr(info, "volume_min")),
+                maximum_volume=float(getattr(info, "volume_max")),
+                volume_step=float(getattr(info, "volume_step")),
+                trade_mode=getattr(info, "trade_mode", None),
+                filling_modes=_filling_modes(self._mt5, info), order_modes=_order_modes(self._mt5, info),
+                visible=True, tradable=getattr(info, "trade_mode", disabled_mode) != disabled_mode,
+                quote_available=True,
+            )
+            positions = tuple(
+                MT5PositionSnapshot(
+                    ticket=int(value.ticket), symbol=str(value.symbol), volume=float(value.volume),
+                    price_open=float(value.price_open), stop_loss=_optional_number(value, "sl"),
+                    take_profit=_optional_number(value, "tp"), profit=_optional_number(value, "profit"),
+                    magic=_optional_int(value, "magic"), comment=_optional_text(value, "comment"),
+                )
+                for value in sorted(getattr(self._mt5, "positions_get")() or (), key=lambda item: int(item.ticket))
+            )
+            pending = tuple(
+                MT5OrderStatusSnapshot(
+                    ticket=int(value.ticket), symbol=str(value.symbol),
+                    volume_initial=float(value.volume_initial), volume_current=float(value.volume_current),
+                    price_open=float(value.price_open), stop_loss=_optional_number(value, "sl"),
+                    take_profit=_optional_number(value, "tp"), state=str(getattr(value, "state", "unknown")),
+                    magic=_optional_int(value, "magic"), comment=_optional_text(value, "comment"),
+                )
+                for value in sorted(getattr(self._mt5, "orders_get")() or (), key=lambda item: int(item.ticket))
+            )
+            return MT5ReadOnlyEvidenceSnapshot(
+                account=account, instrument=contract, bid=float(getattr(tick, "bid")),
+                ask=float(getattr(tick, "ask")), quote_observed_at=quote_at,
+                retrieved_at=datetime.now(UTC), positions=positions, pending_orders=pending,
+            ), ()
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None, ("MT5_READ_ONLY_EVIDENCE_MALFORMED",)
+
     def prepare(self, intent: ExecutionIntent) -> ExecutionResult:
         """Validate and optionally build a dry-run request; never submit an order."""
         now = datetime.now(UTC)
@@ -316,6 +391,20 @@ def _freeze_mappings(values: Mapping[str, str | Sequence[str]]) -> dict[str, tup
 
 def _canonical_symbol(value: str) -> str:
     return value.strip().upper()
+
+
+def _tick_timestamp(value: object) -> datetime | None:
+    """Return an MT5 quote timestamp without substituting a local clock."""
+    try:
+        milliseconds = getattr(value, "time_msc", None)
+        if milliseconds is not None and int(milliseconds) > 0:
+            return datetime.fromtimestamp(int(milliseconds) / 1000, tz=UTC)
+        seconds = getattr(value, "time", None)
+        if seconds is not None and int(seconds) > 0:
+            return datetime.fromtimestamp(int(seconds), tz=UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return None
 
 
 def _filling_modes(mt5: object, info: object) -> tuple[str, ...]:

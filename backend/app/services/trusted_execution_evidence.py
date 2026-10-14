@@ -75,6 +75,7 @@ class TrustedExecutionEvidenceService:
             provider_id=self.provider_id,
             evaluated_at=now,
             source_observed_at=response.observed_at,
+            source_retrieved_at=response.retrieved_at,
             instrument=response.instrument,
             market=response.market,
             account=response.account,

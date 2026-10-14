@@ -35,6 +35,8 @@ from app.models.proposals import SentinelDecision, TradeProposal
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
 from app.services.trade_proposal_workflow import ApprovalClaimError, ApprovalRegistry, proposal_fingerprint
 from app.models.trusted_execution_evidence import ExecutionEvidenceRequest, ValidatedExecutionEvidence
+from app.models.sentinel_risk_evidence import SentinelRiskEvidenceStatus
+from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 
 
@@ -73,6 +75,7 @@ class DemoExecutionAuthorizationService:
         execution_state_store: ExecutionStateStore | None = None,
         audit_service: AuditService | None = None,
         trusted_execution_evidence: TrustedExecutionEvidenceService | None = None,
+        sentinel_risk_evidence: SentinelPortfolioRiskEvidenceVerifier | None = None,
     ) -> None:
         self._approval_registry = approval_registry
         self._readiness_gate = readiness_gate
@@ -85,6 +88,7 @@ class DemoExecutionAuthorizationService:
         self._trusted_execution_evidence = (
             trusted_execution_evidence or TrustedExecutionEvidenceService()
         )
+        self._sentinel_risk_evidence = sentinel_risk_evidence or SentinelPortfolioRiskEvidenceVerifier()
 
     def authorize_demo_execution(
         self,
@@ -133,6 +137,8 @@ class DemoExecutionAuthorizationService:
         assert proposal is not None and decision is not None and intent is not None and context is not None
         trusted_context, evidence_codes = self._trusted_context(
             policy=policy,
+            proposal=proposal,
+            decision=decision,
             intent=intent,
             caller_context=context,
             now=now_utc,
@@ -403,6 +409,8 @@ class DemoExecutionAuthorizationService:
         if proposal is not None and decision is not None and intent is not None and context is not None:
             trusted_context, evidence_codes = self._trusted_context(
                 policy=policy,
+                proposal=proposal,
+                decision=decision,
                 intent=intent,
                 caller_context=context,
                 now=now,
@@ -466,6 +474,8 @@ class DemoExecutionAuthorizationService:
             return sorted(set(codes))
         trusted_context, evidence_codes = self._trusted_context(
             policy=policy,
+            proposal=proposal,
+            decision=decision,
             intent=intent,
             caller_context=context,
             now=now,
@@ -530,6 +540,8 @@ class DemoExecutionAuthorizationService:
         self,
         *,
         policy: ControlledDemoExecutionPolicy,
+        proposal: TradeProposal,
+        decision: SentinelDecision,
         intent: ExecutionIntent,
         caller_context: DemoReadinessContext,
         now: datetime,
@@ -566,6 +578,16 @@ class DemoExecutionAuthorizationService:
         if context is None:
             return None, ["DEMO_TRUSTED_EVIDENCE_INCOMPLETE"]
         codes: list[str] = []
+        risk_evidence = self._sentinel_risk_evidence.verify(
+            policy=policy,
+            proposal=proposal,
+            decision=decision,
+            intent=intent,
+            evidence=evidence,
+            now=now,
+        )
+        if risk_evidence.status is not SentinelRiskEvidenceStatus.VALIDATED:
+            codes.extend(risk_evidence.reason_codes)
         if (
             caller_context.account != context.account
             or caller_context.account_id != context.account_id
