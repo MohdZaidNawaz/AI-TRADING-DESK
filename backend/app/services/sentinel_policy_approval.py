@@ -15,8 +15,12 @@ from typing import Protocol, runtime_checkable
 from app.models.demo_execution import ControlledDemoExecutionPolicy
 from app.models.sentinel_policy_approval import (
     SentinelPolicyApprovalLifecycle,
+    SentinelPolicyApprovalReadiness,
+    SentinelPolicyApprovalSourceResult,
+    SentinelPolicyApprovalSourceStatus,
     SentinelPolicyApprovalState,
     SentinelPolicyApprovalVerification,
+    SentinelPolicyApprovalVerificationStatus,
 )
 from app.services.sentinel_policy_governance import SentinelPolicyGovernanceBoundary
 
@@ -31,6 +35,23 @@ class SentinelPolicyApprovalVerifier(Protocol):
         policy_source_configured: bool,
         evaluated_at: datetime,
     ) -> SentinelPolicyApprovalVerification: ...
+
+
+@runtime_checkable
+class SentinelPolicyApprovalObservationSource(Protocol):
+    """Read-only lifecycle source; conformance never establishes authority."""
+
+    @property
+    def source_id(self) -> str: ...
+
+    def resolve(
+        self,
+        *,
+        policy_id: str,
+        policy_version: str,
+        artifact_id: str,
+        evaluated_at: datetime,
+    ) -> SentinelPolicyApprovalSourceResult: ...
 
 
 class UnavailableSentinelPolicyApprovalVerifier:
@@ -52,6 +73,104 @@ class UnavailableSentinelPolicyApprovalVerifier:
             policy=policy,
             policy_source_configured=policy_source_configured,
             evaluated_at=_utc(evaluated_at),
+        )
+
+
+class NonAuthoritativeLifecycleApprovalVerifier:
+    """Observe durable lifecycle state while always blocking production authority.
+
+    This adapter is useful for audit and fail-closed revocation visibility.  A
+    source result, even a well-formed ``AVAILABLE`` result, is not proof of an
+    approver or trust anchor.  Consequently this class has no success path and
+    can never return ``AUTHORITATIVE`` or ``TEST_ONLY_VERIFIED``.
+    """
+
+    def __init__(self, source: SentinelPolicyApprovalObservationSource) -> None:
+        self._source = source
+
+    def verify(
+        self,
+        *,
+        approval: SentinelPolicyApprovalState,
+        policy: ControlledDemoExecutionPolicy,
+        policy_source_configured: bool,
+        evaluated_at: datetime,
+    ) -> SentinelPolicyApprovalVerification:
+        now = _utc(evaluated_at)
+        codes = list(
+            approval_binding_codes(
+                approval=approval,
+                policy=policy,
+                evaluated_at=now,
+            )
+        )
+        result: SentinelPolicyApprovalSourceResult | None = None
+        try:
+            candidate = self._source.resolve(
+                policy_id=policy.policy_id,
+                policy_version=policy.policy_version,
+                artifact_id=approval.artifact.approval_artifact_id,
+                evaluated_at=now,
+            )
+        except Exception:
+            codes.append("SENTINEL_POLICY_APPROVAL_SOURCE_UNAVAILABLE")
+        else:
+            if not isinstance(candidate, SentinelPolicyApprovalSourceResult):
+                codes.append("SENTINEL_POLICY_APPROVAL_SOURCE_RESULT_INVALID")
+            else:
+                result = candidate
+                codes.extend(candidate.reason_codes)
+                if candidate.status is SentinelPolicyApprovalSourceStatus.AVAILABLE:
+                    assert candidate.state is not None
+                    if candidate.state.state_fingerprint != approval.state_fingerprint:
+                        codes.append("SENTINEL_POLICY_APPROVAL_SOURCE_CONFLICT")
+                    codes.extend(
+                        approval_binding_codes(
+                            approval=candidate.state,
+                            policy=policy,
+                            evaluated_at=now,
+                        )
+                    )
+        available = (
+            result is not None
+            and result.status is SentinelPolicyApprovalSourceStatus.AVAILABLE
+            and result.state is not None
+        )
+        codes.extend(
+            (
+                "SENTINEL_POLICY_APPROVAL_SOURCE_NON_AUTHORITATIVE",
+                "SENTINEL_POLICY_APPROVAL_TRUST_ANCHOR_UNAVAILABLE",
+                "SENTINEL_POLICY_GOVERNANCE_UNCONFIGURED",
+            )
+        )
+        return SentinelPolicyApprovalVerification(
+            status=SentinelPolicyApprovalVerificationStatus.UNAVAILABLE,
+            artifact_id=approval.artifact.approval_artifact_id,
+            artifact_fingerprint=approval.artifact.canonical_payload_fingerprint,
+            approver_id=approval.artifact.approver_id,
+            verified_at=now,
+            readiness=SentinelPolicyApprovalReadiness(
+                policy_source_configured=policy_source_configured,
+                approval_source_configured=available,
+                revocation_status_available=available,
+                approval_artifact_available=True,
+                policy_fingerprint_verified=(
+                    available
+                    and result is not None
+                    and result.state is not None
+                    and result.state.artifact.policy_fingerprint == policy.fingerprint
+                ),
+                approval_lifecycle_valid=(
+                    available
+                    and result is not None
+                    and result.state is not None
+                    and result.state.lifecycle is SentinelPolicyApprovalLifecycle.ACTIVE
+                    and result.state.artifact.effective_at
+                    <= now
+                    < result.state.artifact.expires_at
+                ),
+            ),
+            reason_codes=tuple(codes),
         )
 
 

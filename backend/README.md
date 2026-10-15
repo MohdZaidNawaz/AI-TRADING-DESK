@@ -1416,3 +1416,42 @@ transaction is not activated. Production policy governance, trust anchor,
 authoritative approval/revocation source, trusted live evidence, durable demo-
 authorization cutover, and reviewed submission-boundary integration remain
 external or future dependencies. Live and demo submission remain disabled.
+
+### Durable policy-approval and revocation history
+
+`LocalSentinelPolicyApprovalCatalog` is a restart-safe SQLite catalog for
+policy-approval claims and their lifecycle history. It binds each immutable
+claim to the exact policy ID, version, canonical policy fingerprint, approver
+claim, scope, validity interval, and deterministic artifact/state
+fingerprints. Registration is idempotent; conflicting active claims are
+rejected by a database uniqueness constraint. Revocation and supersession use
+explicit `BEGIN IMMEDIATE` transactions, optimistic lifecycle checks,
+immutable deterministic events, foreign keys, strict canonical-schema
+verification, and rollback on commit failure. Reopening the database preserves
+terminal lifecycle state, so an old approval artifact cannot silently become
+active again.
+
+This catalog is intentionally **not** an approval authority. It records what
+local software was given; it cannot prove who supplied the claim, whether that
+person was authorized, or whether a signature or external attestation is
+legitimate. `NonAuthoritativeLifecycleApprovalVerifier` can expose durable
+revocation, supersession, expiry, and conflict information to fail-closed
+policy checks, but it always returns `UNAVAILABLE` and can never return an
+authoritative or test-verified result. Caller-supplied sources therefore cannot
+promote catalog rows into production policy authority.
+
+Production policy resolution remains blocked until the organization names a
+legitimate approver, independently establishes and reviews a trust anchor, and
+configures an authoritative approval/revocation source capable of verifying
+the exact approval artifact. That external authority is not invented or seeded
+by this repository. The current shared execution lifecycle is not wired to the
+local policy catalog because doing so would incorrectly elevate durable local
+storage into independent governance authority. Tests can be run without MT5:
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest tests/test_sentinel_policy_approval_catalog.py -q
+```
+
+Passing these tests demonstrates storage, concurrency, and fail-closed
+lifecycle behavior only. It does not enable controlled-demo or live execution,
+provide authoritative broker reconciliation, or establish governance approval.

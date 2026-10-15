@@ -64,6 +64,11 @@ trusted merely because software generated it or configuration references it.
 - Conflicting-artifact resolution procedure: `<REQUIRED>`
 - Historical retention period: `<REQUIRED>`
 
+The repository's local policy-approval lifecycle catalog is not a substitute
+for either required authoritative source above. It preserves claims and
+terminal state for audit and recovery, but it cannot establish approver
+identity, organizational authority, or trust-anchor validity.
+
 ## Audit and change control
 
 - Audit owner: `<REQUIRED>`
