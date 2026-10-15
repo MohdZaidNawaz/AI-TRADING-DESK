@@ -1455,3 +1455,47 @@ storage into independent governance authority. Tests can be run without MT5:
 Passing these tests demonstrates storage, concurrency, and fail-closed
 lifecycle behavior only. It does not enable controlled-demo or live execution,
 provide authoritative broker reconciliation, or establish governance approval.
+
+### Phase 13G production-authorization readiness diagnostic
+
+`ProductionAuthorizationReadinessGate` is the single read-only diagnostic for
+the current production-authorization boundary. It reports every prerequisite
+independently: authorized policy approver and scope, independent trust anchor,
+authoritative approval and revocation sources, exact policy integrity, trusted
+execution evidence and freshness, Sentinel risk verification and durable trade
+approval, durable reservation, audit durability, kill-switch state, broker
+reconciliation, submission-boundary review, explicit production authorization,
+and execution mode.
+
+The report is immutable, deterministic, and structurally non-authorizing. Its
+status is always `blocked`; `production_authorization_available`,
+`submission_allowed`, `execution_authority`, and each check's
+`authorizes_execution` field are literal `False`. A test-only policy resolution
+may demonstrate policy-content integrity, and a durable Sentinel trade approval
+may be verified without consumption, but neither can satisfy the missing
+organizational governance or production cutover requirements. Current durable
+reservations are explicitly test-only and are therefore reported as blocked.
+Every satisfied check requires explicit source provenance, every diagnostic
+code uses a canonical bounded identifier, and all checks share the report's
+single UTC evaluation timestamp. This prevents a persisted or reviewed report
+from combining observations made at different assessment times. Policy failure
+classification uses explicit reason-code mappings rather than substring
+inference, so unrelated diagnostics cannot be mislabeled as revocation or
+supersession.
+
+The diagnostic does not initialize MT5, retrieve provider data, consume an
+approval, mutate lifecycle state, invoke Pilot or an adapter, or submit an
+order. It is not exposed as a public API. Missing, invalid, stale, revoked,
+superseded, conflicting, and unresolved inputs remain distinct failure states.
+No hash, local SQLite record, Git commit, test fixture, unsigned template, or
+protocol-shaped object is promoted into authority.
+
+Production remains blocked because FRIDAY has no configured authorized policy
+approver, independently established trust anchor, authoritative policy
+approval/revocation service, production-capable durable reservation contract,
+authoritative broker reconciliation source, reviewed submission boundary, or
+explicit production execution authorization. The trusted execution-evidence
+provider is unavailable by default, and live and controlled-demo submission
+remain disabled. The unsigned governance decision template records the real
+human and infrastructure decisions required to close those gaps; completing
+the template alone does not authorize execution.

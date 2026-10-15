@@ -78,6 +78,38 @@ identity, organizational authority, or trust-anchor validity.
 - Change-control and reapproval procedure: `<REQUIRED>`
 - Evidence that the decision was approved outside this repository: `<REQUIRED>`
 
+## Trusted execution evidence and reconciliation
+
+- Authoritative broker/account/instrument/market/position source: `<REQUIRED>`
+- Source identity and independently verified ownership: `<REQUIRED>`
+- Freshness limits and clock authority: `<REQUIRED>`
+- Explicit canonical-to-broker symbol mapping owner: `<REQUIRED>`
+- Broker-state reconciliation source and durable recovery owner: `<REQUIRED>`
+- Unknown/partial/ambiguous outcome procedure: `<REQUIRED>`
+- Restart and disaster-recovery validation procedure: `<REQUIRED>`
+
+Local fixtures, manually supplied observations, and locally durable records do
+not establish authoritative broker state. Ambiguous external outcomes must
+remain reconciliation-required and must never trigger automatic replacement or
+retry.
+
+## Production cutover authorization
+
+- Submission-boundary security reviewer: `<REQUIRED>`
+- Production cutover decision-maker and authority basis: `<REQUIRED>`
+- Explicitly authorized execution modes and accounts: `<REQUIRED>`
+- Required independent test and audit evidence: `<REQUIRED>`
+- Kill-switch owner and emergency contact procedure: `<REQUIRED>`
+- Incident-response and rollback owner: `<REQUIRED>`
+- Cutover approval artifact and authoritative storage location: `<REQUIRED>`
+- Cutover expiry/review date and reauthorization procedure: `<REQUIRED>`
+
+The cutover decision must be independently reviewed after governance authority,
+trusted execution evidence, durable lifecycle coordination, and broker
+reconciliation are implemented. A readiness report can identify satisfied and
+missing prerequisites, but cannot itself approve the cutover or authorize a
+submission.
+
 ## Required technical follow-up after legitimate approval
 
 1. Configure the independently established public identity or external service
@@ -91,6 +123,9 @@ identity, organizational authority, or trust-anchor validity.
    supplied protocol can be selected as production authority.
 5. Complete the unresolved atomic lifecycle design before enabling any
    submission path.
+6. Review every Phase 13G readiness prerequisite and retain independent evidence
+   for the production cutover decision; do not convert diagnostic success into
+   execution authority.
 
 Until every step is independently reviewed and validated, production policy
 resolution, controlled-demo execution, and live execution remain blocked.
