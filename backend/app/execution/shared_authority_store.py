@@ -1,9 +1,10 @@
-"""Fail-closed shared SQLite ownership for durable Sentinel approvals.
+"""Fail-closed shared SQLite ownership for local authority lifecycle state.
 
 The private approval lifecycle primitives are used only by the application-owned
 trusted Sentinel issuance service. This module has no Pilot, adapter, MT5,
-broker, API-route, or submission dependency, and it does not own controlled
-demo authorizations or execution reservations in this phase.
+broker, API-route, or submission dependency. Private demo-authorization and
+test-only reservation primitives exercise the shared transaction boundary but
+remain disconnected from production composition and cannot submit an order.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from functools import lru_cache
 from hashlib import sha256
 import json
@@ -26,6 +28,15 @@ from app.models.shared_authority import (
     SharedAuthorityEntityKind,
     SharedAuthorityMode,
     SharedAuthorityOutboxEvent,
+)
+from app.models.demo_authorization import (
+    ControlledDemoAuthorization,
+    DemoAuthorizationStatus,
+)
+from app.models.durable_execution import (
+    DurableAuthorizationConsumptionState,
+    DurableExecutionReservation,
+    DurableReservationStatus,
 )
 from app.models.proposals import SentinelDecision, SentinelDecisionStatus
 
@@ -159,6 +170,90 @@ class SharedAuthorityStore:
             row = connection.execute("PRAGMA foreign_keys").fetchone()
             return bool(row and row[0] == 1)
 
+    def recover_non_submitting_lifecycle(
+        self, *, now: datetime
+    ) -> tuple[tuple[str, str], ...]:
+        """Conservatively recover local state without retrying an external action.
+
+        Expired active authority is made terminal. Any reservation that had
+        become locally ready or started is made reconciliation-required after
+        restart unless it has already expired. The method never infers broker
+        state and has no submission or provider dependency.
+        """
+
+        now_utc = _aware(now)
+        recovered: list[tuple[str, str]] = []
+        with self._lock:
+            try:
+                with self._transaction() as connection:
+                    expiring = connection.execute(
+                        "SELECT e.entity_id, e.entity_kind, e.status, a.expires_at "
+                        "FROM shared_authority_entities e "
+                        "JOIN shared_sentinel_approvals a ON a.entity_id = e.entity_id "
+                        "WHERE e.status = 'active' "
+                        "UNION ALL "
+                        "SELECT e.entity_id, e.entity_kind, e.status, a.expires_at "
+                        "FROM shared_authority_entities e "
+                        "JOIN shared_demo_authorizations a ON a.entity_id = e.entity_id "
+                        "WHERE e.status = 'active' "
+                        "ORDER BY 1"
+                    ).fetchall()
+                    for entity_id, kind, status, expires_at in expiring:
+                        if now_utc < datetime.fromisoformat(str(expires_at)).astimezone(UTC):
+                            continue
+                        entity_kind = SharedAuthorityEntityKind(str(kind))
+                        self._transition_entity(
+                            connection,
+                            entity_id=str(entity_id),
+                            entity_kind=entity_kind,
+                            expected_status=str(status),
+                            to_status="expired",
+                            event_state=f"{entity_kind.value}_expired_during_recovery",
+                            reason_code="SHARED_AUTHORITY_EXPIRED",
+                            now=now_utc,
+                        )
+                        recovered.append((str(entity_id), "expired"))
+
+                    reservations = connection.execute(
+                        "SELECT e.entity_id, e.entity_kind, e.status, r.expires_at "
+                        "FROM shared_authority_entities e "
+                        "JOIN shared_execution_reservations r ON r.entity_id = e.entity_id "
+                        "WHERE e.status IN ('reserved', 'ready_for_attempt', 'attempt_started') "
+                        "ORDER BY e.entity_id"
+                    ).fetchall()
+                    for entity_id, kind, status, expires_at in reservations:
+                        expired = now_utc >= datetime.fromisoformat(
+                            str(expires_at)
+                        ).astimezone(UTC)
+                        target = "expired" if expired else "reconciliation_required"
+                        self._transition_entity(
+                            connection,
+                            entity_id=str(entity_id),
+                            entity_kind=SharedAuthorityEntityKind(str(kind)),
+                            expected_status=str(status),
+                            to_status=target,
+                            event_state=(
+                                "test_only_reservation_expired_during_recovery"
+                                if expired
+                                else "test_only_reservation_reconciliation_required"
+                            ),
+                            reason_code=(
+                                "SHARED_AUTHORITY_EXPIRED"
+                                if expired
+                                else "EXTERNAL_OUTCOME_NOT_INFERRED"
+                            ),
+                            now=now_utc,
+                        )
+                        recovered.append((str(entity_id), target))
+                return tuple(recovered)
+            except SharedAuthorityStoreError:
+                raise
+            except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
+                self._fail_closed("SHARED_AUTHORITY_RECOVERY_UNAVAILABLE")
+                raise SharedAuthorityUnavailable(
+                    "shared authority recovery unavailable"
+                ) from error
+
     # These underscore-prefixed operations are intentionally not a public
     # issuance API. The application-owned trusted issuance service is their
     # sole production caller and derives decisions from normal proposal,
@@ -256,6 +351,643 @@ class SharedAuthorityStore:
             except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
                 self._fail_closed("SHARED_SENTINEL_REVOCATION_UNAVAILABLE")
                 raise SharedAuthorityUnavailable("shared Sentinel approval unavailable") from error
+
+    def _persist_demo_authorization(
+        self,
+        authorization: ControlledDemoAuthorization,
+        decision: SentinelDecision,
+        *,
+        now: datetime,
+    ) -> tuple[ControlledDemoAuthorization, bool]:
+        """Persist an application-derived demo authorization without consuming it.
+
+        This is an internal persistence seam, not an issuance API. The caller
+        must be the existing authorization service after it has completed its
+        policy, trusted-evidence, readiness, kill-switch, and audit checks.
+        """
+
+        now_utc = _aware(now)
+        self._validate_demo_binding(authorization, decision, now=now_utc)
+        entity_id = _demo_entity_id(authorization.authorization_id)
+        fingerprint = authorization.fingerprint
+        with self._lock:
+            try:
+                with self._transaction() as connection:
+                    approval_entity_id = self._require_active_approval(
+                        connection, decision, now=now_utc
+                    )
+                    existing = connection.execute(
+                        "SELECT semantic_fingerprint FROM shared_authority_entities "
+                        "WHERE entity_id = ?",
+                        (entity_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing[0] != fingerprint:
+                            raise SharedAuthorityConflict(
+                                "SHARED_DEMO_AUTHORIZATION_CONFLICT"
+                            )
+                        return authorization, False
+                    connection.execute(
+                        "INSERT INTO shared_authority_entities "
+                        "(entity_id, entity_kind, status, lifecycle_version, "
+                        "semantic_fingerprint, created_at, updated_at) "
+                        "VALUES (?, ?, 'active', 1, ?, ?, ?)",
+                        (
+                            entity_id,
+                            SharedAuthorityEntityKind.DEMO_AUTHORIZATION.value,
+                            fingerprint,
+                            now_utc.isoformat(),
+                            now_utc.isoformat(),
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO shared_demo_authorizations "
+                        "(entity_id, authorization_id, approval_entity_id, "
+                        "execution_intent_id, execution_intent_fingerprint, "
+                        "proposal_fingerprint, evidence_fingerprint, policy_id, "
+                        "policy_fingerprint, account_id, account_reference, "
+                        "broker_server, canonical_symbol, broker_symbol, expires_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            entity_id,
+                            authorization.authorization_id,
+                            approval_entity_id,
+                            authorization.execution_intent_id,
+                            authorization.execution_intent_fingerprint,
+                            authorization.proposal_fingerprint,
+                            authorization.evidence_fingerprint,
+                            authorization.policy_id,
+                            authorization.policy_fingerprint,
+                            authorization.account.account_id,
+                            authorization.account.source_account_id,
+                            authorization.account.account_reference,
+                            authorization.instrument.canonical_symbol,
+                            authorization.instrument.broker_symbol,
+                            authorization.expires_at.isoformat(),
+                        ),
+                    )
+                    self._append_entity_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        entity_kind=SharedAuthorityEntityKind.DEMO_AUTHORIZATION,
+                        semantic_fingerprint=fingerprint,
+                        from_status=None,
+                        to_status="active",
+                        version=1,
+                        event_state="demo_authorization_persisted",
+                        reason_code="NON_SUBMITTING_AUTHORIZATION_LIFECYCLE",
+                        now=now_utc,
+                    )
+                    return authorization, True
+            except SharedAuthorityStoreError:
+                raise
+            except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
+                self._fail_closed("SHARED_DEMO_AUTHORIZATION_UNAVAILABLE")
+                raise SharedAuthorityUnavailable(
+                    "shared demo authorization unavailable"
+                ) from error
+
+    def _verify_demo_authorization(
+        self, authorization: ControlledDemoAuthorization, *, now: datetime
+    ) -> None:
+        """Read-only exact-lineage verification of one stored authorization."""
+
+        now_utc = _aware(now)
+        if authorization.status is not DemoAuthorizationStatus.AUTHORIZED:
+            raise SharedAuthorityConflict("SHARED_DEMO_AUTHORIZATION_INVALID")
+        entity_id = _demo_entity_id(authorization.authorization_id)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT status, semantic_fingerprint FROM shared_authority_entities "
+                "WHERE entity_id = ?",
+                (entity_id,),
+            ).fetchone()
+            if row is None or row[1] != authorization.fingerprint:
+                raise SharedAuthorityConflict(
+                    "SHARED_DEMO_AUTHORIZATION_LINEAGE_MISMATCH"
+                )
+            if row[0] != "active":
+                raise SharedAuthorityConflict(
+                    "SHARED_DEMO_AUTHORIZATION_" + str(row[0]).upper()
+                )
+            if now_utc >= authorization.expires_at:
+                raise SharedAuthorityConflict("SHARED_DEMO_AUTHORIZATION_EXPIRED")
+
+    def _commit_test_only_reservation(
+        self,
+        reservation: DurableExecutionReservation,
+        *,
+        decision: SentinelDecision,
+        authorization: ControlledDemoAuthorization,
+        now: datetime,
+    ) -> tuple[DurableExecutionReservation, bool]:
+        """Atomically consume local authority and create a test-only reservation.
+
+        The resulting record is deliberately non-submitting. It cannot be used
+        as production authority and this store has no adapter or broker path.
+        The method exists to make the local SQLite transaction boundary real
+        and testable without claiming atomicity with any external operation.
+        """
+
+        now_utc = _aware(now)
+        self._validate_reservation_binding(
+            reservation,
+            decision=decision,
+            authorization=authorization,
+            now=now_utc,
+        )
+        committed = reservation.model_copy(
+            update={
+                "status": DurableReservationStatus.READY_FOR_ATTEMPT,
+                "authorization_consumption": (
+                    DurableAuthorizationConsumptionState.CONSUMED_CONFIRMED
+                ),
+                "lifecycle_version": 1,
+            }
+        )
+        entity_id = _reservation_entity_id(committed.reservation_id)
+        with self._lock:
+            try:
+                with self._transaction() as connection:
+                    existing = connection.execute(
+                        "SELECT status, semantic_fingerprint FROM shared_authority_entities "
+                        "WHERE entity_id = ?",
+                        (entity_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        if existing[1] != committed.fingerprint:
+                            raise SharedAuthorityConflict(
+                                "SHARED_EXECUTION_RESERVATION_CONFLICT"
+                            )
+                        if existing[0] != "ready_for_attempt":
+                            raise SharedAuthorityConflict(
+                                "SHARED_EXECUTION_RESERVATION_"
+                                + str(existing[0]).upper()
+                            )
+                        return committed, False
+
+                    approval_entity_id = self._require_active_approval(
+                        connection, decision, now=now_utc
+                    )
+                    authorization_entity_id = self._require_active_authorization(
+                        connection, authorization, now=now_utc
+                    )
+                    connection.execute(
+                        "INSERT INTO shared_authority_entities "
+                        "(entity_id, entity_kind, status, lifecycle_version, "
+                        "semantic_fingerprint, created_at, updated_at) "
+                        "VALUES (?, ?, 'ready_for_attempt', 1, ?, ?, ?)",
+                        (
+                            entity_id,
+                            SharedAuthorityEntityKind.EXECUTION_RESERVATION.value,
+                            committed.fingerprint,
+                            now_utc.isoformat(),
+                            now_utc.isoformat(),
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO shared_execution_reservations "
+                        "(entity_id, reservation_id, execution_identity, "
+                        "approval_entity_id, authorization_entity_id, "
+                        "safety_evidence_fingerprint, proposal_fingerprint, "
+                        "evidence_fingerprint, execution_intent_fingerprint, "
+                        "account_id, account_reference, broker_server, "
+                        "canonical_symbol, broker_symbol, expires_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            entity_id,
+                            committed.reservation_id,
+                            committed.execution_identity,
+                            approval_entity_id,
+                            authorization_entity_id,
+                            committed.safety_evidence.fingerprint,
+                            committed.proposal_fingerprint,
+                            committed.evidence_fingerprint,
+                            committed.execution_intent_fingerprint,
+                            committed.account_id,
+                            committed.account_reference,
+                            committed.broker_server,
+                            committed.canonical_symbol,
+                            committed.broker_symbol,
+                            committed.expires_at.isoformat(),
+                        ),
+                    )
+                    self._transition_entity(
+                        connection,
+                        entity_id=approval_entity_id,
+                        entity_kind=SharedAuthorityEntityKind.SENTINEL_APPROVAL,
+                        expected_status="active",
+                        to_status="consumed",
+                        event_state="sentinel_approval_consumed_for_test_reservation",
+                        reason_code="NON_SUBMITTING_TEST_ONLY_RESERVATION",
+                        now=now_utc,
+                    )
+                    self._transition_entity(
+                        connection,
+                        entity_id=authorization_entity_id,
+                        entity_kind=SharedAuthorityEntityKind.DEMO_AUTHORIZATION,
+                        expected_status="active",
+                        to_status="consumed",
+                        event_state="demo_authorization_consumed_for_test_reservation",
+                        reason_code="NON_SUBMITTING_TEST_ONLY_RESERVATION",
+                        now=now_utc,
+                    )
+                    self._append_entity_lifecycle(
+                        connection,
+                        entity_id=entity_id,
+                        entity_kind=SharedAuthorityEntityKind.EXECUTION_RESERVATION,
+                        semantic_fingerprint=committed.fingerprint,
+                        from_status=None,
+                        to_status="ready_for_attempt",
+                        version=1,
+                        event_state="test_only_reservation_committed",
+                        reason_code="NON_SUBMITTING_TEST_ONLY_RESERVATION",
+                        now=now_utc,
+                    )
+                    return committed, True
+            except SharedAuthorityStoreError:
+                raise
+            except (sqlite3.DatabaseError, OSError, ValueError, TypeError) as error:
+                self._fail_closed("SHARED_EXECUTION_RESERVATION_UNAVAILABLE")
+                raise SharedAuthorityUnavailable(
+                    "shared execution reservation unavailable"
+                ) from error
+
+    @staticmethod
+    def _validate_demo_binding(
+        authorization: ControlledDemoAuthorization,
+        decision: SentinelDecision,
+        *,
+        now: datetime,
+    ) -> None:
+        if (
+            decision.decision is not SentinelDecisionStatus.APPROVED
+            or not decision.approval_id
+            or decision.expires_at is None
+            or authorization.status is not DemoAuthorizationStatus.AUTHORIZED
+        ):
+            raise SharedAuthorityConflict("SHARED_DEMO_AUTHORIZATION_INVALID")
+        if now >= min(decision.expires_at, authorization.expires_at):
+            raise SharedAuthorityConflict("SHARED_DEMO_AUTHORIZATION_EXPIRED")
+        expected = (
+            decision.approval_id,
+            decision.proposal_id,
+            decision.proposal_fingerprint,
+            decision.analysis_id,
+            decision.evidence_fingerprint,
+            decision.policy_id,
+            decision.policy_version,
+            decision.policy_fingerprint,
+            decision.account_id,
+        )
+        actual = (
+            authorization.approval_id,
+            authorization.proposal_id,
+            authorization.proposal_fingerprint,
+            authorization.analysis_id,
+            authorization.evidence_fingerprint,
+            authorization.policy_id,
+            authorization.policy_version,
+            authorization.policy_fingerprint,
+            authorization.account.account_id,
+        )
+        if actual != expected or authorization.expires_at > decision.expires_at:
+            raise SharedAuthorityConflict(
+                "SHARED_DEMO_AUTHORIZATION_LINEAGE_MISMATCH"
+            )
+
+    @classmethod
+    def _validate_reservation_binding(
+        cls,
+        reservation: DurableExecutionReservation,
+        *,
+        decision: SentinelDecision,
+        authorization: ControlledDemoAuthorization,
+        now: datetime,
+    ) -> None:
+        cls._validate_demo_binding(authorization, decision, now=now)
+        try:
+            reconstructed = DurableExecutionReservation.model_validate(
+                reservation.model_dump(
+                    mode="python", exclude_computed_fields=True
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise SharedAuthorityConflict(
+                "SHARED_EXECUTION_RESERVATION_INVALID"
+            ) from error
+        if reconstructed != reservation:
+            raise SharedAuthorityConflict("SHARED_EXECUTION_RESERVATION_INVALID")
+        if (
+            reservation.status is not DurableReservationStatus.RESERVED
+            or reservation.authorization_consumption
+            is not DurableAuthorizationConsumptionState.UNCONSUMED
+            or not reservation.test_only
+            or now >= reservation.expires_at
+        ):
+            raise SharedAuthorityConflict("SHARED_EXECUTION_RESERVATION_INVALID")
+        approval_fingerprint = _decision_fingerprint(decision)
+        expected = (
+            decision.approval_id,
+            approval_fingerprint,
+            decision.policy_id,
+            decision.policy_version,
+            decision.proposal_id,
+            decision.proposal_fingerprint,
+            decision.analysis_id,
+            decision.evidence_fingerprint,
+            authorization.authorization_id,
+            authorization.fingerprint,
+            authorization.execution_intent_id,
+            authorization.execution_intent_fingerprint,
+            authorization.account.account_id,
+            authorization.account.source_account_id,
+            authorization.account.account_reference,
+            authorization.instrument.canonical_symbol,
+            authorization.instrument.broker_symbol,
+            Decimal(str(authorization.quantity)),
+            authorization.order_type,
+            authorization.filling_mode,
+        )
+        actual = (
+            reservation.sentinel_approval_id,
+            reservation.sentinel_approval_fingerprint,
+            reservation.sentinel_policy_id,
+            reservation.policy_version,
+            reservation.proposal_id,
+            reservation.proposal_fingerprint,
+            reservation.analysis_id,
+            reservation.evidence_fingerprint,
+            reservation.controlled_demo_authorization_id,
+            reservation.controlled_demo_authorization_fingerprint,
+            reservation.execution_intent_id,
+            reservation.execution_intent_fingerprint,
+            reservation.account_id,
+            reservation.account_reference,
+            reservation.broker_server,
+            reservation.canonical_symbol,
+            reservation.broker_symbol,
+            reservation.quantity,
+            reservation.order_type,
+            reservation.filling_mode,
+        )
+        safety = reservation.safety_evidence
+        if (
+            safety.market_reference.observed_at > now
+            or (now - safety.market_reference.observed_at).total_seconds()
+            > safety.market_reference.max_age_seconds
+            or safety.broker_instrument.observed_at > now
+            or safety.portfolio_risk.observed_at > now
+            or now >= safety.broker_instrument.expires_at
+            or now >= safety.portfolio_risk.expires_at
+            or now >= safety.sentinel_approval.expires_at
+            or now >= safety.demo_authorization.expires_at
+            or safety.portfolio_risk.risk_policy_fingerprint
+            != decision.policy_fingerprint
+        ):
+            raise SharedAuthorityConflict(
+                "SHARED_EXECUTION_RESERVATION_EVIDENCE_UNAVAILABLE"
+            )
+        nested_approval = safety.sentinel_approval
+        nested_authorization = safety.demo_authorization
+        nested_expected = (
+            decision.decision_id,
+            decision.approval_id,
+            approval_fingerprint,
+            decision.proposal_id,
+            decision.proposal_fingerprint,
+            decision.analysis_id,
+            decision.evidence_fingerprint,
+            decision.policy_id,
+            decision.policy_version,
+            decision.policy_fingerprint,
+            decision.assessment_id,
+            decision.assessment_fingerprint,
+            decision.account_id,
+            authorization.authorization_id,
+            authorization.fingerprint,
+            authorization.policy_id,
+            authorization.policy_fingerprint,
+            authorization.account.account_id,
+            authorization.account.source_account_id,
+            authorization.account.account_reference,
+            authorization.proposal_id,
+            authorization.proposal_fingerprint,
+            authorization.analysis_id,
+            authorization.evidence_fingerprint,
+            authorization.execution_intent_id,
+            authorization.execution_intent_fingerprint,
+            authorization.instrument.canonical_symbol,
+            authorization.instrument.broker_symbol,
+        )
+        nested_actual = (
+            nested_approval.decision_id,
+            nested_approval.approval_id,
+            nested_approval.approval_fingerprint,
+            nested_approval.proposal_id,
+            nested_approval.proposal_fingerprint,
+            nested_approval.analysis_id,
+            nested_approval.evidence_fingerprint,
+            nested_approval.policy_id,
+            nested_approval.policy_version,
+            nested_approval.policy_fingerprint,
+            nested_approval.assessment_id,
+            nested_approval.assessment_fingerprint,
+            nested_approval.account_id,
+            nested_authorization.authorization_id,
+            nested_authorization.authorization_fingerprint,
+            nested_authorization.policy_id,
+            nested_authorization.policy_fingerprint,
+            nested_authorization.account_id,
+            nested_authorization.account_reference,
+            nested_authorization.broker_server,
+            nested_authorization.proposal_id,
+            nested_authorization.proposal_fingerprint,
+            nested_authorization.analysis_id,
+            nested_authorization.evidence_fingerprint,
+            nested_authorization.execution_intent_id,
+            nested_authorization.execution_intent_fingerprint,
+            nested_authorization.canonical_symbol,
+            nested_authorization.broker_symbol,
+        )
+        if actual != expected or nested_actual != nested_expected:
+            raise SharedAuthorityConflict(
+                "SHARED_EXECUTION_RESERVATION_LINEAGE_MISMATCH"
+            )
+        if reservation.expires_at > min(
+            decision.expires_at,
+            authorization.expires_at,
+            nested_approval.expires_at,
+            nested_authorization.expires_at,
+            safety.broker_instrument.expires_at,
+            safety.portfolio_risk.expires_at,
+        ):
+            raise SharedAuthorityConflict(
+                "SHARED_EXECUTION_RESERVATION_EXPIRY_MISMATCH"
+            )
+
+    @staticmethod
+    def _require_active_approval(
+        connection: sqlite3.Connection,
+        decision: SentinelDecision,
+        *,
+        now: datetime,
+    ) -> str:
+        if not decision.approval_id or decision.expires_at is None:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_INVALID")
+        entity_id = _approval_entity_id(decision.approval_id)
+        row = connection.execute(
+            "SELECT status, semantic_fingerprint FROM shared_authority_entities "
+            "WHERE entity_id = ?",
+            (entity_id,),
+        ).fetchone()
+        if row is None or row[1] != _decision_fingerprint(decision):
+            raise SharedAuthorityConflict(
+                "SHARED_SENTINEL_APPROVAL_LINEAGE_MISMATCH"
+            )
+        if row[0] != "active":
+            raise SharedAuthorityConflict(
+                "SHARED_SENTINEL_APPROVAL_" + str(row[0]).upper()
+            )
+        if now >= decision.expires_at:
+            raise SharedAuthorityConflict("SHARED_SENTINEL_APPROVAL_EXPIRED")
+        return entity_id
+
+    @staticmethod
+    def _require_active_authorization(
+        connection: sqlite3.Connection,
+        authorization: ControlledDemoAuthorization,
+        *,
+        now: datetime,
+    ) -> str:
+        entity_id = _demo_entity_id(authorization.authorization_id)
+        row = connection.execute(
+            "SELECT status, semantic_fingerprint FROM shared_authority_entities "
+            "WHERE entity_id = ?",
+            (entity_id,),
+        ).fetchone()
+        if row is None or row[1] != authorization.fingerprint:
+            raise SharedAuthorityConflict(
+                "SHARED_DEMO_AUTHORIZATION_LINEAGE_MISMATCH"
+            )
+        if row[0] != "active":
+            raise SharedAuthorityConflict(
+                "SHARED_DEMO_AUTHORIZATION_" + str(row[0]).upper()
+            )
+        if now >= authorization.expires_at:
+            raise SharedAuthorityConflict("SHARED_DEMO_AUTHORIZATION_EXPIRED")
+        return entity_id
+
+    def _transition_entity(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        entity_id: str,
+        entity_kind: SharedAuthorityEntityKind,
+        expected_status: str,
+        to_status: str,
+        event_state: str,
+        reason_code: str,
+        now: datetime,
+    ) -> None:
+        row = connection.execute(
+            "SELECT status, lifecycle_version, semantic_fingerprint "
+            "FROM shared_authority_entities WHERE entity_id = ?",
+            (entity_id,),
+        ).fetchone()
+        if row is None or row[0] != expected_status:
+            raise SharedAuthorityConflict("SHARED_AUTHORITY_TRANSITION_CONFLICT")
+        version = int(row[1]) + 1
+        updated = connection.execute(
+            "UPDATE shared_authority_entities SET status = ?, lifecycle_version = ?, "
+            "updated_at = ? WHERE entity_id = ? AND status = ? AND lifecycle_version = ?",
+            (
+                to_status,
+                version,
+                now.isoformat(),
+                entity_id,
+                expected_status,
+                int(row[1]),
+            ),
+        )
+        if updated.rowcount != 1:
+            raise SharedAuthorityConflict("SHARED_AUTHORITY_TRANSITION_CONFLICT")
+        self._append_entity_lifecycle(
+            connection,
+            entity_id=entity_id,
+            entity_kind=entity_kind,
+            semantic_fingerprint=str(row[2]),
+            from_status=expected_status,
+            to_status=to_status,
+            version=version,
+            event_state=event_state,
+            reason_code=reason_code,
+            now=now,
+        )
+
+    def _append_entity_lifecycle(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        entity_id: str,
+        entity_kind: SharedAuthorityEntityKind,
+        semantic_fingerprint: str,
+        from_status: str | None,
+        to_status: str,
+        version: int,
+        event_state: str,
+        reason_code: str,
+        now: datetime,
+    ) -> None:
+        fingerprint = _fingerprint(
+            {
+                "entity_id": entity_id,
+                "entity_kind": entity_kind.value,
+                "semantic_fingerprint": semantic_fingerprint,
+                "from_status": from_status,
+                "to_status": to_status,
+                "version": version,
+                "event_state": event_state,
+                "reason_code": reason_code,
+            }
+        )
+        event_id = "shared-authority-event-" + fingerprint
+        connection.execute(
+            "INSERT INTO shared_authority_lifecycle_events "
+            "(event_id, entity_id, lifecycle_version, from_status, to_status, "
+            "event_state, reason_code, occurred_at, fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                entity_id,
+                version,
+                from_status,
+                to_status,
+                event_state,
+                reason_code,
+                now.isoformat(),
+                fingerprint,
+            ),
+        )
+        outbox_id = "shared-authority-outbox-" + sha256(
+            f"{event_id}:{version}".encode()
+        ).hexdigest()
+        connection.execute(
+            "INSERT INTO shared_authority_outbox "
+            "(outbox_id, lifecycle_event_id, entity_id, lifecycle_version, "
+            "event_state, reason_code, occurred_at, fingerprint, delivered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            (
+                outbox_id,
+                event_id,
+                entity_id,
+                version,
+                event_state,
+                reason_code,
+                now.isoformat(),
+                fingerprint,
+            ),
+        )
 
     def _sentinel_state(self, decision: SentinelDecision, *, now: datetime, consume: bool) -> None:
         if not decision.approval_id or now.tzinfo is None or now.utcoffset() is None:
@@ -781,6 +1513,24 @@ def _migration_checksum(version: int) -> str:
 def _decision_fingerprint(decision: SentinelDecision) -> str:
     """Derive lineage from the evaluated decision; never accept a supplied hash."""
     return _fingerprint(decision.model_dump(mode="json"))
+
+
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise SharedAuthorityConflict("SHARED_AUTHORITY_TIME_INVALID")
+    return value.astimezone(UTC)
+
+
+def _approval_entity_id(approval_id: str) -> str:
+    return "shared-sentinel-approval-" + approval_id
+
+
+def _demo_entity_id(authorization_id: str) -> str:
+    return "shared-demo-authorization-" + authorization_id
+
+
+def _reservation_entity_id(reservation_id: str) -> str:
+    return "shared-execution-reservation-" + reservation_id
 
 
 def _fingerprint(value: object) -> str:

@@ -97,7 +97,12 @@ The existing `/api/analyze` contract is unchanged. Phase 3 has no proposal or ex
 
 An approval can exist only when explicit proposal parameters, fresh market evidence under an explicitly supplied policy, explicit portfolio/sizing context, structured specialist agreement, and any required news-risk assessment are all available. Invalid trade mathematics or configured risk-limit violations are `REJECTED`; absent or stale information is `INSUFFICIENT_DATA`.
 
-Approved decisions are registered only in a lock-protected, process-local approval registry. Each approval is bound to the proposal ID and fingerprint, analysis ID, evidence fingerprint, evaluation time, and expiry. Re-evaluation is idempotent, and a Pilot hand-off claim is atomic and single-use. Restarting the backend clears this registry and invalidates every approval.
+Phase 3 originally used a lock-protected process-local registry. The current
+compatibility facade delegates Sentinel approval ownership to the structurally
+verified shared SQLite store described below. Each approval remains bound to
+the proposal, analysis, evidence, policy, assessment, account, evaluation time,
+and expiry; verification is read-only and consumption is single-use and
+restart-safe. This durable ownership does not enable Pilot or broker execution.
 
 Pilot remains disabled in Phase 3. It verifies a matching registry-issued Sentinel approval and then returns `DISABLED_NO_EXECUTION`; it has no adapter, no execution API route, no MT5 import, no broker connection, no credentials, and no order placement capability.
 
@@ -1370,6 +1375,44 @@ preserve existing records, ownership, outbox, revocation, and recovery rules.
 
 Tests use synthetic policy and execution evidence only. They do not initialize
 MT5, connect to a broker, or call an order API. Live and controlled-demo
-submission remain disabled. Atomic approval, demo-authorization, reservation,
-and consumption is still a separate unresolved boundary, and production use
+submission remain disabled. The production approval, demo-authorization,
+reservation, and consumption cutover remains unresolved, and production use
 also requires a genuine independently approved policy source.
+
+### Shared non-submitting local lifecycle transaction
+
+The shared authority store now contains a private, explicitly test-only local
+transaction that demonstrates the safely achievable SQLite boundary without
+claiming production authority. After an existing application service has
+created a controlled-demo authorization, the store can persist its exact
+immutable lineage under the already-durable Sentinel approval. A subsequent
+test-only reservation transaction validates the exact approval,
+authorization, proposal, policy, evidence, account, server, symbol, intent,
+quantity, order type, filling mode, expiry, and nested safety-evidence
+fingerprints. It then creates the reservation and consumes both local authority
+records in one `BEGIN IMMEDIATE` transaction with optimistic lifecycle checks,
+foreign keys, lifecycle history, and outbox events. A commit failure rolls back
+all three state changes; concurrent identical requests are deterministic and
+cannot consume authority twice.
+
+This primitive is intentionally underscore-prefixed, accepts only the frozen
+`DurableExecutionReservation` contract whose `test_only` flag is the literal
+`True`, and is not composed into the authorization service, Pilot,
+`FinalExecutionGate`, an adapter, an API route, or startup execution flow. It
+does not make the separate audit ledger or any external broker operation part
+of the SQLite transaction. External outbox projection remains at-least-once.
+
+Restart recovery is conservative: expired local authority becomes terminal,
+while any locally ready/started reservation becomes
+`reconciliation_required` unless already expired. Recovery never infers an
+external order outcome and never retries or creates replacement authority.
+There is still no authoritative broker-state reconciliation provider configured
+by default.
+
+The local transaction machinery therefore closes a storage/concurrency gap but
+does **not** make execution ready. Controlled-demo authorization remains on its
+existing process-local owner in application composition, and the shared
+transaction is not activated. Production policy governance, trust anchor,
+authoritative approval/revocation source, trusted live evidence, durable demo-
+authorization cutover, and reviewed submission-boundary integration remain
+external or future dependencies. Live and demo submission remain disabled.
