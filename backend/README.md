@@ -1528,3 +1528,39 @@ infrastructure listed in
 Until those dependencies are configured and independently reviewed, the Phase
 13G readiness diagnostic remains blocked and live and controlled-demo
 submission remain disabled.
+
+### Phase 13I personal signing and trust foundation
+
+`PersonalPolicyApprovalPayload` provides a versioned deterministic signing
+payload containing the complete controlled-demo policy, including exact policy
+identity and fingerprint, account/server and instrument scope, order and filling
+restrictions, all risk limits, validity, unique approval ID, and trust-key ID.
+Detached signatures use Ed25519-shaped envelopes with strict key, approval, and
+payload-fingerprint binding. `PersonalPolicyVerificationService` rejects
+tampering, mismatched policy/account/scope, unknown, expired, rotated, or
+revoked keys, unavailable or stale revocation state, and replayed approval IDs.
+
+The current declared Python dependency set has no asymmetric-cryptography or
+Windows protected-key binding. `UnavailableWindowsProtectedKeyProvider`
+therefore fails closed for creation, export, signing, verification, rotation,
+revocation, and recovery rather than writing an unprotected private key. The
+key-provider protocol defines those operations for a future reviewed Windows
+CNG or DPAPI-backed implementation. The repository does not claim that DPAPI
+alone makes a key hardware-backed or non-exportable; such a claim would require
+a provider that actually enforces and attests those properties.
+
+Tests use temporary OpenSSL-generated Ed25519 keys only to verify canonical
+serialization and cryptographic failure behavior. Test trust and signatures
+can produce only `TEST_ONLY_VERIFIED`; every verification result fixes
+independent authority, production authorization, submission permission, and
+execution authority to `False`. No signing component is composed into the
+Phase 13G readiness gate, Sentinel, Pilot, `FinalExecutionGate`, MT5, an
+adapter, or an API route.
+
+Personal possession of a valid signing key establishes integrity, not
+independent governance. Production remains blocked until the public key is
+established by an independent trust decision, authoritative revocation and
+replay sources are available and fresh, key rotation and compromise recovery
+are operationally approved, and the remaining broker-evidence, reconciliation,
+submission-boundary, and production-review dependencies are satisfied. See
+[`docs/phase13i-personal-signing-trust.md`](docs/phase13i-personal-signing-trust.md).
