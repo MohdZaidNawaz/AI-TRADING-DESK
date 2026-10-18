@@ -1499,3 +1499,32 @@ provider is unavailable by default, and live and controlled-demo submission
 remain disabled. The unsigned governance decision template records the real
 human and infrastructure decisions required to close those gaps; completing
 the template alone does not authorize execution.
+
+### Phase 13H independent-governance integration contracts
+
+`IndependentPolicyAuthorityIntegration` and
+`BrokerReconciliationIntegration` define the read-only, provider-neutral
+request/observation boundary for the two external dependencies that cannot be
+created by this repository. Requests bind exact policy or execution lineage,
+account and instrument scope, a bounded freshness interval, and a per-request
+challenge. Sanitized observations add provider identity, monotonic source
+sequence, stable source event and audit references, timestamps, and explicit
+trust-anchor rotation lineage. Broker observations also bind the exact account,
+server, symbol mapping, and broker order identity.
+
+These integrations perform structural validation only. Their immutable result
+models make independent authority, production authorization, execution
+authority, and retry permission literal `False`; a test double or arbitrary
+protocol implementation therefore cannot authorize production. The default
+providers report unavailable. The services do not mutate approval, reservation,
+reconciliation, or execution state and are not composed into Sentinel, Pilot,
+`FinalExecutionGate`, MT5, an adapter, or an API route.
+
+This contract does not authenticate a provider, validate a real signature,
+persist a replay window, operate a key registry, or prove broker truth. A real
+integration still requires the independently governed decisions and external
+infrastructure listed in
+[`docs/phase13h-independent-governance-integration.md`](docs/phase13h-independent-governance-integration.md).
+Until those dependencies are configured and independently reviewed, the Phase
+13G readiness diagnostic remains blocked and live and controlled-demo
+submission remain disabled.
