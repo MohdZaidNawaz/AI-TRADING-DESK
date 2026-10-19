@@ -1540,14 +1540,10 @@ payload-fingerprint binding. `PersonalPolicyVerificationService` rejects
 tampering, mismatched policy/account/scope, unknown, expired, rotated, or
 revoked keys, unavailable or stale revocation state, and replayed approval IDs.
 
-The current declared Python dependency set has no asymmetric-cryptography or
-Windows protected-key binding. `UnavailableWindowsProtectedKeyProvider`
-therefore fails closed for creation, export, signing, verification, rotation,
-revocation, and recovery rather than writing an unprotected private key. The
-key-provider protocol defines those operations for a future reviewed Windows
-CNG or DPAPI-backed implementation. The repository does not claim that DPAPI
-alone makes a key hardware-backed or non-exportable; such a claim would require
-a provider that actually enforces and attests those properties.
+Phase 13I introduced an unavailable-by-default Windows provider and the
+key-provider protocol. Phase 13J now supplies the Windows current-user DPAPI
+implementation described below. `UnavailableWindowsProtectedKeyProvider`
+remains available for unsupported or deliberately unconfigured composition.
 
 Tests use temporary OpenSSL-generated Ed25519 keys only to verify canonical
 serialization and cryptographic failure behavior. Test trust and signatures
@@ -1564,3 +1560,37 @@ replay sources are available and fresh, key rotation and compromise recovery
 are operationally approved, and the remaining broker-evidence, reconciliation,
 submission-boundary, and production-review dependencies are satisfied. See
 [`docs/phase13i-personal-signing-trust.md`](docs/phase13i-personal-signing-trust.md).
+
+### Phase 13J Windows DPAPI key protection
+
+`WindowsDpapiKeyProvider` implements the Phase 13I key-provider operations with
+PyCA `cryptography` Ed25519 keys and native Windows `CryptProtectData` /
+`CryptUnprotectData`. Private key bytes are generated and used in memory, and
+only a current-Windows-user DPAPI blob plus public metadata is persisted. The
+provider uses versioned application-specific entropy bound to the complete
+persisted public descriptor and lifecycle record, including schema, algorithm,
+identity, generation, public-key fingerprint, creation/expiry timestamps,
+state, state timestamp, reason, and replacement identity. Native UI is
+forbidden and machine-wide protection is never requested.
+
+The default store is under the current user's local application-data directory.
+Its directory, lifecycle lock, and records receive an exactly verified
+protected DACL limited to the current user, SYSTEM, and Administrators. A
+protected Windows file lock serializes cooperating provider instances and
+processes, while explicit interruption recovery remains fail-closed. Existing
+records are never silently replaced; missing, malformed, tampered, wrongly
+protected, or unreadable records fail
+closed. Rotation and revocation are explicit and permanently remove the old
+record's protected private blob. Recovery reports state only and never creates
+a replacement key. Provider/backend/native failures are exposed only as
+sanitized errors.
+
+DPAPI protects exportable key bytes at rest for the current Windows user. It is
+not an HSM, does not make a key hardware-backed or non-exportable, and cannot
+prevent all in-process memory copies made by Python or the cryptography library.
+The provider establishes local key custody and signature integrity only. It
+does not establish an independent trust anchor, governance approval, revocation
+authority, production authorization, or execution authority, and it is not
+wired to Sentinel, Pilot, execution gates, MT5, broker adapters, or API routes.
+See
+[`docs/phase13j-windows-dpapi-key-protection.md`](docs/phase13j-windows-dpapi-key-protection.md).

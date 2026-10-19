@@ -23,10 +23,10 @@ replay decision for the unique approval ID.
 
 ## Windows key-provider requirements
 
-The current application has no production Windows key provider. The default
-explicitly reports unavailable and never falls back to plaintext. A future
-provider must implement creation, public-key export, signing, verification,
-rotation, revocation, and recovery through reviewed Windows protection:
+Phase 13J implements a current-user DPAPI provider with in-memory Ed25519
+operations. The unavailable provider still fails closed and never falls back to
+plaintext on unsupported or unconfigured systems. Any Windows provider must
+continue to satisfy these requirements:
 
 - Prefer a Windows CNG persisted asymmetric key whose private material is
   non-exportable when the provider and hardware genuinely enforce that policy.
@@ -43,9 +43,8 @@ rotation, revocation, and recovery through reviewed Windows protection:
   restoring signing capability; unavailable recovery must not create a new
   implicit authority.
 
-Adding a package or implementing CNG/DPAPI requires separate dependency,
-platform, key-custody, recovery, and security review. It must not be silently
-activated by importing this module.
+The Phase 13J implementation and its limits are documented in
+[`phase13j-windows-dpapi-key-protection.md`](phase13j-windows-dpapi-key-protection.md).
 
 ## Trust bootstrap and revocation
 
