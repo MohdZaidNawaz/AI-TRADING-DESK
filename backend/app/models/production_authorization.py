@@ -21,6 +21,9 @@ class ProductionAuthorizationModel(APIModel):
 class ProductionReadinessPrerequisite(str, Enum):
     AUTHORIZED_POLICY_APPROVER = "authorized_policy_approver"
     INDEPENDENT_TRUST_ANCHOR = "independent_trust_anchor"
+    PERSONAL_TRUST_BOOTSTRAP = "personal_trust_bootstrap"
+    PERSONAL_KEY_STATUS_AUTHORITY = "personal_key_status_authority"
+    PERSONAL_REPLAY_ROLLBACK_PROTECTION = "personal_replay_rollback_protection"
     AUTHORITATIVE_APPROVAL_SOURCE = "authoritative_approval_source"
     AUTHORITATIVE_REVOCATION_SOURCE = "authoritative_revocation_source"
     POLICY_INTEGRITY = "policy_integrity"

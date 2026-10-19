@@ -1594,3 +1594,40 @@ authority, production authorization, or execution authority, and it is not
 wired to Sentinel, Pilot, execution gates, MT5, broker adapters, or API routes.
 See
 [`docs/phase13j-windows-dpapi-key-protection.md`](docs/phase13j-windows-dpapi-key-protection.md).
+
+### Phase 13K personal trust bootstrap, revocation, and recovery
+
+`PersonalTrustBootstrapCeremony` binds a local DPAPI-protected signing key's
+exact public fingerprint and generation to an explicit personal scope and the
+declared authority/trust-anchor identity, version, and fingerprint. Decisions
+also bind the exact ceremony window and are rejected outside it or when dated
+after the deterministic evaluation time. A human may record an out-of-band
+fingerprint decision, but local confirmation remains
+non-authoritative: a self-signature, self-authored manifest, local timestamp,
+DPAPI record, or trust-on-first-use cannot establish an independent trust
+anchor.
+
+`PersonalKeyAuthorityIntegration` adds a read-only provider boundary for the
+key's revocation, compromise, supersession, rotation, and recovery status. It
+checks exact request/challenge/key/generation/scope/authority/trust-anchor
+binding, claimed authentication and trust-anchor validation, bounded freshness
+and expiry, source event identity, monotonic sequence, replacement lineage, and
+replay results. Complete request facts are retained in each assessment and
+recomputed at bootstrap and recovery composition boundaries. The default
+provider and replay protector fail closed. Synthetic providers used in tests
+can produce only structurally validated, non-authorizing assessments; no real
+personal-key authority is configured.
+
+Recovery assessments distinguish missing, undecryptable, compromised,
+revoked, superseded, interrupted, rolled-back, and authority-unavailable
+states. They never create a replacement key, reactivate a revoked key, or
+restore an older state. A broken trust chain requires a new out-of-band trust
+decision.
+
+The production-readiness diagnostic now reports personal bootstrap,
+authoritative personal-key status, and durable replay/rollback protection as
+separate prerequisites. Local evidence cannot satisfy the independent checks,
+so production authorization, submission, and execution remain blocked. Phase
+13K is not wired to Sentinel, Pilot, execution gates, reservations, MT5,
+broker adapters, APIs, or the frontend. See
+[`docs/phase13k-personal-trust-bootstrap.md`](docs/phase13k-personal-trust-bootstrap.md).

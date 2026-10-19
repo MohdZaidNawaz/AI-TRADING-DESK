@@ -20,6 +20,11 @@ from app.models.production_authorization import (
     ProductionReadinessCheckStatus,
     ProductionReadinessPrerequisite,
 )
+from app.models.personal_trust_bootstrap import (
+    PersonalKeyAuthorityAssessmentStatus,
+    PersonalTrustBootstrapAssessment,
+    PersonalTrustBootstrapStatus,
+)
 from app.models.proposals import SentinelDecision, TradeProposal
 from app.models.sentinel_policy_authority import (
     SentinelPolicyLifecycle,
@@ -64,6 +69,7 @@ class ProductionAuthorizationReadinessGate:
         decision: SentinelDecision | None = None,
         reservation: DurableExecutionReservation | None = None,
         execution_records: tuple[ExecutionRecord, ...] = (),
+        personal_trust: PersonalTrustBootstrapAssessment | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
         checks: list[ProductionReadinessCheck] = [
@@ -79,6 +85,9 @@ class ProductionAuthorizationReadinessGate:
                 "INDEPENDENT_TRUST_ANCHOR_UNAVAILABLE",
                 checked_at,
             ),
+            self._personal_trust_bootstrap(personal_trust, checked_at),
+            self._personal_key_status_authority(personal_trust, checked_at),
+            self._personal_replay_protection(personal_trust, checked_at),
             _failed(
                 ProductionReadinessPrerequisite.AUTHORITATIVE_APPROVAL_SOURCE,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
@@ -146,6 +155,92 @@ class ProductionAuthorizationReadinessGate:
             evaluated_at=checked_at,
             checks=ordered,
             reason_codes=reasons,
+        )
+
+    @staticmethod
+    def _personal_trust_bootstrap(
+        assessment: PersonalTrustBootstrapAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.PERSONAL_TRUST_BOOTSTRAP
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "PERSONAL_TRUST_BOOTSTRAP_PENDING",
+                now,
+            )
+        if assessment.status is PersonalTrustBootstrapStatus.LOCAL_CONFIRMATION_RECORDED:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.BLOCKED,
+                "PERSONAL_TRUST_LOCAL_CONFIRMATION_NOT_INDEPENDENT",
+                now,
+                source_reference=assessment.ceremony_fingerprint,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        return _failed_many(
+            prerequisite,
+            (
+                ProductionReadinessCheckStatus.INVALID
+                if assessment.status is PersonalTrustBootstrapStatus.INVALID
+                else ProductionReadinessCheckStatus.BLOCKED
+            ),
+            assessment.reason_codes,
+            now,
+            default="PERSONAL_TRUST_BOOTSTRAP_PENDING",
+            source_reference=assessment.ceremony_fingerprint,
+            evidence_fingerprint=assessment.fingerprint,
+        )
+
+    @staticmethod
+    def _personal_key_status_authority(
+        assessment: PersonalTrustBootstrapAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.PERSONAL_KEY_STATUS_AUTHORITY
+        if assessment is not None and assessment.authority_assessment_status in {
+            PersonalKeyAuthorityAssessmentStatus.REVOKED,
+            PersonalKeyAuthorityAssessmentStatus.COMPROMISED,
+        }:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.REVOKED,
+                "PERSONAL_KEY_REVOKED_OR_COMPROMISED",
+                now,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        if (
+            assessment is not None
+            and assessment.authority_assessment_status
+            is PersonalKeyAuthorityAssessmentStatus.SUPERSEDED
+        ):
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.SUPERSEDED,
+                "PERSONAL_KEY_SUPERSEDED",
+                now,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        return _failed(
+            prerequisite,
+            ProductionReadinessCheckStatus.UNAVAILABLE,
+            "AUTHORITATIVE_PERSONAL_KEY_STATUS_UNAVAILABLE",
+            now,
+            evidence_fingerprint=None if assessment is None else assessment.fingerprint,
+        )
+
+    @staticmethod
+    def _personal_replay_protection(
+        assessment: PersonalTrustBootstrapAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        return _failed(
+            ProductionReadinessPrerequisite.PERSONAL_REPLAY_ROLLBACK_PROTECTION,
+            ProductionReadinessCheckStatus.UNAVAILABLE,
+            "DURABLE_PERSONAL_KEY_REPLAY_PROTECTION_UNAVAILABLE",
+            now,
+            evidence_fingerprint=None if assessment is None else assessment.fingerprint,
         )
 
     def _audit(self, now: datetime) -> ProductionReadinessCheck:
