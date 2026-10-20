@@ -1,32 +1,41 @@
-# React + TypeScript + Vite
+# FRIDAY desk frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React, TypeScript, and Vite interface for the local FRIDAY research desk.
 
-Currently, two official plugins are available:
+## Run
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Start the backend first on http://127.0.0.1:8000, then:
 
-## React Compiler
+~~~powershell
+cd frontend
+npm install
+npm run dev
+~~~
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The API base defaults to http://127.0.0.1:8000. For another local address,
+set VITE_API_BASE_URL before starting Vite.
 
-## Expanding the Oxlint configuration
+## What the interface represents
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- The roster is the exact nine-specialist architecture; FRIDAY Master is
+  separate.
+- The command bar calls the deterministic POST /api/analyze workflow.
+- Market cards are mock reference fixtures and remain visibly labeled as mock
+  whether they come from the API or the local fallback.
+- The header and session panel distinguish HTTP availability from production
+  readiness.
+- The readiness report cannot authorize execution. The interface exposes no
+  execution control.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+No live market feed, AI provider, broker connection, MT5 session, or order
+submission is implied by this UI.
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Validate
+
+~~~powershell
+npm run lint
+npm run build
+~~~
+
+There is currently no frontend test runner configured; the production build
+performs the TypeScript check.

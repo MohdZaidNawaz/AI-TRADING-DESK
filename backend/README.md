@@ -29,6 +29,7 @@ The API is available at `http://127.0.0.1:8000`, with interactive documentation 
 ## Endpoints
 
 - `GET /api/health`
+- `GET /api/readiness`
 - `GET /api/agents`
 - `GET /api/markets`
 - `POST /api/analyze`
@@ -45,6 +46,18 @@ Example analysis request:
 ```
 
 The master orchestrator uses deterministic keyword routing. It returns a result for all nine specialists, marking agents that were not selected as `skipped`, followed by a mock synthesized response. The architecture under `app/agents` is intentionally isolated so model-backed agents and real data adapters can be introduced later.
+
+/api/health is a liveness check for the local HTTP application. It does not
+claim that market-data, AI, trust, broker, or execution dependencies are
+available. /api/readiness exposes the existing read-only production
+authorization diagnostic. That report is structurally non-authorizing: its
+status is always blocked, and its production-authorization, submission, and
+execution fields are literal false. Both endpoints return an
+X-Correlation-ID; a caller may supply a bounded printable identifier, while
+missing or malformed values are replaced.
+
+Browser CORS is limited to the local Vite development origins and the Accept,
+Content-Type, and X-Correlation-ID request headers.
 
 ## Multi-source ingestion architecture
 

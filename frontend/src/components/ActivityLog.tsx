@@ -1,26 +1,63 @@
-const activities = [
-  { time: "14:32:08", agent: "MACRO", tone: "violet", message: "Cross-asset regime map refreshed · 12 sources reconciled", meta: "COMPLETE" },
-  { time: "14:31:42", agent: "RECON", tone: "blue", message: "Elevated momentum detected on XAUUSD · monitoring", meta: "WATCHING" },
-  { time: "14:30:17", agent: "RISK", tone: "green", message: "Portfolio conditions remain within nominal range", meta: "NOMINAL" },
-]
+import type {
+  AnalyzeResponse,
+  ApiConnectionState,
+  ProductionReadinessReport,
+} from "../services/api"
 
-function ActivityLog() {
+type ActivityLogProps = {
+  connection: ApiConnectionState
+  readiness: ProductionReadinessReport | null
+  analysis: AnalyzeResponse | null
+}
+
+const apiStatus: Record<ApiConnectionState, string> = {
+  loading: "Backend status is being checked",
+  online: "Backend liveness and readiness endpoints responded",
+  error: "Backend is unavailable; static labels remain visible",
+}
+
+function ActivityLog({ connection, readiness, analysis }: ActivityLogProps) {
+  const activities = [
+    {
+      agent: "SYSTEM",
+      tone: connection === "online" ? "green" : "blue",
+      message: apiStatus[connection],
+      meta: connection.toUpperCase(),
+    },
+    {
+      agent: "SENTINEL",
+      tone: "violet",
+      message: readiness
+        ? `Production blocked by ${readiness.reason_codes.length} explicit readiness conditions`
+        : "No production-readiness report is available",
+      meta: readiness ? "BLOCKED" : "UNKNOWN",
+    },
+    {
+      agent: "FRIDAY",
+      tone: "blue",
+      message: analysis
+        ? analysis.synthesis.final_response
+        : "No analysis submitted in this browser session",
+      meta: analysis ? "DETERMINISTIC" : "IDLE",
+    },
+  ]
+
   return (
     <section className="activity-panel" aria-labelledby="activity-title">
       <div className="activity-heading">
         <div>
-          <span className="eyebrow">REAL-TIME FEED</span>
-          <h2 id="activity-title">SIGNAL LOG</h2>
+          <span className="eyebrow">SESSION FACTS</span>
+          <h2 id="activity-title">DESK STATUS</h2>
         </div>
-        <span className="activity-stream"><i /> STREAMING</span>
+        <span className="activity-stream"><i /> NOT STREAMING</span>
       </div>
 
-      <div className="activity-list">
+      <div className="activity-list" aria-live="polite">
         {activities.map((activity) => (
-          <article className="activity-item" key={`${activity.time}-${activity.agent}`}>
-            <time>{activity.time}</time>
+          <article className="activity-item" key={activity.agent}>
+            <time>NOW</time>
             <span className={`activity-agent tone-${activity.tone}`}><i />{activity.agent}</span>
-            <p>{activity.message}</p>
+            <p title={activity.message}>{activity.message}</p>
             <span className="activity-meta">{activity.meta}</span>
           </article>
         ))}

@@ -8,9 +8,9 @@ const risingChart = "2,31 11,27 20,29 29,20 38,23 47,14 56,17 65,8 74,13 83,7 92
 const fallingChart = "2,6 11,10 20,8 29,17 38,14 47,23 56,18 65,26 74,23 83,31 92,27 101,34"
 
 const connectionLabels: Record<ApiConnectionState, string> = {
-  loading: "CONNECTING",
-  online: "API ONLINE",
-  error: "CACHED",
+  loading: "MOCK FALLBACK / CHECKING",
+  online: "MOCK API",
+  error: "MOCK FALLBACK / API UNAVAILABLE",
 }
 
 const decimalsBySymbol: Record<string, number> = {
@@ -78,10 +78,10 @@ function MarketPanel() {
     <section className="panel market-panel" aria-labelledby="market-title">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">MARKET PULSE</span>
-          <h2 id="market-title">MARKET DATA</h2>
+          <span className="eyebrow">REFERENCE SNAPSHOT</span>
+          <h2 id="market-title">MOCK MARKET DATA</h2>
         </div>
-        <span className="live-badge" aria-live="polite"><i /> {connectionLabels[connection]}</span>
+        <span className="live-badge mock-badge" aria-live="polite"><i /> {connectionLabels[connection]}</span>
       </div>
 
       <div className="market-list">
@@ -104,7 +104,7 @@ function MarketPanel() {
               <div className="market-meta">
                 <span>H <b>{formatMarketValue(market, market.high)}</b></span>
                 <span>L <b>{formatMarketValue(market, market.low)}</b></span>
-                <span>24H</span>
+                <span>FIXTURE</span>
               </div>
             </article>
           )
@@ -112,8 +112,8 @@ function MarketPanel() {
       </div>
 
       <div className="market-footer">
-        <span>BACKEND FEED</span>
-        <strong>MOCK / {connectionLabels[connection]}</strong>
+        <span>NOT LIVE · NOT TRADEABLE</span>
+        <strong>{connectionLabels[connection]}</strong>
       </div>
     </section>
   )

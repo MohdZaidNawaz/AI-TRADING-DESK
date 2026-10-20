@@ -1,5 +1,18 @@
 import { useEffect, useState } from "react"
 
+import type { ApiConnectionState, ProductionReadinessReport } from "../services/api"
+
+type HeaderProps = {
+  connection: ApiConnectionState
+  readiness: ProductionReadinessReport | null
+}
+
+const connectionLabel: Record<ApiConnectionState, string> = {
+  loading: "API CHECKING",
+  online: "API ONLINE",
+  error: "API UNAVAILABLE",
+}
+
 const formatClock = (date: Date) =>
   new Intl.DateTimeFormat("en-GB", {
     hour: "2-digit",
@@ -15,7 +28,7 @@ const formatDate = (date: Date) =>
     month: "long",
   }).format(date).toUpperCase()
 
-function Header() {
+function Header({ connection, readiness }: HeaderProps) {
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -23,28 +36,29 @@ function Header() {
     return () => window.clearInterval(timer)
   }, [])
 
+  const executionLabel = readiness ? "EXECUTION BLOCKED" : "READINESS UNKNOWN"
+
   return (
     <header className="top-header">
       <div className="brand">
         <div className="brand-copy">
           <h1>FRIDAY</h1>
           <span>AI TRADING INTELLIGENCE</span>
-          <small><i /> SYSTEM ONLINE <b>·</b> CORE READY</small>
+          <small className={`header-status-${connection}`}><i /> {connectionLabel[connection]} <b>·</b> {executionLabel}</small>
         </div>
       </div>
 
-      <div className="header-center" aria-hidden="true">
-        <span><b>8</b> AGENTS</span><em>//</em>
-        <span><b>3</b> FEEDS</span><em>//</em>
-        <span><b>248</b> SCANS</span><em>//</em>
-        <span><b>61</b> SIGNALS</span><em>//</em>
-        <span className="uptime"><b>00:13</b> UPTIME</span>
+      <div className="header-center" aria-label="Desk capability summary">
+        <span><b>9</b> SPECIALISTS</span><em>//</em>
+        <span><b>MOCK</b> MARKETS</span><em>//</em>
+        <span><b>DETERMINISTIC</b> ANALYSIS</span><em>//</em>
+        <span><b>NO</b> EXECUTION</span>
       </div>
 
       <div className="desk-clock">
         <strong>{formatClock(now)}</strong>
         <span>{formatDate(now)} <b>//</b> LOCAL</span>
-        <small><i /> DESK SERVICES · CONNECTED</small>
+        <small><i /> RESEARCH DESK · NON-EXECUTING</small>
       </div>
     </header>
   )

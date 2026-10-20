@@ -1,20 +1,41 @@
+import type {
+  AnalyzeResponse,
+  ApiConnectionState,
+  ProductionReadinessReport,
+} from "../services/api"
+
+type AICoreProps = {
+  connection: ApiConnectionState
+  readiness: ProductionReadinessReport | null
+  analysis: AnalyzeResponse | null
+}
+
 const coreAgents = [
-  { name: "MACRO", role: "REGIME", position: "node-top-left", tone: "blue" },
-  { name: "NEWS", role: "EVENTS", position: "node-top", tone: "gold" },
-  { name: "RECON", role: "SCOUT", position: "node-top-right", tone: "orange" },
-  { name: "RISK", role: "SENTINEL", position: "node-right", tone: "red" },
-  { name: "JOURNAL", role: "MEMORY", position: "node-bottom-right", tone: "green" },
-  { name: "QUANT", role: "MODELS", position: "node-bottom-left", tone: "violet" },
-  { name: "TECHNICAL", role: "STRUCTURE", position: "node-left", tone: "cyan" },
-  { name: "FUNDAMENTAL", role: "VALUE", position: "node-mid-left", tone: "teal" },
+  { name: "ATLAS", role: "MACRO", position: "node-top-left", tone: "blue" },
+  { name: "CAPITOL", role: "POSITIONING", position: "node-top", tone: "gold" },
+  { name: "SCOUT", role: "RECON", position: "node-top-right", tone: "orange" },
+  { name: "SENTINEL", role: "RISK", position: "node-right", tone: "red" },
+  { name: "PILOT", role: "DISABLED", position: "node-bottom-right", tone: "green" },
+  { name: "LEDGER", role: "PROVENANCE", position: "node-bottom", tone: "teal" },
+  { name: "ORACLE", role: "QUANT", position: "node-bottom-left", tone: "violet" },
+  { name: "CHARTIST", role: "TECHNICAL", position: "node-left", tone: "cyan" },
+  { name: "ATHENA", role: "ANALYSIS", position: "node-mid-left", tone: "teal" },
 ]
 
-function AICore() {
+const apiLabel: Record<ApiConnectionState, string> = {
+  loading: "CHECKING",
+  online: "ONLINE",
+  error: "UNAVAILABLE",
+}
+
+function AICore({ connection, readiness, analysis }: AICoreProps) {
+  const consulted = analysis?.synthesis.agents_consulted.length ?? 0
+
   return (
     <section className="ai-core" aria-labelledby="core-title">
       <div className="core-topline">
         <span>MASTER INTELLIGENCE / SYNTHESIS</span>
-        <span className="core-sequence">FOCUS MODE</span>
+        <span className="core-sequence">RESEARCH MODE</span>
       </div>
 
       <div className="core-stage">
@@ -23,7 +44,7 @@ function AICore() {
         <div className="core-scanline" aria-hidden="true" />
 
         <svg className="node-links" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true">
-          <path d="M500 338L245 160M500 338L500 84M500 338L760 160M500 338L868 340M500 338L760 582M500 338L260 590M500 338L132 340M500 338L180 252" />
+          <path d="M500 338L245 160M500 338L500 84M500 338L760 160M500 338L868 340M500 338L760 582M500 338L500 650M500 338L260 590M500 338L132 340M500 338L180 252" />
         </svg>
 
         <div className="core-agent-nodes" aria-hidden="true">
@@ -55,29 +76,29 @@ function AICore() {
 
         <div className="core-caption">
           <h2 id="core-title">FRIDAY</h2>
-          <span className="core-role">MASTER · STRATEGY SYNTHESIS · RISK ROUTER</span>
+          <span className="core-role">MASTER · SYNTHESIS · NON-EXECUTING</span>
           <div className="core-metrics">
-            <span><strong>8</strong><small>ONLINE</small></span>
-            <span><strong>248</strong><small>SCANS</small></span>
-            <span><strong className="metric-cyan">61</strong><small>SIGNALS</small></span>
-            <span><strong>94%</strong><small>CONFIDENCE</small></span>
+            <span><strong>9</strong><small>SPECIALISTS</small></span>
+            <span><strong>{consulted}</strong><small>CONSULTED</small></span>
+            <span><strong className="metric-cyan">{analysis ? "MOCK" : "—"}</strong><small>LAST MODE</small></span>
+            <span><strong>OFF</strong><small>EXECUTION</small></span>
           </div>
         </div>
 
         <div className="telemetry telemetry-left" aria-hidden="true">
-          <span>DESK STATE</span>
-          <strong>ACTIVE</strong>
+          <span>DESK MODE</span>
+          <strong>RESEARCH</strong>
         </div>
         <div className="telemetry telemetry-right" aria-hidden="true">
-          <span>RESPONSE</span>
-          <strong>12.4 <small>MS</small></strong>
+          <span>LATENCY</span>
+          <strong>NOT <small>MEASURED</small></strong>
         </div>
       </div>
 
       <div className="core-footer">
-        <span><i /> 8 AGENTS LINKED</span>
-        <span className="core-state"><i /> CORE READY</span>
-        <span><i /> DATA STREAM LIVE</span>
+        <span><i /> 9 SPECIALISTS DEFINED</span>
+        <span className="core-state"><i /> API {apiLabel[connection]}</span>
+        <span><i /> {readiness ? "EXECUTION BLOCKED" : "READINESS UNKNOWN"}</span>
       </div>
     </section>
   )

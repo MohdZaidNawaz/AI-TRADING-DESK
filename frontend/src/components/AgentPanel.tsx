@@ -6,14 +6,15 @@ import { getAgents } from "../services/api"
 import type { Agent, ApiConnectionState } from "../services/api"
 
 const agentCodes: Record<string, string> = {
-  macro: "MA",
-  news: "NW",
-  technical: "TA",
-  quant: "QT",
-  fundamental: "FA",
-  risk: "RK",
-  recon: "RC",
-  journal: "JR",
+  atlas_macro: "AM",
+  capitol_smart_money: "CS",
+  scout_recon: "SR",
+  athena_analyst: "AA",
+  chartist_technician: "CT",
+  oracle_quant: "OQ",
+  sentinel_risk_officer: "SO",
+  pilot_execution: "PX",
+  ledger_the_book: "LB",
 }
 
 const statusDisplay = {
@@ -25,7 +26,7 @@ const statusDisplay = {
 const connectionLabels: Record<ApiConnectionState, string> = {
   loading: "CONNECTING",
   online: "API ONLINE",
-  error: "LOCAL CACHE",
+  error: "STATIC ROSTER",
 }
 
 function AgentPanel() {
@@ -68,7 +69,9 @@ function AgentPanel() {
 
       <div className="agent-list">
         {agents.map((agent, index) => {
-          const displayStatus = statusDisplay[agent.status]
+          const displayStatus = connection === "online"
+            ? statusDisplay[agent.status]
+            : { label: "DEFINED", className: "idle" }
 
           return (
             <article
@@ -96,8 +99,8 @@ function AgentPanel() {
 
       <div className="network-status">
         <span aria-live="polite">{connectionLabels[connection]}</span>
-        <div className="load-track"><i /></div>
-        <strong>42%</strong>
+        <div className={`load-track load-track-${connection}`}><i /></div>
+        <strong>{agents.length} SEATS</strong>
       </div>
     </section>
   )

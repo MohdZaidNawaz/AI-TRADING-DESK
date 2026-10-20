@@ -1,14 +1,15 @@
 import type { Agent, Market } from "../services/api"
 
 export const FALLBACK_AGENTS: Agent[] = [
-  { id: "macro", name: "Macro", description: "Global regime analysis", status: "active" },
-  { id: "news", name: "News", description: "News and event intelligence", status: "syncing" },
-  { id: "technical", name: "Technical", description: "Price structure and momentum", status: "active" },
-  { id: "quant", name: "Quant", description: "Statistical models and probability", status: "active" },
-  { id: "fundamental", name: "Fundamental", description: "Value and catalyst analysis", status: "idle" },
-  { id: "risk", name: "Risk", description: "Risk and exposure oversight", status: "active" },
-  { id: "recon", name: "Recon", description: "Market surveillance", status: "syncing" },
-  { id: "journal", name: "Journal", description: "Desk intelligence memory", status: "idle" },
+  { id: "atlas_macro", name: "Atlas Macro", description: "Global regime, rates, and cross-asset context", status: "active" },
+  { id: "capitol_smart_money", name: "Capitol Smart Money", description: "Institutional positioning and capital-flow research", status: "idle" },
+  { id: "scout_recon", name: "Scout Recon", description: "Market surveillance and catalyst reconnaissance", status: "syncing" },
+  { id: "athena_analyst", name: "Athena Analyst", description: "Fundamental context and catalyst analysis", status: "idle" },
+  { id: "chartist_technician", name: "Chartist Technician", description: "Price structure, trend, and momentum", status: "active" },
+  { id: "oracle_quant", name: "Oracle Quant", description: "Statistical models and probability research", status: "active" },
+  { id: "sentinel_risk_officer", name: "Sentinel Risk Officer", description: "Research-risk and exposure oversight", status: "active" },
+  { id: "pilot_execution", name: "Pilot Execution", description: "Disabled future execution coordination", status: "idle" },
+  { id: "ledger_the_book", name: "Ledger The Book", description: "Research memory and decision review", status: "idle" },
 ]
 
 export const FALLBACK_MARKETS: Market[] = [
