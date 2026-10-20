@@ -34,10 +34,10 @@ order path. Public API routes expose no execution operation.
 | Capability | Current implementation | Remaining gap | Safety consequence |
 | --- | --- | --- | --- |
 | Specialist desk | Nine canonical specialists plus FRIDAY Master | Real model provider is not configured | Analysis stays deterministic and labeled mock |
-| Market display | Explicit mock API and mock fallback fixtures | No live feed is connected to the dashboard | Values are reference fixtures, never presented as live |
+| Market display | Explicit mock API and mock fallback fixtures with finite, coherent, mock-only response validation | No live feed is connected to the dashboard | Values are reference fixtures, never presented as live |
 | Evidence | Provider-neutral immutable domains, bounded stores, provenance | External sources remain capability-specific and manually integrated | Missing evidence fails closed; nothing is fabricated |
 | Analysis | Deterministic routing and structured specialist artifacts | No production AI model/tool authority | No agent can gain execution authority |
-| Operational status | Liveness, correlation IDs, fail-closed readiness report | Dependency-specific live probes are intentionally absent | Diagnostics make no broker/provider calls |
+| Operational status | Liveness, correlation IDs, fail-closed readiness report, direct-peer loopback enforcement, browser-origin filtering, and bounded request bodies | Dependency-specific live probes and authenticated non-loopback ingress are intentionally absent | Diagnostics make no broker/provider calls; remote direct clients fail closed |
 | Trust | Personal signing, DPAPI custody, local bootstrap, plus canonical Ed25519 verification against a separately configured public key | Independent governance of that anchor, authenticated authority integration and external replay protection | Cryptographic integrity can be checked, but production authorization remains blocked |
 | Broker state | Read-only typed evidence/reconciliation contracts and guarded MT5 adapter architecture | The evidence provider is not independently authenticated and reconciliation is not authoritative | Structurally valid evidence is explicitly insufficient for production readiness |
 | Execution | Sentinel, reservations, kill switch, audit and final gates | Organizational approval and reviewed production boundary are absent | Live and demo submission remain disabled |
@@ -81,6 +81,11 @@ npm run build
 - GET /api/health means only that the HTTP application is responding.
 - GET /api/readiness enumerates production blockers without probing MT5,
   reading credentials, consuming approvals, or mutating lifecycle state.
+- The application rejects direct non-loopback peers and unapproved browser
+  origins. This is a local deployment guard, not user authentication; do not
+  place an unauthenticated reverse proxy in front of it.
+- Request bodies are bounded to 1 MiB at both declared-length and streamed-body
+  boundaries.
 - Mock market values are explicitly labeled in both the API and UI.
 - The analysis endpoint reports deterministic_mock; it is not a live AI
   provider.

@@ -15,8 +15,12 @@ from app.models.schemas import APIModel
 
 _SENSITIVE = ("password", "secret", "token", "apikey", "api_key", "credential", "authorization")
 _SENSITIVE_VALUE = re.compile(
-    r"(?i)(?:password|secret|token|api[_-]?key|apikey|credential|authorization)"
-    r"\s*[:=]\s*\S+"
+    r"(?ix)(?:"
+    r"[\"']?(?:password|secret|token|api[_-]?key|apikey|credential|authorization)"
+    r"[\"']?\s*[:=]\s*\S+"
+    r"|\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}"
+    r"|-----BEGIN\s+(?:[A-Z0-9]+\s+)?PRIVATE\s+KEY-----"
+    r")"
 )
 
 

@@ -153,26 +153,28 @@ deterministic analysis. It labels market data as mock/not tradeable and executio
 as blocked/off/non-executing. No browser submission control or execution API
 client exists. Client labels are not treated as a server-side security boundary.
 
-### SA-07 — local API exposure assumptions require operational enforcement
-(medium residual risk)
+### SA-07 — local API exposure boundary (medium residual, partially remediated)
 
-**Evidence.** CORS is restricted to the two local Vite origins, methods to GET
-and POST, and a small header allow-list. Request models bound symbols, queries,
-and provider parameters. Provider failures return generic messages. Documentation
-runs Uvicorn on `127.0.0.1` with access logging disabled.
+**Evidence.** The application rejects direct non-loopback peers, rejects
+unexpected browser origins, disables CORS credentials, and bounds declared and
+streamed bodies to 1 MiB. CORS remains restricted to the two local Vite origins,
+methods to GET and POST, and a small header allow-list. Request models bound
+symbols, queries, and provider parameters. Provider failures return generic
+messages. Documentation runs Uvicorn on `127.0.0.1` with access logging disabled.
 
-**Residual risk.** The application does not implement user authentication or
-host-level network access control. CORS is a browser policy, not authentication.
-If an operator binds the API to a non-loopback interface, local diagnostics,
-analysis, the TradingView webhook, and the manually triggered Twelve Data
-snapshot route acquire an unauthorized remote attack/usage surface. The webhook
-secret is carried in the URL by established design and can be exposed by reverse
-proxy, browser, or server access logs if operational logging differs from the
-documented command. Interactive API documentation is also enabled.
+**Residual risk.** The application does not implement user authentication or a
+trusted reverse-proxy boundary. CORS is a browser policy, not authentication. A
+same-host reverse proxy would appear as a loopback peer and must not be deployed
+without authentication, trusted-proxy rules, rate limits, and route-level
+authorization. The webhook secret is carried in the URL by established design
+and can be exposed by proxy, browser, or server access logs if operational
+logging differs from the documented command. Interactive API documentation is
+also enabled for the local development boundary.
 
-**Required control.** Keep the current API loopback-only until authenticated
+**Required control.** Keep the API directly loopback-only until authenticated
 network ingress, rate limits, secret-safe logging, and route-level authorization
-are designed and reviewed. Do not regard the CORS list as that control.
+are designed and reviewed. Do not regard CORS or the direct-peer check as an
+authenticated proxy boundary.
 
 ### SA-08 — raw connector payloads require containment (low residual risk)
 
