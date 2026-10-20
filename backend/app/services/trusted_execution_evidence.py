@@ -110,6 +110,17 @@ def _validate(response: ProviderExecutionEvidence, request: ExecutionEvidenceReq
     codes: list[str] = []
     if response.observed_at > now or now - response.observed_at > timedelta(seconds=request.max_age_seconds):
         codes.append("EXECUTION_EVIDENCE_STALE")
+    if response.retrieved_at is None:
+        codes.append("EXECUTION_EVIDENCE_RETRIEVAL_TIMESTAMP_MISSING")
+    else:
+        if response.retrieved_at < response.observed_at:
+            codes.append("EXECUTION_EVIDENCE_RETRIEVAL_CHRONOLOGY_INVALID")
+        if (
+            response.retrieved_at > now
+            or now - response.retrieved_at
+            > timedelta(seconds=request.max_age_seconds)
+        ):
+            codes.append("EXECUTION_EVIDENCE_RETRIEVAL_STALE")
     instrument, market, account = response.instrument, response.market, response.account
     if instrument is None:
         codes.append("EXECUTION_EVIDENCE_INSTRUMENT_MISSING")
@@ -135,6 +146,8 @@ def _validate(response: ProviderExecutionEvidence, request: ExecutionEvidenceReq
             codes.append("EXECUTION_EVIDENCE_MARKET_UNIT_MISMATCH")
         if market.observed_at > now or now - market.observed_at > timedelta(seconds=request.max_age_seconds):
             codes.append("EXECUTION_EVIDENCE_MARKET_STALE")
+        if response.retrieved_at is not None and market.observed_at > response.retrieved_at:
+            codes.append("EXECUTION_EVIDENCE_MARKET_CHRONOLOGY_INVALID")
     if account is None:
         codes.append("EXECUTION_EVIDENCE_ACCOUNT_MISSING")
     elif account.account != request.account or account.equity < 0 or account.balance < 0 or account.margin < 0 or account.free_margin < 0:
@@ -161,6 +174,11 @@ def _validate(response: ProviderExecutionEvidence, request: ExecutionEvidenceReq
             codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_ACCOUNT_MISMATCH")
         if risk_inputs.observed_at > now or now - risk_inputs.observed_at > timedelta(seconds=request.max_age_seconds):
             codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_STALE")
+        if (
+            response.retrieved_at is not None
+            and risk_inputs.observed_at > response.retrieved_at
+        ):
+            codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_CHRONOLOGY_INVALID")
         if risk_inputs.position_snapshot_fingerprint != _positions_fingerprint(response.positions):
             codes.append("EXECUTION_EVIDENCE_PORTFOLIO_RISK_LINEAGE_MISMATCH")
         if (

@@ -30,6 +30,7 @@ def _inputs():
     base = _response()
     response = _response(
         observed_at=NOW,
+        retrieved_at=NOW,
         account=base.account.model_copy(update={"account": policy.allowed_account}),
         market=base.market.model_copy(update={"canonical_symbol": "XAUUSD", "broker_symbol": "XAUUSD", "observed_at": NOW}),
         instrument=base.instrument.model_copy(update={

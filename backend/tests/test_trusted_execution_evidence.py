@@ -101,6 +101,7 @@ def _response(**changes: object) -> ProviderExecutionEvidence:
         "availability": ExecutionEvidenceAvailability.AVAILABLE,
         "provider_id": _FakeProvider.provider_id,
         "observed_at": NOW,
+        "retrieved_at": NOW,
         "instrument": _instrument(),
         "market": MarketReferenceObservation(canonical_symbol="XAUUSD", broker_symbol="XAUUSD", bid="100.00", ask="100.10", unit="USD", observed_at=NOW),
         "account": _account(),
@@ -161,6 +162,65 @@ def test_fresh_provider_observations_are_validated_with_stable_lineage() -> None
 def test_invalid_or_conflicting_provider_observations_fail_closed(change: dict[str, object], code: str) -> None:
     result = TrustedExecutionEvidenceService(_FakeProvider(_response(**change))).assess(_request(), now=NOW)
     assert result.ready is False and code in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        (
+            {"retrieved_at": None},
+            "EXECUTION_EVIDENCE_RETRIEVAL_TIMESTAMP_MISSING",
+        ),
+        (
+            {"retrieved_at": NOW + timedelta(seconds=1)},
+            "EXECUTION_EVIDENCE_RETRIEVAL_STALE",
+        ),
+        (
+            {
+                "observed_at": NOW - timedelta(seconds=20),
+                "retrieved_at": NOW - timedelta(seconds=21),
+            },
+            "EXECUTION_EVIDENCE_RETRIEVAL_CHRONOLOGY_INVALID",
+        ),
+        (
+            {
+                "market": MarketReferenceObservation(
+                    canonical_symbol="XAUUSD",
+                    broker_symbol="XAUUSD",
+                    bid="100.00",
+                    ask="100.10",
+                    unit="USD",
+                    observed_at=NOW,
+                ),
+                "observed_at": NOW - timedelta(seconds=2),
+                "retrieved_at": NOW - timedelta(seconds=1),
+            },
+            "EXECUTION_EVIDENCE_MARKET_CHRONOLOGY_INVALID",
+        ),
+    ],
+)
+def test_retrieval_provenance_and_chronology_fail_closed(
+    change: dict[str, object], code: str
+) -> None:
+    result = TrustedExecutionEvidenceService(
+        _FakeProvider(_response(**change))
+    ).assess(_request(), now=NOW)
+
+    assert result.ready is False
+    assert result.snapshot_completeness is ExecutionEvidenceCompleteness.INCOMPLETE
+    assert result.execution_authority is False
+    assert code in result.reason_codes
+
+
+def test_ready_result_requires_retrieval_provenance_at_model_boundary() -> None:
+    result = TrustedExecutionEvidenceService(_FakeProvider(_response())).assess(
+        _request(), now=NOW
+    )
+    values = result.model_dump(exclude={"fingerprint"})
+    values["source_retrieved_at"] = None
+
+    with pytest.raises(ValidationError):
+        type(result)(**values)
 
 
 def test_unavailable_observation_cannot_contain_fabricated_facts() -> None:

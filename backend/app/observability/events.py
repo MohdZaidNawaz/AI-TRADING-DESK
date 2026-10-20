@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 import logging
+import re
 from typing import Mapping
 
 from pydantic import ConfigDict, Field, field_validator
@@ -13,6 +14,10 @@ from app.models.schemas import APIModel
 
 
 _SENSITIVE = ("password", "secret", "token", "apikey", "api_key", "credential", "authorization")
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)(?:password|secret|token|api[_-]?key|apikey|credential|authorization)"
+    r"\s*[:=]\s*\S+"
+)
 
 
 class StructuredEvent(APIModel):
@@ -48,9 +53,14 @@ class StructuredEvent(APIModel):
         output: list[tuple[str, str]] = []
         for key, item in value:
             normalized = key.strip().lower()
-            if not normalized or any(marker in normalized for marker in _SENSITIVE):
+            rendered = str(item)
+            if (
+                not normalized
+                or any(marker in normalized for marker in _SENSITIVE)
+                or _SENSITIVE_VALUE.search(rendered)
+            ):
                 continue
-            output.append((normalized, str(item)))
+            output.append((normalized, rendered))
         return tuple(sorted(set(output)))
 
 

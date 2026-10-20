@@ -57,6 +57,7 @@ class _ControlledTestEvidenceProvider:
             availability=ExecutionEvidenceAvailability.AVAILABLE,
             provider_id=self.provider_id,
             observed_at=self._context.captured_at,
+            retrieved_at=self._context.captured_at,
             instrument=self._context.instrument,
             market=MarketReferenceObservation(
                 canonical_symbol=self._context.instrument.canonical_symbol,

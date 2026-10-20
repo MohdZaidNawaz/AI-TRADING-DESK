@@ -233,6 +233,7 @@ class ValidatedExecutionEvidence(TrustedExecutionEvidenceModel):
             value is None
             for value in (
                 self.source_observed_at,
+                self.source_retrieved_at,
                 self.instrument,
                 self.market,
                 self.account,
