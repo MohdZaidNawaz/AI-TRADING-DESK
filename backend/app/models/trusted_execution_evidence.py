@@ -24,6 +24,19 @@ class ExecutionEvidenceAvailability(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class ExecutionEvidenceAuthenticationStatus(str, Enum):
+    """Actual source-authentication state supported by this repository."""
+
+    UNAVAILABLE = "unavailable"
+    UNAUTHENTICATED = "unauthenticated"
+
+
+class ExecutionEvidenceCompleteness(str, Enum):
+    UNAVAILABLE = "unavailable"
+    INCOMPLETE = "incomplete"
+    STRUCTURALLY_COMPLETE = "structurally_complete"
+
+
 class TrustedExecutionEvidenceModel(APIModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -180,6 +193,12 @@ class ValidatedExecutionEvidence(TrustedExecutionEvidenceModel):
     positions: tuple[MT5PositionSnapshot, ...] = ()
     pending_orders: tuple[MT5OrderStatusSnapshot, ...] = ()
     portfolio_risk_inputs: PortfolioRiskInputObservation | None = None
+    provider_authentication_status: ExecutionEvidenceAuthenticationStatus = (
+        ExecutionEvidenceAuthenticationStatus.UNAVAILABLE
+    )
+    snapshot_completeness: ExecutionEvidenceCompleteness = (
+        ExecutionEvidenceCompleteness.UNAVAILABLE
+    )
     reason_codes: tuple[str, ...] = ()
     ready: bool = False
     execution_authority: bool = False
@@ -204,6 +223,12 @@ class ValidatedExecutionEvidence(TrustedExecutionEvidenceModel):
             raise ValueError("execution evidence cannot grant execution authority")
         if self.ready and self.reason_codes:
             raise ValueError("ready evidence cannot contain failure codes")
+        if self.ready and self.provider_authentication_status is not ExecutionEvidenceAuthenticationStatus.UNAUTHENTICATED:
+            raise ValueError("ready structural evidence must disclose its unauthenticated source")
+        if self.ready and self.snapshot_completeness is not ExecutionEvidenceCompleteness.STRUCTURALLY_COMPLETE:
+            raise ValueError("ready evidence requires a structurally complete snapshot")
+        if not self.ready and self.snapshot_completeness is ExecutionEvidenceCompleteness.STRUCTURALLY_COMPLETE:
+            raise ValueError("failed evidence cannot claim structural completeness")
         if self.ready and any(
             value is None
             for value in (

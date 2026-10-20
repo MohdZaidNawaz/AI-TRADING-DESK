@@ -35,7 +35,10 @@ from app.models.sentinel_risk_evidence import (
     SentinelPortfolioRiskEvidence,
     SentinelRiskEvidenceStatus,
 )
-from app.models.trusted_execution_evidence import ValidatedExecutionEvidence
+from app.models.trusted_execution_evidence import (
+    ExecutionEvidenceAuthenticationStatus,
+    ValidatedExecutionEvidence,
+)
 from app.services.trade_proposal_workflow import ApprovalRegistry
 
 
@@ -361,8 +364,23 @@ class ProductionAuthorizationReadinessGate:
                 source_reference=evidence.provider_id,
                 evidence_fingerprint=evidence.fingerprint,
             )
-        return _satisfied(
+        if evidence.provider_authentication_status is not ExecutionEvidenceAuthenticationStatus.UNAUTHENTICATED:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "TRUSTED_EXECUTION_EVIDENCE_AUTHENTICATION_UNAVAILABLE",
+                now,
+                source_reference=evidence.provider_id,
+                evidence_fingerprint=evidence.fingerprint,
+            )
+        # Provider identity and structural completeness do not authenticate the
+        # source.  No independently authenticated broker-evidence provider is
+        # configured in this repository, so fresh structural evidence must not
+        # satisfy the production prerequisite.
+        return _failed(
             prerequisite,
+            ProductionReadinessCheckStatus.UNAVAILABLE,
+            "TRUSTED_EXECUTION_EVIDENCE_PROVIDER_UNAUTHENTICATED",
             now,
             source_reference=evidence.provider_id,
             evidence_fingerprint=evidence.fingerprint,

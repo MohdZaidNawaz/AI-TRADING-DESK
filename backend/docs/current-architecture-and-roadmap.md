@@ -38,8 +38,8 @@ order path. Public API routes expose no execution operation.
 | Evidence | Provider-neutral immutable domains, bounded stores, provenance | External sources remain capability-specific and manually integrated | Missing evidence fails closed; nothing is fabricated |
 | Analysis | Deterministic routing and structured specialist artifacts | No production AI model/tool authority | No agent can gain execution authority |
 | Operational status | Liveness, correlation IDs, fail-closed readiness report | Dependency-specific live probes are intentionally absent | Diagnostics make no broker/provider calls |
-| Trust | Personal signing, DPAPI custody, local bootstrap, authority contracts | Independent trust anchor, authenticated authority and external replay protection | Production authorization remains blocked |
-| Broker state | Read-only contracts and guarded MT5 adapter architecture | Trusted broker evidence and authoritative reconciliation are unavailable | No production submission readiness |
+| Trust | Personal signing, DPAPI custody, local bootstrap, plus canonical Ed25519 verification against a separately configured public key | Independent governance of that anchor, authenticated authority integration and external replay protection | Cryptographic integrity can be checked, but production authorization remains blocked |
+| Broker state | Read-only typed evidence/reconciliation contracts and guarded MT5 adapter architecture | The evidence provider is not independently authenticated and reconciliation is not authoritative | Structurally valid evidence is explicitly insufficient for production readiness |
 | Execution | Sentinel, reservations, kill switch, audit and final gates | Organizational approval and reviewed production boundary are absent | Live and demo submission remain disabled |
 | Persistence | Bounded evidence stores plus durable SQLite safety domains | Stores intentionally do not form one external atomic transaction | Ambiguity requires fail-closed reconciliation |
 | Frontend | Typed health/readiness/roster/market/analysis integration | No browser test framework is configured | Lint, type-check and production build are the current UI gate |
@@ -100,3 +100,6 @@ The repository cannot create these prerequisites for itself:
 
 Until those are supplied and independently verified, production authorization,
 submission, and execution remain blocked.
+
+The detailed contract and limitation analysis is in
+[`independent-trust-and-broker-evidence.md`](independent-trust-and-broker-evidence.md).

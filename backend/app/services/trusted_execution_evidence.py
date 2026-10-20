@@ -12,7 +12,9 @@ import json
 from typing import Protocol, runtime_checkable
 
 from app.models.trusted_execution_evidence import (
+    ExecutionEvidenceAuthenticationStatus,
     ExecutionEvidenceAvailability,
+    ExecutionEvidenceCompleteness,
     ExecutionEvidenceRequest,
     ProviderExecutionEvidence,
     ValidatedExecutionEvidence,
@@ -82,6 +84,12 @@ class TrustedExecutionEvidenceService:
             positions=response.positions,
             pending_orders=response.pending_orders,
             portfolio_risk_inputs=response.portfolio_risk_inputs,
+            provider_authentication_status=ExecutionEvidenceAuthenticationStatus.UNAUTHENTICATED,
+            snapshot_completeness=(
+                ExecutionEvidenceCompleteness.STRUCTURALLY_COMPLETE
+                if not codes
+                else ExecutionEvidenceCompleteness.INCOMPLETE
+            ),
             reason_codes=tuple(codes),
             ready=not codes,
         )

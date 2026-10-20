@@ -10,7 +10,8 @@ from pydantic import ValidationError
 
 from app.agents.orchestrator import create_friday_core
 from app.models.trusted_execution_evidence import (
-    ExecutionEvidenceAvailability, ExecutionEvidenceRequest, MarketReferenceObservation,
+    ExecutionEvidenceAuthenticationStatus, ExecutionEvidenceAvailability,
+    ExecutionEvidenceCompleteness, ExecutionEvidenceRequest, MarketReferenceObservation,
     PortfolioRiskInputObservation, ProviderExecutionEvidence,
 )
 from app.models.mt5 import (
@@ -136,6 +137,8 @@ def test_fresh_provider_observations_are_validated_with_stable_lineage() -> None
     first = service.assess(_request(), now=NOW)
     second = service.assess(_request(), now=NOW)
     assert first.ready is True and first.fingerprint == second.fingerprint
+    assert first.provider_authentication_status is ExecutionEvidenceAuthenticationStatus.UNAUTHENTICATED
+    assert first.snapshot_completeness is ExecutionEvidenceCompleteness.STRUCTURALLY_COMPLETE
     assert first.execution_authority is False
 
 

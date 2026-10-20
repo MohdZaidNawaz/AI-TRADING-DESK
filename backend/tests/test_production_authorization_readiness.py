@@ -266,7 +266,7 @@ def test_expired_or_mismatched_policy_fails_closed() -> None:
     assert mismatch.status is ProductionReadinessCheckStatus.INVALID
 
 
-def test_trusted_evidence_is_freshness_checked_and_never_authorizes() -> None:
+def test_structural_execution_evidence_is_freshness_checked_but_not_trusted() -> None:
     evidence = TrustedExecutionEvidenceService(_FakeProvider(_response())).assess(
         _request(),
         now=EVIDENCE_NOW,
@@ -280,7 +280,11 @@ def test_trusted_evidence_is_freshness_checked_and_never_authorizes() -> None:
         now=EVIDENCE_NOW + timedelta(seconds=evidence.request.max_age_seconds + 1),
         trusted_evidence=evidence,
     )
-    assert _by_prerequisite(fresh)[ProductionReadinessPrerequisite.TRUSTED_EXECUTION_EVIDENCE].status is ProductionReadinessCheckStatus.SATISFIED
+    fresh_check = _by_prerequisite(fresh)[ProductionReadinessPrerequisite.TRUSTED_EXECUTION_EVIDENCE]
+    assert fresh_check.status is ProductionReadinessCheckStatus.UNAVAILABLE
+    assert fresh_check.reason_codes == (
+        "TRUSTED_EXECUTION_EVIDENCE_PROVIDER_UNAUTHENTICATED",
+    )
     assert _by_prerequisite(stale)[ProductionReadinessPrerequisite.TRUSTED_EXECUTION_EVIDENCE].status is ProductionReadinessCheckStatus.STALE
     assert fresh.submission_allowed is stale.submission_allowed is False
 
