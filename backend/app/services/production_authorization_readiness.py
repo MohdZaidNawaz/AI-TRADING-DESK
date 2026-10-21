@@ -39,6 +39,7 @@ from app.models.trusted_execution_evidence import (
     ExecutionEvidenceAuthenticationStatus,
     ValidatedExecutionEvidence,
 )
+from app.services.durable_independent_replay import DurableIndependentReplayStore
 from app.services.trade_proposal_workflow import ApprovalRegistry
 
 
@@ -51,6 +52,7 @@ class ProductionAuthorizationReadinessGate:
         *,
         audit_service: AuditService | None = None,
         kill_switch: ExecutionKillSwitch | None = None,
+        replay_store: DurableIndependentReplayStore | None = None,
     ) -> None:
         # Only the concrete application facade owns durable trade approvals.
         # A protocol-shaped object is not accepted as a substitute.
@@ -59,6 +61,9 @@ class ProductionAuthorizationReadinessGate:
         )
         self._audit_service = audit_service if type(audit_service) is AuditService else None
         self._kill_switch = kill_switch if type(kill_switch) is ExecutionKillSwitch else None
+        self._replay_store = (
+            replay_store if type(replay_store) is DurableIndependentReplayStore else None
+        )
 
     def evaluate(
         self,
@@ -75,6 +80,7 @@ class ProductionAuthorizationReadinessGate:
         personal_trust: PersonalTrustBootstrapAssessment | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
+        replay_checks = self._independent_replay(checked_at)
         checks: list[ProductionReadinessCheck] = [
             _failed(
                 ProductionReadinessPrerequisite.AUTHORIZED_POLICY_APPROVER,
@@ -91,6 +97,7 @@ class ProductionAuthorizationReadinessGate:
             self._personal_trust_bootstrap(personal_trust, checked_at),
             self._personal_key_status_authority(personal_trust, checked_at),
             self._personal_replay_protection(personal_trust, checked_at),
+            *replay_checks,
             _failed(
                 ProductionReadinessPrerequisite.AUTHORITATIVE_APPROVAL_SOURCE,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
@@ -158,6 +165,77 @@ class ProductionAuthorizationReadinessGate:
             evaluated_at=checked_at,
             checks=ordered,
             reason_codes=reasons,
+        )
+
+    def _independent_replay(
+        self, now: datetime
+    ) -> tuple[ProductionReadinessCheck, ProductionReadinessCheck, ProductionReadinessCheck]:
+        if self._replay_store is None:
+            return (
+                _failed(
+                    ProductionReadinessPrerequisite.INDEPENDENT_REPLAY_STORAGE,
+                    ProductionReadinessCheckStatus.UNAVAILABLE,
+                    "DURABLE_INDEPENDENT_REPLAY_STORAGE_UNAVAILABLE",
+                    now,
+                ),
+                _failed(
+                    ProductionReadinessPrerequisite.ATOMIC_REPLAY_CONSUMPTION,
+                    ProductionReadinessCheckStatus.UNAVAILABLE,
+                    "ATOMIC_REPLAY_CONSUMPTION_UNAVAILABLE",
+                    now,
+                ),
+                _failed(
+                    ProductionReadinessPrerequisite.EXTERNAL_ROLLBACK_ASSURANCE,
+                    ProductionReadinessCheckStatus.UNAVAILABLE,
+                    "EXTERNAL_ROLLBACK_WITNESS_UNAVAILABLE",
+                    now,
+                ),
+            )
+        diagnostics = self._replay_store.diagnostics(checked_at=now)
+        if diagnostics.durable_across_restart and diagnostics.atomic_consumption:
+            local = (
+                _satisfied(
+                    ProductionReadinessPrerequisite.INDEPENDENT_REPLAY_STORAGE,
+                    now,
+                    source_reference="local_sqlite_replay_store",
+                    evidence_fingerprint=diagnostics.fingerprint,
+                ),
+                _satisfied(
+                    ProductionReadinessPrerequisite.ATOMIC_REPLAY_CONSUMPTION,
+                    now,
+                    source_reference="sqlite_begin_immediate_unique_claim",
+                    evidence_fingerprint=diagnostics.fingerprint,
+                ),
+            )
+        else:
+            reasons = diagnostics.reason_codes or ("DURABLE_REPLAY_STORAGE_UNAVAILABLE",)
+            local = (
+                _failed_many(
+                    ProductionReadinessPrerequisite.INDEPENDENT_REPLAY_STORAGE,
+                    ProductionReadinessCheckStatus.UNAVAILABLE,
+                    reasons,
+                    now,
+                    default="DURABLE_REPLAY_STORAGE_UNAVAILABLE",
+                    evidence_fingerprint=diagnostics.fingerprint,
+                ),
+                _failed_many(
+                    ProductionReadinessPrerequisite.ATOMIC_REPLAY_CONSUMPTION,
+                    ProductionReadinessCheckStatus.UNAVAILABLE,
+                    reasons,
+                    now,
+                    default="ATOMIC_REPLAY_CONSUMPTION_UNAVAILABLE",
+                    evidence_fingerprint=diagnostics.fingerprint,
+                ),
+            )
+        return (
+            *local,
+            _failed(
+                ProductionReadinessPrerequisite.EXTERNAL_ROLLBACK_ASSURANCE,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "EXTERNAL_ROLLBACK_WITNESS_UNAVAILABLE",
+                now,
+                evidence_fingerprint=diagnostics.fingerprint,
+            ),
         )
 
     @staticmethod

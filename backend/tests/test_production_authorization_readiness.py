@@ -26,6 +26,7 @@ from app.models.sentinel_policy_authority import (
 from app.services.production_authorization_readiness import (
     ProductionAuthorizationReadinessGate,
 )
+from app.services.durable_independent_replay import DurableIndependentReplayStore
 from app.services.sentinel_policy_authority import SentinelPortfolioRiskPolicyVerifier
 from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
@@ -389,3 +390,39 @@ def test_readiness_module_has_no_provider_or_submission_path() -> None:
         ".submit(",
     ):
         assert forbidden not in source
+
+
+def test_local_durable_replay_is_reported_separately_from_external_rollback(
+    tmp_path,
+) -> None:
+    replay = DurableIndependentReplayStore.initialize(tmp_path / "replay.sqlite3", now=NOW)
+    report = ProductionAuthorizationReadinessGate(replay_store=replay).evaluate(now=NOW)
+    checks = _by_prerequisite(report)
+
+    assert checks[
+        ProductionReadinessPrerequisite.INDEPENDENT_REPLAY_STORAGE
+    ].status is ProductionReadinessCheckStatus.SATISFIED
+    assert checks[
+        ProductionReadinessPrerequisite.ATOMIC_REPLAY_CONSUMPTION
+    ].status is ProductionReadinessCheckStatus.SATISFIED
+    assert checks[
+        ProductionReadinessPrerequisite.EXTERNAL_ROLLBACK_ASSURANCE
+    ].status is ProductionReadinessCheckStatus.UNAVAILABLE
+    assert "EXTERNAL_ROLLBACK_WITNESS_UNAVAILABLE" in report.reason_codes
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+
+
+def test_protocol_shaped_replay_store_cannot_satisfy_readiness() -> None:
+    class FakeReplayStore:
+        def diagnostics(self, **_kwargs):
+            raise AssertionError("untrusted replay store must not be called")
+
+    report = ProductionAuthorizationReadinessGate(
+        replay_store=FakeReplayStore(),  # type: ignore[arg-type]
+    ).evaluate(now=NOW)
+    checks = _by_prerequisite(report)
+    assert checks[
+        ProductionReadinessPrerequisite.INDEPENDENT_REPLAY_STORAGE
+    ].status is ProductionReadinessCheckStatus.UNAVAILABLE

@@ -1644,3 +1644,25 @@ so production authorization, submission, and execution remain blocked. Phase
 13K is not wired to Sentinel, Pilot, execution gates, reservations, MT5,
 broker adapters, APIs, or the frontend. See
 [`docs/phase13k-personal-trust-bootstrap.md`](docs/phase13k-personal-trust-bootstrap.md).
+
+### Phase 14 independent trust and durable replay safeguards
+
+`DurableIndependentReplayStore` is an optional, explicitly initialized SQLite
+implementation of the independent key-status replay protocol. It validates an
+exact versioned schema, consumes the authority/anchor/key/generation/scope/
+sequence/statement binding inside `BEGIN IMMEDIATE`, and commits the claim,
+monotonic stream head, and replay-history event atomically. Missing, locked,
+corrupt, weakened, partially migrated, or unsupported storage fails closed;
+verification never silently creates or repairs a replay database. An exact
+version-1 store can be upgraded transactionally without dropping claims.
+
+This is local durability and concurrency protection only. Restoring a coherent
+older database snapshot with privileged host access cannot be detected without
+an independently protected monotonic witness. The configured Ed25519 anchor is
+also still local, explicitly non-authoritative configuration: no independent
+anchor provisioning, rotation, or revocation authority exists. Readiness reports
+local replay storage, atomic consumption, and external rollback assurance as
+separate prerequisites. The first two can be diagnosed locally; the third and
+all production authorization/submission/execution flags remain unavailable or
+false. See
+[`docs/phase14-independent-trust-and-replay.md`](docs/phase14-independent-trust-and-replay.md).

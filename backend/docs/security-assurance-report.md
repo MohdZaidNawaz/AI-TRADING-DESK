@@ -1,8 +1,8 @@
 # FRIDAY Security Assurance and Release-Readiness Audit
 
-Date: 2026-10-20
+Date: 2026-10-21
 
-Audited baseline: `ed6798e2f84d199d778777388e215df9cee89ced`
+Phase 14 baseline: `675335be73abb220c6ce7c1188090ef39f626bfd`
 
 Scope: current repository implementation, local API, browser dashboard, and
 non-submitting execution-safety boundaries.
@@ -98,14 +98,20 @@ generation, exact scope, chronology, and sequence before signature verification.
 Terminal revoked, superseded, compromised, and recovery-required states remain
 terminal. However, configuration is explicitly
 `independently_trusted=False`; verification results are structurally
-non-authorizing; and the default replay protector is unavailable.
+non-authorizing; and the default replay protector is unavailable. Phase 14 adds
+an explicitly initialized local SQLite replay store whose claim, monotonic
+stream head, and history event commit atomically. It is not enabled by default
+and is not an independent authority.
 
 **Assessment.** The cryptographic binding is implemented and tested, including
 wrong-anchor, substituted-key, altered-payload, cross-authority, cross-subject,
 cross-generation, cross-scope, stale/future, replay, and rollback cases. What is
 missing is operationally independent trust-anchor governance and an externally
-durable replay/rollback service. Local DPAPI, SQLite, local clocks, and local
-signatures do not supply those properties.
+protected monotonic replay/rollback witness. Local SQLite now prevents duplicate
+consumption across processes sharing the database and survives ordinary restart,
+but a privileged local snapshot rollback remains undetectable. Local DPAPI,
+SQLite, local clocks, and local signatures do not supply independent governance
+or privileged-host rollback resistance.
 
 ### SA-04 — personal key protection is local protection, not independent trust
 (release blocker)
@@ -198,7 +204,9 @@ though the authentication token itself is not copied into the payload.
 - Authority signatures bind the complete request subject, scope, anchor,
   chronology, challenge, and sequence before a result is accepted.
 - Replay results must bind the exact statement, key generation, scope, sequence,
-  and evaluation timestamp. Missing external replay infrastructure fails closed.
+  and evaluation timestamp. The optional local SQLite store consumes claims
+  atomically and durably across restart; missing external rollback assurance
+  remains a distinct fail-closed readiness blocker.
 - Revoked, superseded, compromised, recovery-required, stale, replayed, rollback,
   conflict, and unavailable results never fall through to an active outcome.
 - Local recovery can diagnose state but cannot create, reactivate, replace, or
@@ -214,34 +222,25 @@ though the authentication token itself is not copied into the payload.
 
 ## Validation
 
-Validation was performed against the final working tree using the project
-virtual environment and existing frontend toolchain:
+Validation was performed against the final Phase 14 working tree using the
+project virtual environment:
 
-- Focused security/regression suite:
-  `python -m pytest` over Windows DPAPI, personal signing/trust, independent
-  trust, trusted evidence, production readiness, operational API,
-  observability, replay, execution-safety, final-gate, and Pilot tests —
-  **218 passed**.
-- Full backend: `python -m pytest -q` — **1022 passed**, zero failures.
+- Focused Phase 14 security/regression suite:
+  `python -m pytest` over durable independent replay, Windows DPAPI, personal
+  signing/trust, independent trust, production readiness, operational API, and
+  observability tests — **201 passed**.
+- Full backend: `python -m pytest -q` — **1050 passed**, zero failures or skips.
 - Python compilation: `python -m compileall -q app tests` — passed.
-- Frontend lint: `npm run lint` — passed.
-- Frontend type-check and production build: `npm run build` — passed; 25 modules
-  transformed.
 - Patch hygiene: `git diff --check` — passed.
 
-The first full regression attempt failed because older synthetic test providers
-did not supply the newly required retrieval timestamp. Those fixtures were
-updated to provide their already-known capture time; no production validation
-was weakened. The final full suite above was rerun after that correction. The
-first sandboxed frontend build also hit a Windows `spawn EPERM`; the identical
-build completed successfully under the normal permitted process boundary.
+No frontend contract changed in Phase 14, so frontend validation was not rerun.
 
 ## Remaining external blockers
 
 1. Independently governed trust-anchor bootstrap, rotation, and revocation.
 2. A genuinely authenticated external key-status authority.
-3. Externally durable replay/rollback protection with concurrency and recovery
-   guarantees.
+3. An independently protected monotonic replay/rollback witness; the local
+   atomic store does not resist privileged snapshot restoration.
 4. Authenticated, fresh broker/account/instrument/position evidence with durable
    provenance.
 5. Authoritative broker reconciliation for uncertain outcomes and restarts.

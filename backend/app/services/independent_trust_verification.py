@@ -187,6 +187,8 @@ class IndependentKeyStatusVerifier:
             key_state=statement.key_state,
             signature_verified=True,
             replay_binding_verified=True,
+            replay_locally_durable=replay.locally_durable,
+            replay_atomic_consumption=replay.atomic_consumption,
             reason_codes=reasons,
         )
 

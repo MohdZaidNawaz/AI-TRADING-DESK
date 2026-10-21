@@ -258,7 +258,10 @@ class IndependentReplayResult(IndependentTrustVerificationModel):
     binding_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     checked_at: datetime
     reason_codes: tuple[str, ...] = ()
+    locally_durable: bool = False
+    atomic_consumption: bool = False
     externally_durable: Literal[False] = False
+    external_rollback_resistance: Literal[False] = False
 
     @field_validator("checked_at")
     @classmethod
@@ -277,6 +280,8 @@ class IndependentReplayResult(IndependentTrustVerificationModel):
                 raise ValueError("accepted replay checks cannot contain failures")
         elif not self.reason_codes:
             raise ValueError("failed replay checks require reasons")
+        if self.atomic_consumption and not self.locally_durable:
+            raise ValueError("atomic replay assurance requires durable local storage")
         return self
 
 
@@ -293,6 +298,9 @@ class IndependentTrustVerificationResult(IndependentTrustVerificationModel):
     key_state: PersonalKeyAuthorityState | None = None
     signature_verified: bool = False
     replay_binding_verified: bool = False
+    replay_locally_durable: bool = False
+    replay_atomic_consumption: bool = False
+    external_rollback_resistance: Literal[False] = False
     reason_codes: tuple[str, ...] = ()
     independently_authoritative: Literal[False] = False
     production_authorization_available: Literal[False] = False
@@ -330,6 +338,8 @@ class IndependentTrustVerificationResult(IndependentTrustVerificationModel):
                 raise ValueError("terminal authority states require reason codes")
         elif not self.reason_codes:
             raise ValueError("failed trust verification requires reason codes")
+        if self.replay_atomic_consumption and not self.replay_locally_durable:
+            raise ValueError("atomic replay assurance requires durable local storage")
         return self
 
     @computed_field(return_type=str)

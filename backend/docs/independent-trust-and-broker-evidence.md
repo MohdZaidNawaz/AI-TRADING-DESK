@@ -22,8 +22,11 @@ remain terminal fail-closed evidence.
 The replay binding includes the authority, anchor identity/version/fingerprint,
 subject key and generation, scope fingerprint, source sequence, statement ID,
 and statement fingerprint. The default replay protector is unavailable. No
-local in-memory or SQLite component is described as externally durable replay
-or rollback protection.
+local in-memory component is accepted as security-sensitive replay state. Phase
+14 adds an explicitly initialized SQLite implementation that provides atomic
+consumption across cooperating processes and durability across ordinary restart.
+It is deliberately described as local durability only, not an external witness
+or privileged-host rollback protection.
 
 ## Read-only broker evidence
 

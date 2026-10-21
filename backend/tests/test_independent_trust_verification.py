@@ -25,6 +25,7 @@ from app.models.personal_trust_bootstrap import (
     PersonalTrustScope,
 )
 from app.services.independent_trust_verification import IndependentKeyStatusVerifier
+from app.services.durable_independent_replay import DurableIndependentReplayStore
 
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
@@ -400,3 +401,27 @@ def test_model_shaped_inputs_cannot_claim_independent_trust_or_external_durabili
     envelope_payload["public_key_pem"] = anchor.public_key_pem
     with pytest.raises(ValidationError):
         SignedIndependentKeyStatusStatement.model_validate(envelope_payload)
+
+
+def test_durable_local_replay_integrates_without_claiming_external_authority(tmp_path) -> None:
+    private, pem = _key_material()
+    anchor = _anchor(pem)
+    request = _request(anchor)
+    statement = _statement(request, anchor)
+    store = DurableIndependentReplayStore.initialize(tmp_path / "replay.sqlite3", now=NOW)
+    verifier = IndependentKeyStatusVerifier(anchor, store)
+
+    first = verifier.verify(
+        request=request, envelope=_envelope(statement, private), evaluated_at=NOW
+    )
+    replayed = IndependentKeyStatusVerifier(
+        anchor, DurableIndependentReplayStore(tmp_path / "replay.sqlite3")
+    ).verify(request=request, envelope=_envelope(statement, private), evaluated_at=NOW)
+
+    assert first.status is IndependentTrustVerificationStatus.CRYPTOGRAPHICALLY_VERIFIED
+    assert first.replay_locally_durable is True
+    assert first.replay_atomic_consumption is True
+    assert first.external_rollback_resistance is False
+    assert first.independently_authoritative is False
+    assert first.production_authorization_available is False
+    assert replayed.status is IndependentTrustVerificationStatus.REPLAYED
