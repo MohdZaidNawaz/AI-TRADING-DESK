@@ -57,8 +57,9 @@ local signature, or personal ceremony cannot satisfy this boundary.
 | Crash before commit | Transaction rolls back; no accepted result is returned | Storage/platform guarantees remain SQLite and OS dependent |
 | Crash after commit before response | Caller receives unavailable/uncertain; persisted claim blocks retry | External workflow must reconcile uncertainty rather than retry |
 | Missing/locked/corrupt storage | No auto-create during verification; unavailable result or construction failure | Operator intervention is required |
-| Restored database snapshot | Internal sequence checks detect inconsistencies present in the restored database | Full snapshot rollback is not detectable locally; external witness required |
-| Same-user/admin tampering | Schema, integrity and foreign-key checks fail closed for detectable damage | Privileged local replacement of coherent state is outside local guarantee |
+| Locally inconsistent replay state | Physical, schema, foreign-key, and semantic claim/head/history checks fail closed without repair | A coherent older snapshot remains locally indistinguishable from valid older state |
+| Restored database snapshot | Semantic checks detect internally contradictory claims, heads, or events | A coherent full snapshot rollback is not detectable locally; external witness required |
+| Same-user/admin tampering | Detectable physical, schema, foreign-key, and semantic damage fails closed | Privileged local replacement with coherent state is outside the local guarantee |
 | Forged identifiers/sequences | Canonical strict models, signed payload and stream-head monotonicity | Producer protocol and anchor must be independently governed |
 | Rotation leaves old key valid | Request and statement bind exact anchor version/fingerprint | No authenticated rotation manifest or monotonic latest-version resolver exists |
 | Migration resets replay | Only exact v1 schema upgrades to v2 transactionally; claims are preserved | No legacy anchor is elevated; unsupported/partial schemas fail closed |
@@ -83,9 +84,10 @@ being shared across authorities, anchor versions, keys, generations, or scopes.
 ## Transaction and crash guarantees
 
 `check_and_record()` opens an existing database, enables foreign keys, starts
-`BEGIN IMMEDIATE`, validates database integrity/schema/migration state, checks
-the exact claim and stream head, inserts the claim, advances the head, inserts
-an immutable deterministic replay event, and commits.
+`BEGIN IMMEDIATE`, validates physical integrity, schema/migration state, foreign
+keys, and semantic consistency, checks the exact claim and stream head, inserts
+the claim, advances the head, inserts an immutable deterministic replay event,
+revalidates semantic consistency, and commits.
 
 The commit is the linearization point. An accepted result is constructed before
 commit but is returned only after commit succeeds. A failure before commit rolls
@@ -102,12 +104,21 @@ There is no in-memory fallback. Lock or storage failure fails closed.
 - `initialize()` is the only explicit bootstrap operation.
 - Version 2 is the current schema.
 - An exact version-1 schema may be upgraded transactionally to version 2.
-- Migration preserves all replay claims and heads and derives deterministic
-  history event IDs.
+- Before migration, version-1 claims must have canonical binding and stream
+  fingerprints and exactly one maximum-sequence head per retained stream.
+- Migration preserves all valid replay claims and heads and derives one
+  deterministic history event for every retained claim.
 - Unknown versions, incomplete migration markers, missing objects, weakened DDL,
-  corruption, or foreign-key failures are rejected without repair.
+  physical corruption, foreign-key failures, or semantic contradictions are
+  rejected without repair.
 - A failed migration transaction leaves the exact version-1 state intact.
 - No migration imports or elevates trust anchors.
+
+Semantic validation recomputes each retained claim and stream fingerprint,
+requires every stream head to reference that stream's maximum-sequence claim,
+and requires a deterministic one-to-one claim/history relationship with matching
+timestamps. Missing, stale, wrong-stream, orphaned, or contradictory state is
+unavailable; initialization and verification never recreate or discard it.
 
 Recovery from missing, corrupt, or rolled-back state is an operator/security
 decision. The application must remain unavailable for protected verification;
@@ -116,11 +127,12 @@ it must not create an empty store and continue.
 ## Rollback limitations
 
 The store protects against ordinary restart, duplicate delivery, concurrent
-consumption, and sequence rollback visible within the current database. It does
-not protect against an administrator or compromised same-user process restoring
-a coherent older snapshot of the database and its metadata. A local store ID,
-counter, sidecar file, DPAPI blob, or local signature would be rollable with the
-same host and is therefore not represented as independent rollback protection.
+consumption, sequence rollback visible within the current database, and
+internally inconsistent claims, heads, or history. It does not protect against
+an administrator or compromised same-user process restoring a coherent older
+snapshot of the database and its metadata. A local store ID, counter, sidecar
+file, DPAPI blob, or local signature would be rollable with the same host and is
+therefore not represented as independent rollback protection.
 
 Production readiness continues to report `external_rollback_assurance` as
 unavailable. A separately protected monotonic service, append-only witness, or
@@ -146,16 +158,19 @@ All authorization/submission/execution flags remain literal `false`.
 ## Test matrix
 
 Deterministic tests cover explicit bootstrap, missing/corrupt/unsupported/partial
-schemas, weakened schema rejection, transactional v1-to-v2 migration, failed
-migration preservation, exact duplicates, sequence conflict/rollback, independent
-streams, restart persistence, concurrent consumers, lock failure, failure before
-commit, uncertainty after commit, verifier integration, fake readiness injection,
-and non-authorizing diagnostics.
+schemas, weakened schema rejection, missing/stale/wrong-stream heads, fabricated
+stream identities, missing/orphaned/inconsistent history, semantic validation
+during consumption, transactional v1-to-v2 migration, inconsistent legacy-state
+rejection, failed migration preservation, exact duplicates, precise integrity-
+error classification, transaction rollback, sequence conflict/rollback,
+independent streams, restart persistence, concurrent consumers, lock failure,
+failure before commit, uncertainty after commit, verifier integration, fake
+readiness injection, and non-authorizing diagnostics.
 
 Validation on the final implementation tree completed as follows:
 
-- Phase 14 security-focused regressions: **201 passed**.
-- Complete backend suite: **1050 passed**, zero failures or skips.
+- Phase 14 security-focused regressions: **210 passed**.
+- Complete backend suite: **1059 passed**, zero failures or skips.
 - `python -m compileall -q app tests`: passed.
 - `git diff --check`: passed.
 

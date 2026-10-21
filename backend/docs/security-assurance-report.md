@@ -100,8 +100,11 @@ terminal. However, configuration is explicitly
 `independently_trusted=False`; verification results are structurally
 non-authorizing; and the default replay protector is unavailable. Phase 14 adds
 an explicitly initialized local SQLite replay store whose claim, monotonic
-stream head, and history event commit atomically. It is not enabled by default
-and is not an independent authority.
+stream head, and history event commit atomically. Physical integrity, exact
+schema, foreign keys, canonical claim/stream fingerprints, maximum-sequence
+heads, and one-to-one deterministic claim history are validated without repair
+before state is trusted. It is not enabled by default and is not an independent
+authority.
 
 **Assessment.** The cryptographic binding is implemented and tested, including
 wrong-anchor, substituted-key, altered-payload, cross-authority, cross-subject,
@@ -109,9 +112,10 @@ cross-generation, cross-scope, stale/future, replay, and rollback cases. What is
 missing is operationally independent trust-anchor governance and an externally
 protected monotonic replay/rollback witness. Local SQLite now prevents duplicate
 consumption across processes sharing the database and survives ordinary restart,
-but a privileged local snapshot rollback remains undetectable. Local DPAPI,
-SQLite, local clocks, and local signatures do not supply independent governance
-or privileged-host rollback resistance.
+and semantic contradictions within the current database fail closed. A coherent
+privileged local snapshot rollback remains undetectable. Local DPAPI, SQLite,
+local clocks, and local signatures do not supply independent governance or
+privileged-host rollback resistance.
 
 ### SA-04 — personal key protection is local protection, not independent trust
 (release blocker)
@@ -228,8 +232,8 @@ project virtual environment:
 - Focused Phase 14 security/regression suite:
   `python -m pytest` over durable independent replay, Windows DPAPI, personal
   signing/trust, independent trust, production readiness, operational API, and
-  observability tests — **201 passed**.
-- Full backend: `python -m pytest -q` — **1050 passed**, zero failures or skips.
+  observability tests — **210 passed**.
+- Full backend: `python -m pytest -q` — **1059 passed**, zero failures or skips.
 - Python compilation: `python -m compileall -q app tests` — passed.
 - Patch hygiene: `git diff --check` — passed.
 

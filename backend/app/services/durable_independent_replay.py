@@ -100,6 +100,10 @@ _EXPECTED_SQL: Final = {
 }
 
 
+class _ReplaySemanticIntegrityError(RuntimeError):
+    """Internal non-secret signal for coherent but contradictory replay state."""
+
+
 class DurableIndependentReplayStore:
     """Explicitly initialized, local-only replay store.
 
@@ -135,6 +139,7 @@ class DurableIndependentReplayStore:
                     "VALUES (1, ?, 'ready', ?, ?, ?)",
                     (_SCHEMA_VERSION, uuid4().hex, timestamp, timestamp),
                 )
+                _validated_ready_row(connection)
                 cls._commit(connection)
             except Exception:
                 _safe_rollback(connection)
@@ -150,6 +155,8 @@ class DurableIndependentReplayStore:
         connection = sqlite3.connect(path, timeout=5.0, isolation_level=None)
         try:
             _configure(connection)
+            connection.execute("BEGIN EXCLUSIVE")
+            _validate_physical_integrity(connection)
             row = _read_schema_row(connection)
             if row is None:
                 raise RuntimeError("independent replay schema metadata is missing")
@@ -157,11 +164,14 @@ class DurableIndependentReplayStore:
             if state != "ready":
                 raise RuntimeError("independent replay migration is incomplete")
             if version == _SCHEMA_VERSION:
+                _verify_schema(connection, version=_SCHEMA_VERSION)
+                _validate_semantic_integrity(connection, version=_SCHEMA_VERSION)
+                connection.rollback()
                 return
             if version != _SUPPORTED_LEGACY_VERSION:
                 raise RuntimeError("independent replay schema version is unsupported")
             _verify_schema(connection, version=_SUPPORTED_LEGACY_VERSION)
-            connection.execute("BEGIN EXCLUSIVE")
+            _validate_semantic_integrity(connection, version=_SUPPORTED_LEGACY_VERSION)
             connection.execute(
                 "UPDATE replay_schema SET migration_state = 'migrating', updated_at = ? "
                 "WHERE singleton = 1 AND schema_version = ? AND migration_state = 'ready'",
@@ -186,6 +196,7 @@ class DurableIndependentReplayStore:
                 "updated_at = ? WHERE singleton = 1 AND migration_state = 'migrating'",
                 (_SCHEMA_VERSION, now),
             )
+            _validated_ready_row(connection)
             cls._commit(connection)
         except Exception:
             _safe_rollback(connection)
@@ -197,7 +208,9 @@ class DurableIndependentReplayStore:
         now = _utc(checked_at)
         try:
             with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
                 row = _validated_ready_row(connection)
+                connection.rollback()
             return IndependentReplayStoreDiagnostics(
                 status=IndependentReplayStoreStatus.READY,
                 checked_at=now,
@@ -225,20 +238,6 @@ class DurableIndependentReplayStore:
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             _validated_ready_row(connection)
-            duplicate = connection.execute(
-                "SELECT statement_fingerprint FROM replay_claims "
-                "WHERE binding_fingerprint = ?",
-                (fingerprint,),
-            ).fetchone()
-            if duplicate is not None:
-                connection.rollback()
-                return _result(
-                    IndependentReplayStatus.DUPLICATE,
-                    binding,
-                    now,
-                    "AUTHORITY_REPLAY_DUPLICATE",
-                )
-
             stream_fingerprint = _stream_fingerprint(binding)
             head = connection.execute(
                 "SELECT last_sequence, binding_fingerprint FROM replay_heads "
@@ -246,7 +245,18 @@ class DurableIndependentReplayStore:
                 (stream_fingerprint,),
             ).fetchone()
             if head is not None and binding.source_sequence < int(head[0]):
+                duplicate = connection.execute(
+                    "SELECT 1 FROM replay_claims WHERE binding_fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
                 connection.rollback()
+                if duplicate is not None:
+                    return _result(
+                        IndependentReplayStatus.DUPLICATE,
+                        binding,
+                        now,
+                        "AUTHORITY_REPLAY_DUPLICATE",
+                    )
                 return _result(
                     IndependentReplayStatus.ROLLBACK,
                     binding,
@@ -254,38 +264,17 @@ class DurableIndependentReplayStore:
                     "AUTHORITY_REPLAY_SEQUENCE_ROLLBACK",
                 )
             if head is not None and binding.source_sequence == int(head[0]):
-                connection.rollback()
-                return _result(
-                    IndependentReplayStatus.CONFLICT,
-                    binding,
-                    now,
-                    "AUTHORITY_REPLAY_SEQUENCE_CONFLICT",
-                )
+                if str(head[1]) != fingerprint:
+                    connection.rollback()
+                    return _result(
+                        IndependentReplayStatus.CONFLICT,
+                        binding,
+                        now,
+                        "AUTHORITY_REPLAY_SEQUENCE_CONFLICT",
+                    )
 
             consumed_at = now.isoformat()
-            connection.execute(
-                "INSERT INTO replay_claims "
-                "(binding_fingerprint, stream_fingerprint, authority_id, anchor_id, "
-                "anchor_version, anchor_fingerprint, key_id, key_generation, "
-                "scope_fingerprint, source_sequence, statement_id, "
-                "statement_fingerprint, consumed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    fingerprint,
-                    stream_fingerprint,
-                    binding.authority_id,
-                    binding.anchor_id,
-                    binding.anchor_version,
-                    binding.anchor_fingerprint,
-                    binding.key_id,
-                    binding.key_generation,
-                    binding.scope_fingerprint,
-                    binding.source_sequence,
-                    binding.statement_id,
-                    binding.statement_fingerprint,
-                    consumed_at,
-                ),
-            )
+            _insert_claim(connection, binding, stream_fingerprint, consumed_at)
             connection.execute(
                 "INSERT INTO replay_heads "
                 "(stream_fingerprint, last_sequence, binding_fingerprint, updated_at) "
@@ -297,12 +286,8 @@ class DurableIndependentReplayStore:
                 "WHERE replay_heads.last_sequence < excluded.last_sequence",
                 (stream_fingerprint, binding.source_sequence, fingerprint, consumed_at),
             )
-            connection.execute(
-                "INSERT INTO replay_events "
-                "(event_id, event_type, binding_fingerprint, occurred_at) "
-                "VALUES (?, 'replay_consumed', ?, ?)",
-                (_event_id(fingerprint), fingerprint, consumed_at),
-            )
+            _insert_event(connection, fingerprint, consumed_at)
+            _validate_semantic_integrity(connection, version=_SCHEMA_VERSION)
             accepted = IndependentReplayResult(
                 status=IndependentReplayStatus.ACCEPTED,
                 binding_fingerprint=fingerprint,
@@ -313,13 +298,30 @@ class DurableIndependentReplayStore:
             self._commit(connection)
             committed = True
             return accepted
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as error:
             _safe_rollback(connection)
+            if _is_replay_claim_uniqueness_error(error) and self._persisted_claim_matches(
+                binding
+            ):
+                return _result(
+                    IndependentReplayStatus.DUPLICATE,
+                    binding,
+                    now,
+                    "AUTHORITY_REPLAY_DUPLICATE",
+                )
             return _result(
-                IndependentReplayStatus.CONFLICT,
+                IndependentReplayStatus.UNAVAILABLE,
                 binding,
                 now,
-                "AUTHORITY_REPLAY_CONCURRENT_CONFLICT",
+                "DURABLE_REPLAY_STORAGE_INTEGRITY_FAILURE",
+            )
+        except _ReplaySemanticIntegrityError:
+            _safe_rollback(connection)
+            return _result(
+                IndependentReplayStatus.UNAVAILABLE,
+                binding,
+                now,
+                "DURABLE_REPLAY_SEMANTIC_INTEGRITY_FAILURE",
             )
         except Exception:
             if not committed:
@@ -343,7 +345,26 @@ class DurableIndependentReplayStore:
 
     def _validate_database(self) -> None:
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
             _validated_ready_row(connection)
+            connection.rollback()
+
+    def _persisted_claim_matches(self, binding: IndependentReplayBinding) -> bool:
+        try:
+            with closing(self._connect()) as connection:
+                connection.execute("BEGIN")
+                _validated_ready_row(connection)
+                row = connection.execute(
+                    "SELECT stream_fingerprint, authority_id, anchor_id, anchor_version, "
+                    "anchor_fingerprint, key_id, key_generation, scope_fingerprint, "
+                    "source_sequence, statement_id, statement_fingerprint "
+                    "FROM replay_claims WHERE binding_fingerprint = ?",
+                    (binding.binding_fingerprint,),
+                ).fetchone()
+                connection.rollback()
+            return row == _claim_identity(binding)
+        except Exception:
+            return False
 
     @staticmethod
     def _commit(connection: sqlite3.Connection) -> None:
@@ -359,12 +380,7 @@ def _configure(connection: sqlite3.Connection) -> None:
 
 
 def _validated_ready_row(connection: sqlite3.Connection) -> tuple[object, ...]:
-    integrity = connection.execute("PRAGMA quick_check").fetchone()
-    if integrity != ("ok",):
-        raise RuntimeError("independent replay database integrity check failed")
-    foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
-    if foreign_keys:
-        raise RuntimeError("independent replay database foreign keys are invalid")
+    _validate_physical_integrity(connection)
     row = _read_schema_row(connection)
     if row is None:
         raise RuntimeError("independent replay schema metadata is missing")
@@ -374,7 +390,17 @@ def _validated_ready_row(connection: sqlite3.Connection) -> tuple[object, ...]:
     if state != "ready":
         raise RuntimeError("independent replay migration is incomplete")
     _verify_schema(connection, version=version)
+    _validate_semantic_integrity(connection, version=version)
     return row
+
+
+def _validate_physical_integrity(connection: sqlite3.Connection) -> None:
+    integrity = connection.execute("PRAGMA quick_check").fetchone()
+    if integrity != ("ok",):
+        raise RuntimeError("independent replay database integrity check failed")
+    foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if foreign_keys:
+        raise RuntimeError("independent replay database foreign keys are invalid")
 
 
 def _read_schema_row(connection: sqlite3.Connection) -> tuple[object, ...] | None:
@@ -413,6 +439,108 @@ def _verify_schema(connection: sqlite3.Connection, *, version: int) -> None:
             raise RuntimeError("independent replay schema structure is incompatible")
 
 
+def _validate_semantic_integrity(connection: sqlite3.Connection, *, version: int) -> None:
+    """Validate cross-table replay invariants without repairing persisted state."""
+
+    try:
+        claim_rows = connection.execute(
+            "SELECT binding_fingerprint, stream_fingerprint, authority_id, anchor_id, "
+            "anchor_version, anchor_fingerprint, key_id, key_generation, "
+            "scope_fingerprint, source_sequence, statement_id, statement_fingerprint, "
+            "consumed_at FROM replay_claims ORDER BY binding_fingerprint"
+        ).fetchall()
+        claims: dict[str, tuple[str, int, datetime]] = {}
+        streams: dict[str, list[tuple[int, str, datetime]]] = {}
+        for row in claim_rows:
+            binding = IndependentReplayBinding(
+                authority_id=row[2],
+                anchor_id=row[3],
+                anchor_version=row[4],
+                anchor_fingerprint=row[5],
+                key_id=row[6],
+                key_generation=row[7],
+                scope_fingerprint=row[8],
+                source_sequence=row[9],
+                statement_id=row[10],
+                statement_fingerprint=row[11],
+            )
+            binding_fingerprint = str(row[0])
+            stream_fingerprint = str(row[1])
+            consumed_at = _stored_time(row[12])
+            if binding.binding_fingerprint != binding_fingerprint:
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay claim fingerprint is inconsistent"
+                )
+            if _stream_fingerprint(binding) != stream_fingerprint:
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay claim stream is inconsistent"
+                )
+            claims[binding_fingerprint] = (
+                stream_fingerprint,
+                binding.source_sequence,
+                consumed_at,
+            )
+            streams.setdefault(stream_fingerprint, []).append(
+                (binding.source_sequence, binding_fingerprint, consumed_at)
+            )
+
+        head_rows = connection.execute(
+            "SELECT stream_fingerprint, last_sequence, binding_fingerprint, updated_at "
+            "FROM replay_heads ORDER BY stream_fingerprint"
+        ).fetchall()
+        heads = {str(row[0]): row for row in head_rows}
+        if set(heads) != set(streams):
+            raise _ReplaySemanticIntegrityError(
+                "independent replay streams and heads are inconsistent"
+            )
+        for stream_fingerprint, stream_claims in streams.items():
+            maximum = max(stream_claims, key=lambda item: item[0])
+            head = heads[stream_fingerprint]
+            head_sequence = int(head[1])
+            head_binding = str(head[2])
+            head_time = _stored_time(head[3])
+            if head_sequence != maximum[0] or head_binding != maximum[1]:
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay stream head is not the retained maximum"
+                )
+            claim = claims.get(head_binding)
+            if claim is None or claim[0] != stream_fingerprint or claim[1] != head_sequence:
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay stream head references the wrong claim"
+                )
+            if head_time != maximum[2]:
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay stream head timestamp is inconsistent"
+                )
+
+        if version == _SCHEMA_VERSION:
+            event_rows = connection.execute(
+                "SELECT event_id, event_type, binding_fingerprint, occurred_at "
+                "FROM replay_events ORDER BY binding_fingerprint"
+            ).fetchall()
+            events = {str(row[2]): row for row in event_rows}
+            if len(events) != len(event_rows) or set(events) != set(claims):
+                raise _ReplaySemanticIntegrityError(
+                    "independent replay claims and history are inconsistent"
+                )
+            for binding_fingerprint, claim in claims.items():
+                event = events[binding_fingerprint]
+                if (
+                    str(event[0]) != _event_id(binding_fingerprint)
+                    or str(event[1]) != "replay_consumed"
+                    or _stored_time(event[3]) != claim[2]
+                ):
+                    raise _ReplaySemanticIntegrityError(
+                        "independent replay history does not match its claim"
+                    )
+    except _ReplaySemanticIntegrityError:
+        raise
+    except Exception:
+        raise _ReplaySemanticIntegrityError(
+            "independent replay semantic integrity validation failed"
+        ) from None
+
+
 def _normalize_sql(value: str) -> str:
     return " ".join(value.replace("\"", "").replace("`", "").split()).strip().lower()
 
@@ -432,6 +560,91 @@ def _stream_fingerprint(binding: IndependentReplayBinding) -> str:
             "utf-8"
         )
     ).hexdigest()
+
+
+def _claim_identity(binding: IndependentReplayBinding) -> tuple[object, ...]:
+    return (
+        _stream_fingerprint(binding),
+        binding.authority_id,
+        binding.anchor_id,
+        binding.anchor_version,
+        binding.anchor_fingerprint,
+        binding.key_id,
+        binding.key_generation,
+        binding.scope_fingerprint,
+        binding.source_sequence,
+        binding.statement_id,
+        binding.statement_fingerprint,
+    )
+
+
+def _insert_claim(
+    connection: sqlite3.Connection,
+    binding: IndependentReplayBinding,
+    stream_fingerprint: str,
+    consumed_at: str,
+) -> None:
+    connection.execute(
+        "INSERT INTO replay_claims "
+        "(binding_fingerprint, stream_fingerprint, authority_id, anchor_id, "
+        "anchor_version, anchor_fingerprint, key_id, key_generation, "
+        "scope_fingerprint, source_sequence, statement_id, "
+        "statement_fingerprint, consumed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            binding.binding_fingerprint,
+            stream_fingerprint,
+            binding.authority_id,
+            binding.anchor_id,
+            binding.anchor_version,
+            binding.anchor_fingerprint,
+            binding.key_id,
+            binding.key_generation,
+            binding.scope_fingerprint,
+            binding.source_sequence,
+            binding.statement_id,
+            binding.statement_fingerprint,
+            consumed_at,
+        ),
+    )
+
+
+def _insert_event(
+    connection: sqlite3.Connection, binding_fingerprint: str, occurred_at: str
+) -> None:
+    connection.execute(
+        "INSERT INTO replay_events "
+        "(event_id, event_type, binding_fingerprint, occurred_at) "
+        "VALUES (?, 'replay_consumed', ?, ?)",
+        (_event_id(binding_fingerprint), binding_fingerprint, occurred_at),
+    )
+
+
+def _is_replay_claim_uniqueness_error(error: sqlite3.IntegrityError) -> bool:
+    return (
+        getattr(error, "sqlite_errorname", "")
+        in {"SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE"}
+        and str(error)
+        in {
+            "UNIQUE constraint failed: replay_claims.binding_fingerprint",
+            "UNIQUE constraint failed: replay_claims.stream_fingerprint, "
+            "replay_claims.source_sequence",
+        }
+    )
+
+
+def _stored_time(value: object) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        raise _ReplaySemanticIntegrityError(
+            "independent replay timestamp is malformed"
+        ) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise _ReplaySemanticIntegrityError(
+            "independent replay timestamp lacks timezone awareness"
+        )
+    return parsed.astimezone(UTC)
 
 
 def _event_id(binding_fingerprint: str) -> str:
