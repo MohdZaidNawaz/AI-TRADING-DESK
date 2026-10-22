@@ -19,8 +19,10 @@ class ProductionAuthorizationModel(APIModel):
 
 
 class ProductionReadinessPrerequisite(str, Enum):
+    LOCAL_KEY_CUSTODY = "local_key_custody"
     AUTHORIZED_POLICY_APPROVER = "authorized_policy_approver"
     INDEPENDENT_TRUST_ANCHOR = "independent_trust_anchor"
+    INDEPENDENT_ANCHOR_LIFECYCLE = "independent_anchor_lifecycle"
     PERSONAL_TRUST_BOOTSTRAP = "personal_trust_bootstrap"
     PERSONAL_KEY_STATUS_AUTHORITY = "personal_key_status_authority"
     PERSONAL_REPLAY_ROLLBACK_PROTECTION = "personal_replay_rollback_protection"

@@ -239,6 +239,33 @@ project virtual environment:
 
 No frontend contract changed in Phase 14, so frontend validation was not rerun.
 
+## Phase 15 trust governance and rollback assurance
+
+Phase 15 adds canonical signed trust-anchor governance manifests and a
+provider-neutral external rollback-witness contract. The manifest verifier uses
+only a separately configured Ed25519 governance-root key; evidence cannot
+supply or replace that key. Exact authority/root/anchor identity, fingerprint,
+generation, scope, policy, request, challenge, sequence, validity, lifecycle,
+and rotation lineage are checked before a result is composed.
+
+This is not an independent authority integration. The configured governance
+root remains explicitly unauthenticated local configuration, so even a valid
+signature produces `CONFIGURED_UNAUTHENTICATED`. Revocation, expiry, invalid
+rotation, downgrade, missing governance, and contradictory lineage fail closed.
+No recovery path recreates trust from local state.
+
+The rollback-witness interface binds trust generation and the exact replay
+checkpoint, but no authenticated external monotonic provider is configured.
+Default and synthetic providers cannot set authentication, monotonicity, or
+external-assurance flags to true. Local SQLite durability remains distinct from
+external rollback protection and still cannot detect restoration of a coherent
+older database snapshot.
+
+Readiness now reports local key custody and anchor lifecycle separately and
+remains structurally blocked. No Phase 15 component imports or invokes Sentinel,
+Pilot, FinalExecutionGate, MT5, an adapter, an API execution route, or order
+submission.
+
 ## Remaining external blockers
 
 1. Independently governed trust-anchor bootstrap, rotation, and revocation.

@@ -38,7 +38,7 @@ order path. Public API routes expose no execution operation.
 | Evidence | Provider-neutral immutable domains, bounded stores, provenance | External sources remain capability-specific and manually integrated | Missing evidence fails closed; nothing is fabricated |
 | Analysis | Deterministic routing and structured specialist artifacts | No production AI model/tool authority | No agent can gain execution authority |
 | Operational status | Liveness, correlation IDs, fail-closed readiness report, direct-peer loopback enforcement, browser-origin filtering, and bounded request bodies | Dependency-specific live probes and authenticated non-loopback ingress are intentionally absent | Diagnostics make no broker/provider calls; remote direct clients fail closed |
-| Trust | Personal signing, DPAPI custody, local bootstrap, canonical Ed25519 verification against a separately configured public key, and atomic local SQLite replay consumption | Independent governance of the anchor, authenticated authority integration and an external rollback witness | Cryptographic integrity and local duplicate prevention can be checked, but neither establishes independent authority or production authorization |
+| Trust | Personal signing, DPAPI custody, local bootstrap, canonical Ed25519 verification, atomic local SQLite replay consumption, and strict signed anchor-lifecycle/witness contracts | Independent provisioning of the governance root, an authenticated lifecycle authority, and an external monotonic witness remain unconfigured | Cryptographic structure, lifecycle lineage, and local duplicate prevention can be checked, but none establishes independent authority or production authorization |
 | Broker state | Read-only typed evidence/reconciliation contracts and guarded MT5 adapter architecture | The evidence provider is not independently authenticated and reconciliation is not authoritative | Structurally valid evidence is explicitly insufficient for production readiness |
 | Execution | Sentinel, reservations, kill switch, audit and final gates | Organizational approval and reviewed production boundary are absent | Live and demo submission remain disabled |
 | Persistence | Bounded evidence stores plus durable SQLite safety domains | Stores intentionally do not form one external atomic transaction | Ambiguity requires fail-closed reconciliation |
@@ -89,6 +89,11 @@ npm run build
 - Local replay readiness distinguishes restart-durable/atomic SQLite consumption
   from unavailable external rollback assurance. A local database is not an
   independently protected monotonic witness.
+- Phase 15 validates signed anchor identity, generation, scope, rotation,
+  revocation, validity, and policy lineage against a separately configured root.
+  Because that root is not independently authenticated, valid local evidence is
+  still configured-but-unauthenticated. The external witness is unavailable by
+  default and cannot be replaced by local state.
 - Mock market values are explicitly labeled in both the API and UI.
 - The analysis endpoint reports deterministic_mock; it is not a live AI
   provider.

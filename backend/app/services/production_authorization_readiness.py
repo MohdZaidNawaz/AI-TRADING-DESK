@@ -20,6 +20,12 @@ from app.models.production_authorization import (
     ProductionReadinessCheckStatus,
     ProductionReadinessPrerequisite,
 )
+from app.models.independent_trust_governance import (
+    ExternalRollbackWitnessAssessment,
+    ExternalRollbackWitnessStatus,
+    IndependentTrustGovernanceAssessment,
+    IndependentTrustGovernanceStatus,
+)
 from app.models.personal_trust_bootstrap import (
     PersonalKeyAuthorityAssessmentStatus,
     PersonalTrustBootstrapAssessment,
@@ -78,22 +84,26 @@ class ProductionAuthorizationReadinessGate:
         reservation: DurableExecutionReservation | None = None,
         execution_records: tuple[ExecutionRecord, ...] = (),
         personal_trust: PersonalTrustBootstrapAssessment | None = None,
+        trust_governance: IndependentTrustGovernanceAssessment | None = None,
+        rollback_witness: ExternalRollbackWitnessAssessment | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
-        replay_checks = self._independent_replay(checked_at)
+        replay_checks = self._independent_replay(checked_at, rollback_witness)
         checks: list[ProductionReadinessCheck] = [
+            _failed(
+                ProductionReadinessPrerequisite.LOCAL_KEY_CUSTODY,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "LOCAL_KEY_CUSTODY_NOT_INDEPENDENTLY_ASSESSED",
+                checked_at,
+            ),
             _failed(
                 ProductionReadinessPrerequisite.AUTHORIZED_POLICY_APPROVER,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
                 "AUTHORIZED_POLICY_APPROVER_UNCONFIGURED",
                 checked_at,
             ),
-            _failed(
-                ProductionReadinessPrerequisite.INDEPENDENT_TRUST_ANCHOR,
-                ProductionReadinessCheckStatus.UNAVAILABLE,
-                "INDEPENDENT_TRUST_ANCHOR_UNAVAILABLE",
-                checked_at,
-            ),
+            self._independent_trust_anchor(trust_governance, checked_at),
+            self._independent_anchor_lifecycle(trust_governance, checked_at),
             self._personal_trust_bootstrap(personal_trust, checked_at),
             self._personal_key_status_authority(personal_trust, checked_at),
             self._personal_replay_protection(personal_trust, checked_at),
@@ -168,7 +178,9 @@ class ProductionAuthorizationReadinessGate:
         )
 
     def _independent_replay(
-        self, now: datetime
+        self,
+        now: datetime,
+        witness: ExternalRollbackWitnessAssessment | None,
     ) -> tuple[ProductionReadinessCheck, ProductionReadinessCheck, ProductionReadinessCheck]:
         if self._replay_store is None:
             return (
@@ -227,15 +239,98 @@ class ProductionAuthorizationReadinessGate:
                     evidence_fingerprint=diagnostics.fingerprint,
                 ),
             )
-        return (
-            *local,
-            _failed(
+        if witness is None:
+            external = _failed(
                 ProductionReadinessPrerequisite.EXTERNAL_ROLLBACK_ASSURANCE,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
                 "EXTERNAL_ROLLBACK_WITNESS_UNAVAILABLE",
                 now,
                 evidence_fingerprint=diagnostics.fingerprint,
-            ),
+            )
+        else:
+            witness_status = {
+                ExternalRollbackWitnessStatus.UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+                ExternalRollbackWitnessStatus.STALE: ProductionReadinessCheckStatus.STALE,
+                ExternalRollbackWitnessStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+                ExternalRollbackWitnessStatus.INCONSISTENT: ProductionReadinessCheckStatus.INVALID,
+                ExternalRollbackWitnessStatus.STRUCTURALLY_VALIDATED: ProductionReadinessCheckStatus.BLOCKED,
+            }[witness.status]
+            external = _failed_many(
+                ProductionReadinessPrerequisite.EXTERNAL_ROLLBACK_ASSURANCE,
+                witness_status,
+                witness.reason_codes,
+                now,
+                default="EXTERNAL_ROLLBACK_WITNESS_UNAVAILABLE",
+                source_reference=witness.provider_id,
+                evidence_fingerprint=witness.fingerprint,
+            )
+        return (
+            *local,
+            external,
+        )
+
+    @staticmethod
+    def _independent_trust_anchor(
+        assessment: IndependentTrustGovernanceAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.INDEPENDENT_TRUST_ANCHOR
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "INDEPENDENT_TRUST_ANCHOR_UNAVAILABLE",
+                now,
+            )
+        status = {
+            IndependentTrustGovernanceStatus.UNCONFIGURED: ProductionReadinessCheckStatus.UNAVAILABLE,
+            IndependentTrustGovernanceStatus.CONFIGURED_UNAUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.VALID_INDEPENDENTLY_AUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.EXPIRED: ProductionReadinessCheckStatus.STALE,
+            IndependentTrustGovernanceStatus.REVOKED: ProductionReadinessCheckStatus.REVOKED,
+            IndependentTrustGovernanceStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+            IndependentTrustGovernanceStatus.ROTATION_PENDING: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.GOVERNANCE_UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+        }[assessment.status]
+        return _failed_many(
+            prerequisite,
+            status,
+            assessment.reason_codes,
+            now,
+            default="INDEPENDENT_TRUST_ANCHOR_UNAVAILABLE",
+            evidence_fingerprint=assessment.fingerprint,
+        )
+
+    @staticmethod
+    def _independent_anchor_lifecycle(
+        assessment: IndependentTrustGovernanceAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.INDEPENDENT_ANCHOR_LIFECYCLE
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "INDEPENDENT_ANCHOR_LIFECYCLE_UNAVAILABLE",
+                now,
+            )
+        status = {
+            IndependentTrustGovernanceStatus.UNCONFIGURED: ProductionReadinessCheckStatus.UNAVAILABLE,
+            IndependentTrustGovernanceStatus.CONFIGURED_UNAUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.VALID_INDEPENDENTLY_AUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.EXPIRED: ProductionReadinessCheckStatus.STALE,
+            IndependentTrustGovernanceStatus.REVOKED: ProductionReadinessCheckStatus.REVOKED,
+            IndependentTrustGovernanceStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+            IndependentTrustGovernanceStatus.ROTATION_PENDING: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.GOVERNANCE_UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+        }[assessment.status]
+        return _failed_many(
+            prerequisite,
+            status,
+            assessment.reason_codes,
+            now,
+            default="INDEPENDENT_ANCHOR_LIFECYCLE_UNAVAILABLE",
+            evidence_fingerprint=assessment.fingerprint,
         )
 
     @staticmethod
