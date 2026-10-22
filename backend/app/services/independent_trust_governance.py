@@ -303,6 +303,20 @@ def _rotation_codes(
         codes.append("GOVERNANCE_ROTATION_GENERATION_INVALID")
     if prior.source_sequence >= manifest.source_sequence:
         codes.append("GOVERNANCE_ROTATION_SEQUENCE_INVALID")
+    # Version-1 rotation chronology uses the successor's issuance as the
+    # authorization point and its validity start as the transition point.  The
+    # predecessor interval is half open: [valid_from, expires_at).  It must be
+    # valid when the successor is issued, and it must cover the transition up
+    # to (but not necessarily beyond) the successor validity start.  This
+    # permits overlap and an exact zero-overlap boundary, while rejecting gaps.
+    if prior.issued_at > manifest.issued_at:
+        codes.append("GOVERNANCE_SUCCESSOR_PRECEDES_PREDECESSOR")
+    if prior.valid_from > manifest.issued_at:
+        codes.append("GOVERNANCE_PREDECESSOR_NOT_VALID_AT_ISSUANCE")
+    if manifest.issued_at >= prior.expires_at:
+        codes.append("GOVERNANCE_PREDECESSOR_EXPIRED_AT_ISSUANCE")
+    if manifest.valid_from > prior.expires_at:
+        codes.append("GOVERNANCE_ROTATION_VALIDITY_GAP")
     if (
         prior.governance_authority_id != manifest.governance_authority_id
         or prior.governance_root_id != manifest.governance_root_id

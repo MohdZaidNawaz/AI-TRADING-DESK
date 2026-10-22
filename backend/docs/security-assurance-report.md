@@ -254,6 +254,14 @@ signature produces `CONFIGURED_UNAUTHENTICATED`. Revocation, expiry, invalid
 rotation, downgrade, missing governance, and contradictory lineage fail closed.
 No recovery path recreates trust from local state.
 
+Rotation chronology is enforced at two explicit version-1 boundaries. The
+predecessor must be valid when the successor manifest is issued, and it cannot
+expire before the successor transition time. Key overlap is allowed, as is an
+exact zero-overlap expiry/activation boundary; any validity gap, future-dated
+predecessor, or successor that predates its predecessor is invalid. A
+historically valid predecessor may be expired at current evaluation without
+making the chain invalid, but that historical result remains non-authoritative.
+
 The rollback-witness interface binds trust generation and the exact replay
 checkpoint, but no authenticated external monotonic provider is configured.
 Default and synthetic providers cannot set authentication, monotonicity, or

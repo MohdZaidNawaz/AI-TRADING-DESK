@@ -353,6 +353,138 @@ def test_rotation_requires_signed_explicit_previous_lineage() -> None:
     assert "GOVERNANCE_ROTATION_NOT_AUTHORIZED" in rejected.reason_codes
 
 
+def _rotation_assessment(
+    *,
+    prior_changes: dict[str, object] | None = None,
+    current_changes: dict[str, object] | None = None,
+):
+    private, root = _key_and_root()
+    prior_request = _request()
+    current_request = _request(
+        anchor_version="v2",
+        anchor_generation=2,
+        anchor_fingerprint="d" * 64,
+        minimum_source_sequence=1,
+    )
+    prior_values: dict[str, object] = {
+        "lifecycle": TrustAnchorLifecycle.ROTATION_PENDING,
+        "replacement_anchor_fingerprint": current_request.anchor_fingerprint,
+        "replacement_generation": 2,
+        "reason_code": "APPROVED_ROTATION_PENDING",
+    }
+    prior_values.update(prior_changes or {})
+    prior = _manifest(prior_request, root, **prior_values)
+    current_values: dict[str, object] = {
+        "source_sequence": 2,
+        "previous_manifest_fingerprint": prior.manifest_fingerprint,
+    }
+    current_values.update(current_changes or {})
+    current = _manifest(current_request, root, **current_values)
+    return IndependentTrustGovernanceVerifier(root).assess(
+        request=current_request,
+        envelope=_signed(current, private),
+        previous_envelope=_signed(prior, private),
+        evaluated_at=NOW,
+    )
+
+
+def test_rotation_allows_overlap_while_remaining_non_authoritative() -> None:
+    result = _rotation_assessment(
+        prior_changes={
+            "issued_at": NOW - timedelta(minutes=10),
+            "valid_from": NOW - timedelta(minutes=9),
+            "expires_at": NOW + timedelta(minutes=10),
+        },
+        current_changes={
+            "issued_at": NOW - timedelta(minutes=2),
+            "valid_from": NOW - timedelta(minutes=1),
+        },
+    )
+    assert result.status is IndependentTrustGovernanceStatus.CONFIGURED_UNAUTHENTICATED
+    assert result.independent_authentication_established is False
+    assert result.production_authorization_available is False
+
+
+def test_historical_rotation_allows_exact_zero_overlap_boundary() -> None:
+    result = _rotation_assessment(
+        prior_changes={
+            "issued_at": NOW - timedelta(minutes=10),
+            "valid_from": NOW - timedelta(minutes=9),
+            "expires_at": NOW - timedelta(minutes=1),
+        },
+        current_changes={
+            "issued_at": NOW - timedelta(minutes=2),
+            "valid_from": NOW - timedelta(minutes=1),
+        },
+    )
+    assert result.status is IndependentTrustGovernanceStatus.CONFIGURED_UNAUTHENTICATED
+    assert result.independent_authentication_established is False
+    assert result.execution_authority is False
+
+
+def test_expired_predecessor_cannot_authorize_late_successor() -> None:
+    result = _rotation_assessment(
+        prior_changes={
+            "issued_at": NOW - timedelta(minutes=10),
+            "valid_from": NOW - timedelta(minutes=9),
+            "expires_at": NOW - timedelta(minutes=3),
+        },
+        current_changes={
+            "issued_at": NOW - timedelta(minutes=2),
+            "valid_from": NOW - timedelta(minutes=1),
+        },
+    )
+    assert result.status is IndependentTrustGovernanceStatus.INVALID
+    assert "GOVERNANCE_PREDECESSOR_EXPIRED_AT_ISSUANCE" in result.reason_codes
+    assert "GOVERNANCE_ROTATION_VALIDITY_GAP" in result.reason_codes
+
+
+def test_future_dated_predecessor_and_successor_before_transition_are_rejected() -> None:
+    result = _rotation_assessment(
+        prior_changes={
+            "issued_at": NOW - timedelta(minutes=1),
+            "valid_from": NOW,
+            "expires_at": NOW + timedelta(minutes=10),
+        },
+        current_changes={
+            "issued_at": NOW - timedelta(minutes=2),
+            "valid_from": NOW,
+        },
+    )
+    assert result.status is IndependentTrustGovernanceStatus.INVALID
+    assert "GOVERNANCE_SUCCESSOR_PRECEDES_PREDECESSOR" in result.reason_codes
+    assert "GOVERNANCE_PREDECESSOR_NOT_VALID_AT_ISSUANCE" in result.reason_codes
+
+
+def test_rotation_rejects_gap_even_when_predecessor_was_valid_at_issuance() -> None:
+    result = _rotation_assessment(
+        prior_changes={
+            "issued_at": NOW - timedelta(minutes=10),
+            "valid_from": NOW - timedelta(minutes=9),
+            "expires_at": NOW - timedelta(minutes=1),
+        },
+        current_changes={
+            "issued_at": NOW - timedelta(minutes=2),
+            "valid_from": NOW,
+        },
+    )
+    assert result.status is IndependentTrustGovernanceStatus.INVALID
+    assert "GOVERNANCE_ROTATION_VALIDITY_GAP" in result.reason_codes
+    assert "GOVERNANCE_PREDECESSOR_EXPIRED_AT_ISSUANCE" not in result.reason_codes
+
+
+def test_manifest_model_rejects_invalid_timestamp_ordering() -> None:
+    _private, root = _key_and_root()
+    request = _request()
+    with pytest.raises(ValidationError, match="validity window is inconsistent"):
+        _manifest(
+            request,
+            root,
+            issued_at=NOW,
+            valid_from=NOW - timedelta(minutes=1),
+        )
+
+
 def test_unknown_manifest_version_and_fabricated_independent_status_are_rejected() -> None:
     private, root = _key_and_root()
     request = _request()

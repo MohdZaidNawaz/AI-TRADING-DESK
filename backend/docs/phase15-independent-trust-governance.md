@@ -55,6 +55,17 @@ rotation-incomplete manifests remain distinct fail-closed states.
   consecutive generation, increasing source sequence, identical governance and
   scope lineage, a signed `ROTATION_PENDING` predecessor, and an exact declared
   replacement target.
+- Version 1 defines the successor's `issued_at` as the rotation authorization
+  point and the successor's `valid_from` as the transition point. The
+  predecessor validity interval is half open: `[valid_from, expires_at)`. The
+  predecessor must be valid when the successor is issued, and the successor
+  must become valid no later than predecessor expiry. Overlap is permitted and
+  an exact zero-overlap boundary (`successor.valid_from == predecessor.expires_at`)
+  is valid; a gap is rejected.
+- A predecessor may be expired at current evaluation time when it was valid at
+  the historical issuance and transition boundaries. Historical validity proves
+  only rotation-chain consistency; it never establishes present independent
+  trust, authorization, submission permission, or execution authority.
 - Revoked anchors remain terminal diagnostic evidence and are never accepted
   through a fallback.
 - Missing or contradictory governance material is invalid or unavailable; it
@@ -122,9 +133,9 @@ adapter.
 
 Validation on the implementation tree completed as follows:
 
-- Phase 15 focused tests: **15 passed**.
-- Trust/governance/replay/readiness/recovery regressions: **163 passed**.
-- Complete backend suite: **1074 passed**, zero failures or skips.
+- Phase 15 focused tests: **21 passed**.
+- Trust/governance/replay/readiness/recovery regressions: **169 passed**.
+- Complete backend suite: **1080 passed**, zero failures or skips.
 - `python -m compileall -q app tests`: passed.
 - `git diff --check`: passed.
 
