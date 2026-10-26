@@ -46,3 +46,26 @@ def test_structured_logs_reject_nested_quoted_and_authorization_values(caplog) -
     assert sensitive not in output
     assert "PRIVATE KEY" not in output
     assert '"fields":[["safe","retained"]]' in output
+
+
+def test_every_top_level_identifier_redacts_secret_looking_values(caplog) -> None:
+    sensitive = "synthetic-secret-fixture"
+    fields = (
+        "component", "event_type", "correlation_id", "proposal_id", "analysis_id",
+        "intent_id", "execution_id", "approval_id", "provider", "symbol",
+        "account_reference", "state", "reason_code",
+    )
+    for field in fields:
+        values = {
+            "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
+            "component": "audit",
+            "event_type": "security-check",
+            field: f"token={sensitive}",
+        }
+        event = StructuredEvent(**values)
+        assert sensitive not in str(event.model_dump(mode="json"))
+        caplog.clear()
+        caplog.set_level(logging.INFO, logger="friday")
+        log_event(event)
+        assert sensitive not in caplog.text
+        assert "[REDACTED]" in caplog.text

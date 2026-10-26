@@ -531,3 +531,80 @@ def test_unrelated_integrity_failure_is_unavailable_and_rolls_back(
         assert connection.execute("SELECT last_sequence FROM replay_heads").fetchone() == (1,)
         assert connection.execute("SELECT count(*) FROM replay_events").fetchone() == (1,)
     assert store.check_and_record(binding=second, checked_at=NOW).status is IndependentReplayStatus.ACCEPTED
+
+
+def test_atomic_related_bindings_commit_or_reject_together(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    challenge = _binding(
+        key_id="challenge-stream",
+        scope_fingerprint="1" * 64,
+        source_sequence=1,
+        statement_id="challenge-binding-00000000000000001",
+    )
+    sequence = _binding(
+        key_id="provider-sequence-stream",
+        scope_fingerprint="2" * 64,
+        source_sequence=4,
+        statement_id="sequence-binding-00000000000000001",
+        statement_fingerprint="d" * 64,
+    )
+    accepted = store.check_and_record_atomic(bindings=(challenge, sequence), checked_at=NOW)
+    assert accepted.status == "accepted"
+    assert accepted.locally_durable is True and accepted.atomic_consumption is True
+    duplicate = store.check_and_record_atomic(bindings=(challenge, sequence), checked_at=NOW)
+    assert duplicate.status == "duplicate"
+    assert duplicate.locally_durable is False and duplicate.atomic_consumption is False
+
+
+def test_atomic_related_bindings_roll_back_all_on_sequence_failure(tmp_path: Path) -> None:
+    path = tmp_path / "replay.sqlite3"
+    store = DurableIndependentReplayStore.initialize(path, now=NOW)
+    head = _binding(source_sequence=3)
+    assert store.check_and_record(binding=head, checked_at=NOW).status is IndependentReplayStatus.ACCEPTED
+    challenge = _binding(
+        key_id="unique-challenge-stream",
+        scope_fingerprint="1" * 64,
+        source_sequence=1,
+        statement_id="unique-challenge-000000000000001",
+        statement_fingerprint="d" * 64,
+    )
+    lower = _binding(
+        source_sequence=2,
+        statement_id="lower-sequence-00000000000000001",
+        statement_fingerprint="e" * 64,
+    )
+    result = store.check_and_record_atomic(bindings=(challenge, lower), checked_at=NOW)
+    assert result.status == "rollback"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM replay_claims WHERE binding_fingerprint = ?",
+            (challenge.binding_fingerprint,),
+        ).fetchone() == (0,)
+
+
+def test_atomic_related_bindings_commit_failure_reports_no_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "replay.sqlite3"
+    store = DurableIndependentReplayStore.initialize(path, now=NOW)
+    challenge = _binding(
+        key_id="commit-failure-challenge",
+        scope_fingerprint="1" * 64,
+        statement_id="commit-failure-challenge-00000001",
+    )
+    sequence = _binding(
+        key_id="commit-failure-sequence",
+        scope_fingerprint="2" * 64,
+        statement_id="commit-failure-sequence-000000001",
+        statement_fingerprint="d" * 64,
+    )
+
+    def fail_commit(_connection: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("synthetic commit failure")
+
+    monkeypatch.setattr(store, "_commit", fail_commit)
+    result = store.check_and_record_atomic(bindings=(challenge, sequence), checked_at=NOW)
+    assert result.status == "unavailable"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT count(*) FROM replay_claims").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM replay_events").fetchone() == (0,)

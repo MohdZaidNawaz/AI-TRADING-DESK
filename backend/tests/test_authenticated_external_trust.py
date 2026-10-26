@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
 from app.models.authenticated_external_trust import (
+    BrokerEvidenceLineage,
     ExternalReconciliationStatus,
     ExternalTrustAttestationRequest,
     ExternalTrustAttestationStatement,
@@ -25,10 +26,26 @@ from app.models.production_authorization import (
     ProductionReadinessPrerequisite,
 )
 from app.services.authenticated_external_trust import AuthenticatedExternalTrustIntegration
+from app.services.durable_independent_replay import DurableIndependentReplayStore
 from app.services.production_authorization_readiness import ProductionAuthorizationReadinessGate
 
 
 NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+
+
+def _broker_lineage(**changes):
+    values = {
+        "evidence_provider_id": "controlled-test-broker-evidence",
+        "evidence_request_fingerprint": "1" * 64,
+        "evidence_fingerprint": "c" * 64,
+        "account_fingerprint": "2" * 64,
+        "snapshot_observed_at": NOW - timedelta(seconds=45),
+        "snapshot_retrieved_at": NOW - timedelta(seconds=30),
+        "reconciliation_id": "reconciliation-test-000000001",
+        "reconciliation_fingerprint": "3" * 64,
+    }
+    values.update(changes)
+    return BrokerEvidenceLineage(**values)
 
 
 def _key_and_root():
@@ -62,6 +79,11 @@ def _request(capability=ExternalTrustCapability.ROOT_PROVISIONING, **changes):
         "requested_at": NOW - timedelta(minutes=2),
         "max_age_seconds": 300,
     }
+    if capability is ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION:
+        lineage = _broker_lineage()
+        values["broker_lineage"] = lineage
+        values["subject_fingerprint"] = lineage.evidence_fingerprint
+        values["scope_fingerprint"] = lineage.evidence_request_fingerprint
     values.update(changes)
     return ExternalTrustAttestationRequest(**values)
 
@@ -93,6 +115,7 @@ def _statement(request, root, **changes):
         values.update(
             lifecycle=None,
             evidence_fingerprint="c" * 64,
+            broker_lineage=request.broker_lineage,
             reconciliation_status=ExternalReconciliationStatus.COMPLETE,
         )
     values.update(changes)
@@ -132,11 +155,12 @@ def test_unconfigured_default_is_unavailable_and_non_authorizing() -> None:
     "capability",
     list(ExternalTrustCapability),
 )
-def test_valid_signed_contract_remains_configured_unauthenticated(capability) -> None:
+def test_valid_signed_contract_remains_configured_unauthenticated(capability, tmp_path) -> None:
     private, root = _key_and_root()
     request = _request(capability)
     result = AuthenticatedExternalTrustIntegration(
-        _Provider(_signed(_statement(request, root), private)), verification_root=root
+        _Provider(_signed(_statement(request, root), private)), verification_root=root,
+        replay_store=DurableIndependentReplayStore.initialize(tmp_path / "replay.sqlite3", now=NOW),
     ).assess(request, evaluated_at=NOW)
     assert result.status is ExternalTrustIntegrationStatus.CONFIGURED_UNAUTHENTICATED
     assert result.signature_verified and result.bindings_verified
@@ -223,7 +247,7 @@ def test_stale_future_and_provider_failure_are_blocked() -> None:
     assert all("sensitive" not in code.lower() for code in unavailable.reason_codes)
 
 
-def test_revocation_and_unresolved_broker_reconciliation_fail_closed() -> None:
+def test_revocation_and_unresolved_broker_reconciliation_fail_closed(tmp_path) -> None:
     private, root = _key_and_root()
     lifecycle = _request(ExternalTrustCapability.LIFECYCLE_STATUS)
     revoked = _statement(
@@ -231,19 +255,24 @@ def test_revocation_and_unresolved_broker_reconciliation_fail_closed() -> None:
         reason_codes=("AUTHORITY_REVOKED",),
     )
     revoked_result = AuthenticatedExternalTrustIntegration(
-        _Provider(_signed(revoked, private)), verification_root=root
+        _Provider(_signed(revoked, private)), verification_root=root,
+        replay_store=DurableIndependentReplayStore.initialize(tmp_path / "replay.sqlite3", now=NOW),
     ).assess(lifecycle, evaluated_at=NOW)
     assert revoked_result.status is ExternalTrustIntegrationStatus.REVOKED
     assert revoked_result.authoritative_lifecycle is False
 
-    broker = _request(ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION)
+    broker = _request(
+        ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION,
+        challenge_id="external-trust-challenge-00000002",
+    )
     conflict = _statement(
         broker, root,
         reconciliation_status=ExternalReconciliationStatus.UNRESOLVED,
         reason_codes=("BROKER_RECONCILIATION_CONFLICT",),
     )
     conflict_result = AuthenticatedExternalTrustIntegration(
-        _Provider(_signed(conflict, private)), verification_root=root
+        _Provider(_signed(conflict, private)), verification_root=root,
+        replay_store=DurableIndependentReplayStore(tmp_path / "replay.sqlite3"),
     ).assess(broker, evaluated_at=NOW)
     assert conflict_result.status is ExternalTrustIntegrationStatus.CONFLICT
     assert conflict_result.broker_evidence_authenticated is False
@@ -266,18 +295,33 @@ def test_models_reject_ambiguous_chronology_and_fabricated_authority() -> None:
         with pytest.raises(ValidationError):
             type(result).model_validate({**payload, field: True})
 
+    with pytest.raises(ValidationError):
+        type(result).model_validate(
+            {
+                **payload,
+                "replay_consumed": True,
+                "replay_binding_fingerprints": ("a" * 64, "b" * 64),
+            }
+        )
 
-def test_readiness_reports_distinct_external_blockers_and_remains_false() -> None:
+
+def test_readiness_reports_distinct_external_blockers_and_remains_false(tmp_path) -> None:
     private, root = _key_and_root()
     root_request = _request()
+    replay = DurableIndependentReplayStore.initialize(tmp_path / "replay.sqlite3", now=NOW)
     root_assessment = AuthenticatedExternalTrustIntegration(
         _Provider(_signed(_statement(root_request, root), private)),
         verification_root=root,
+        replay_store=replay,
     ).assess(root_request, evaluated_at=NOW)
-    broker_request = _request(ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION)
+    broker_request = _request(
+        ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION,
+        challenge_id="external-trust-challenge-00000002",
+    )
     broker_assessment = AuthenticatedExternalTrustIntegration(
         _Provider(_signed(_statement(broker_request, root), private)),
         verification_root=root,
+        replay_store=replay,
     ).assess(broker_request, evaluated_at=NOW)
 
     report = ProductionAuthorizationReadinessGate().evaluate(
@@ -288,7 +332,7 @@ def test_readiness_reports_distinct_external_blockers_and_remains_false() -> Non
     checks = {check.prerequisite: check for check in report.checks}
     assert checks[ProductionReadinessPrerequisite.GOVERNANCE_ROOT_PROVISIONING].status is ProductionReadinessCheckStatus.BLOCKED
     assert checks[ProductionReadinessPrerequisite.ROTATION_RECOVERY_ASSURANCE].status is ProductionReadinessCheckStatus.UNAVAILABLE
-    assert checks[ProductionReadinessPrerequisite.AUTHENTICATED_BROKER_EVIDENCE].status is ProductionReadinessCheckStatus.BLOCKED
+    assert checks[ProductionReadinessPrerequisite.AUTHENTICATED_BROKER_EVIDENCE].status is ProductionReadinessCheckStatus.INVALID
     assert report.production_authorization_available is False
     assert report.submission_allowed is False
     assert report.execution_authority is False

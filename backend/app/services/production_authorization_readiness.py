@@ -17,7 +17,7 @@ from app.models.authenticated_external_trust import (
     ExternalTrustIntegrationStatus,
 )
 from app.models.durable_execution import DurableExecutionReservation
-from app.models.execution_state import ExecutionLifecycleState, ExecutionRecord
+from app.models.execution_state import ExecutionLifecycleState, ExecutionRecord, ReconciliationReport
 from app.models.production_authorization import (
     ProductionAuthorizationReadinessReport,
     ProductionReadinessCheck,
@@ -50,6 +50,7 @@ from app.models.trusted_execution_evidence import (
     ValidatedExecutionEvidence,
 )
 from app.services.durable_independent_replay import DurableIndependentReplayStore
+from app.services.authenticated_external_trust import build_broker_evidence_lineage
 from app.services.trade_proposal_workflow import ApprovalRegistry
 
 
@@ -92,6 +93,7 @@ class ProductionAuthorizationReadinessGate:
         rollback_witness: ExternalRollbackWitnessAssessment | None = None,
         root_provisioning: ExternalTrustAttestationAssessment | None = None,
         broker_authentication: ExternalTrustAttestationAssessment | None = None,
+        broker_reconciliation: ReconciliationReport | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
         replay_checks = self._independent_replay(checked_at, rollback_witness)
@@ -135,10 +137,10 @@ class ProductionAuthorizationReadinessGate:
             ),
             self._policy_integrity(policy, policy_resolution, checked_at),
             self._trusted_evidence(trusted_evidence, checked_at),
-            self._external_attestation(
+            self._broker_attestation(
                 broker_authentication,
-                ProductionReadinessPrerequisite.AUTHENTICATED_BROKER_EVIDENCE,
-                "AUTHENTICATED_BROKER_EVIDENCE_PROVIDER_UNAVAILABLE",
+                trusted_evidence,
+                broker_reconciliation,
                 checked_at,
             ),
             self._sentinel_risk(sentinel_risk_evidence, trusted_evidence, checked_at),
@@ -226,6 +228,68 @@ class ProductionAuthorizationReadinessGate:
             assessment.reason_codes,
             now,
             default=unavailable_code,
+            source_reference=assessment.provider_id,
+            evidence_fingerprint=assessment.fingerprint,
+        )
+
+    @staticmethod
+    def _broker_attestation(
+        assessment: ExternalTrustAttestationAssessment | None,
+        evidence: ValidatedExecutionEvidence | None,
+        reconciliation: ReconciliationReport | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.AUTHENTICATED_BROKER_EVIDENCE
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "AUTHENTICATED_BROKER_EVIDENCE_PROVIDER_UNAVAILABLE",
+                now,
+            )
+        if assessment.status is not ExternalTrustIntegrationStatus.CONFIGURED_UNAUTHENTICATED:
+            return ProductionAuthorizationReadinessGate._external_attestation(
+                assessment,
+                prerequisite,
+                "AUTHENTICATED_BROKER_EVIDENCE_PROVIDER_UNAVAILABLE",
+                now,
+            )
+        statement = assessment.validated_statement
+        if evidence is None or reconciliation is None or statement is None or statement.broker_lineage is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.INVALID,
+                "BROKER_ATTESTATION_EXACT_LINEAGE_UNAVAILABLE",
+                now,
+                source_reference=assessment.provider_id,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        try:
+            expected = build_broker_evidence_lineage(evidence, reconciliation)
+        except ValueError:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.INVALID,
+                "BROKER_ATTESTATION_EVIDENCE_INCOMPLETE",
+                now,
+                source_reference=assessment.provider_id,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        if statement.broker_lineage != expected:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.INVALID,
+                "BROKER_ATTESTATION_EXACT_LINEAGE_MISMATCH",
+                now,
+                source_reference=assessment.provider_id,
+                evidence_fingerprint=assessment.fingerprint,
+            )
+        return _failed_many(
+            prerequisite,
+            ProductionReadinessCheckStatus.BLOCKED,
+            assessment.reason_codes,
+            now,
+            default="AUTHENTICATED_BROKER_EVIDENCE_PROVIDER_UNAVAILABLE",
             source_reference=assessment.provider_id,
             evidence_fingerprint=assessment.fingerprint,
         )

@@ -19,6 +19,7 @@ from typing import Final
 from uuid import uuid4
 
 from app.models.independent_replay import (
+    AtomicReplayConsumptionResult,
     IndependentReplayStoreDiagnostics,
     IndependentReplayStoreStatus,
 )
@@ -336,6 +337,97 @@ class DurableIndependentReplayStore:
             if connection is not None:
                 connection.close()
 
+    def check_and_record_atomic(
+        self,
+        *,
+        bindings: tuple[IndependentReplayBinding, ...],
+        checked_at: datetime,
+    ) -> AtomicReplayConsumptionResult:
+        """Consume related replay claims in one transaction.
+
+        Phase 18 uses one binding for challenge uniqueness and another for the
+        provider sequence stream.  No claim, head, or history event survives
+        unless every binding is valid and the transaction commits.
+        """
+
+        now = _utc(checked_at)
+        fingerprints = tuple(binding.binding_fingerprint for binding in bindings)
+        streams = tuple(_stream_fingerprint(binding) for binding in bindings)
+        if (
+            not bindings
+            or len(set(fingerprints)) != len(fingerprints)
+            or len(set(streams)) != len(streams)
+        ):
+            return _atomic_result(
+                "unavailable", fingerprints or ("0" * 64,), now,
+                "DURABLE_REPLAY_ATOMIC_BINDINGS_INVALID",
+            )
+        connection: sqlite3.Connection | None = None
+        committed = False
+        try:
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            _validated_ready_row(connection)
+            for binding in bindings:
+                status, reason = _binding_precondition(connection, binding)
+                if status is not None:
+                    connection.rollback()
+                    return _atomic_result(status, fingerprints, now, reason)
+
+            consumed_at = now.isoformat()
+            for binding in bindings:
+                stream_fingerprint = _stream_fingerprint(binding)
+                _insert_claim(connection, binding, stream_fingerprint, consumed_at)
+                connection.execute(
+                    "INSERT INTO replay_heads "
+                    "(stream_fingerprint, last_sequence, binding_fingerprint, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(stream_fingerprint) DO UPDATE SET "
+                    "last_sequence = excluded.last_sequence, "
+                    "binding_fingerprint = excluded.binding_fingerprint, "
+                    "updated_at = excluded.updated_at "
+                    "WHERE replay_heads.last_sequence < excluded.last_sequence",
+                    (
+                        stream_fingerprint,
+                        binding.source_sequence,
+                        binding.binding_fingerprint,
+                        consumed_at,
+                    ),
+                )
+                _insert_event(connection, binding.binding_fingerprint, consumed_at)
+            _validate_semantic_integrity(connection, version=_SCHEMA_VERSION)
+            self._commit(connection)
+            committed = True
+            return AtomicReplayConsumptionResult(
+                status="accepted",
+                binding_fingerprints=fingerprints,
+                checked_at=now,
+                locally_durable=True,
+                atomic_consumption=True,
+            )
+        except sqlite3.IntegrityError:
+            _safe_rollback(connection)
+            return _atomic_result(
+                "unavailable", fingerprints, now,
+                "DURABLE_REPLAY_STORAGE_INTEGRITY_FAILURE",
+            )
+        except _ReplaySemanticIntegrityError:
+            _safe_rollback(connection)
+            return _atomic_result(
+                "unavailable", fingerprints, now,
+                "DURABLE_REPLAY_SEMANTIC_INTEGRITY_FAILURE",
+            )
+        except Exception:
+            if not committed:
+                _safe_rollback(connection)
+            return _atomic_result(
+                "unavailable", fingerprints, now,
+                "DURABLE_REPLAY_STORAGE_UNAVAILABLE",
+            )
+        finally:
+            if connection is not None:
+                connection.close()
+
     def _connect(self) -> sqlite3.Connection:
         if not self._path.is_file():
             raise RuntimeError("independent replay database is missing")
@@ -562,6 +654,36 @@ def _stream_fingerprint(binding: IndependentReplayBinding) -> str:
     ).hexdigest()
 
 
+def _binding_precondition(
+    connection: sqlite3.Connection, binding: IndependentReplayBinding
+) -> tuple[str | None, str]:
+    stream_fingerprint = _stream_fingerprint(binding)
+    head = connection.execute(
+        "SELECT last_sequence, binding_fingerprint FROM replay_heads "
+        "WHERE stream_fingerprint = ?",
+        (stream_fingerprint,),
+    ).fetchone()
+    if head is None:
+        return None, ""
+    if binding.source_sequence < int(head[0]):
+        duplicate = connection.execute(
+            "SELECT 1 FROM replay_claims WHERE binding_fingerprint = ?",
+            (binding.binding_fingerprint,),
+        ).fetchone()
+        return (
+            ("duplicate", "AUTHORITY_REPLAY_DUPLICATE")
+            if duplicate is not None
+            else ("rollback", "AUTHORITY_REPLAY_SEQUENCE_ROLLBACK")
+        )
+    if binding.source_sequence == int(head[0]):
+        return (
+            ("duplicate", "AUTHORITY_REPLAY_DUPLICATE")
+            if str(head[1]) == binding.binding_fingerprint
+            else ("conflict", "AUTHORITY_REPLAY_SEQUENCE_CONFLICT")
+        )
+    return None, ""
+
+
 def _claim_identity(binding: IndependentReplayBinding) -> tuple[object, ...]:
     return (
         _stream_fingerprint(binding),
@@ -664,6 +786,20 @@ def _result(
         reason_codes=(reason,),
         locally_durable=(status is not IndependentReplayStatus.UNAVAILABLE),
         atomic_consumption=(status is not IndependentReplayStatus.UNAVAILABLE),
+    )
+
+
+def _atomic_result(
+    status: str,
+    fingerprints: tuple[str, ...],
+    checked_at: datetime,
+    reason: str,
+) -> AtomicReplayConsumptionResult:
+    return AtomicReplayConsumptionResult(
+        status=status,
+        binding_fingerprints=fingerprints,
+        checked_at=checked_at,
+        reason_codes=(reason,),
     )
 
 

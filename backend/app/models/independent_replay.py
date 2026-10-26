@@ -98,3 +98,61 @@ class IndependentReplayStoreDiagnostics(IndependentReplayModel):
                 allow_nan=False,
             ).encode("utf-8")
         ).hexdigest()
+
+
+class AtomicReplayConsumptionResult(IndependentReplayModel):
+    """Outcome for one transaction that consumes several related claims."""
+
+    schema_version: Literal["atomic-replay-consumption-result/v1"] = (
+        "atomic-replay-consumption-result/v1"
+    )
+    status: str = Field(pattern=r"^(accepted|duplicate|rollback|conflict|unavailable)$")
+    binding_fingerprints: tuple[str, ...] = Field(min_length=1)
+    checked_at: datetime
+    reason_codes: tuple[str, ...] = ()
+    locally_durable: bool = False
+    atomic_consumption: bool = False
+    external_rollback_resistance: Literal[False] = False
+    production_authorization_available: Literal[False] = False
+    submission_allowed: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+    @field_validator("binding_fingerprints")
+    @classmethod
+    def stable_fingerprints(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(sorted(set(value)))
+        if len(normalized) != len(value) or any(
+            re.fullmatch(r"[0-9a-f]{64}", item) is None for item in normalized
+        ):
+            raise ValueError("atomic replay bindings must be unique SHA-256 fingerprints")
+        return normalized
+
+    @field_validator("checked_at")
+    @classmethod
+    def normalize_checked_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("atomic replay timestamps require timezone awareness")
+        return value.astimezone(UTC)
+
+    @field_validator("reason_codes", mode="before")
+    @classmethod
+    def stable_reason_codes(cls, value: object) -> object:
+        if not isinstance(value, (tuple, list)):
+            return value
+        normalized = tuple(sorted(set(value)))
+        if any(
+            not isinstance(item, str)
+            or re.fullmatch(r"[A-Z][A-Z0-9_]{0,119}", item) is None
+            for item in normalized
+        ):
+            raise ValueError("atomic replay reasons must be canonical identifiers")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "AtomicReplayConsumptionResult":
+        if self.status == "accepted":
+            if self.reason_codes or not self.locally_durable or not self.atomic_consumption:
+                raise ValueError("accepted atomic replay consumption requires committed local state")
+        elif not self.reason_codes or self.locally_durable or self.atomic_consumption:
+            raise ValueError("failed atomic replay consumption cannot advertise committed state")
+        return self

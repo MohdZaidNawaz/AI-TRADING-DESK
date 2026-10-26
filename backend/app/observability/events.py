@@ -51,6 +51,31 @@ class StructuredEvent(APIModel):
             raise ValueError("structured log timestamps require timezone awareness")
         return value.astimezone(UTC)
 
+    @field_validator(
+        "component",
+        "event_type",
+        "correlation_id",
+        "proposal_id",
+        "analysis_id",
+        "intent_id",
+        "execution_id",
+        "approval_id",
+        "provider",
+        "symbol",
+        "account_reference",
+        "state",
+        "reason_code",
+        mode="before",
+    )
+    @classmethod
+    def _sanitize_identifier(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        normalized = " ".join(value.split())
+        if not normalized or _SENSITIVE_VALUE.search(normalized):
+            return "[REDACTED]"
+        return normalized
+
     @field_validator("fields")
     @classmethod
     def _redact(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:

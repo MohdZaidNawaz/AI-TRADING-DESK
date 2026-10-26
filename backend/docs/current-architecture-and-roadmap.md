@@ -123,3 +123,14 @@ submission, and execution remain blocked.
 
 The detailed contract and limitation analysis is in
 [`independent-trust-and-broker-evidence.md`](independent-trust-and-broker-evidence.md).
+
+### Phase 18 — durable external-attestation consumption (implemented, non-authorizing)
+
+Phase 18 binds signed broker attestations to the exact typed evidence and
+matched reconciliation snapshot used by readiness. It atomically consumes a
+global challenge binding and a provider-sequence binding in the existing local
+Phase 14 replay database, adds bounded provider-call failure behavior, and
+hardens structured identifier logging. No schema migration or external service
+was added. The configured verification root remains independently untrusted,
+local SQLite has no external rollback assurance, readiness remains blocked, and
+all submission paths remain disabled.

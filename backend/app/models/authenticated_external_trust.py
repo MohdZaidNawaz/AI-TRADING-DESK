@@ -55,6 +55,44 @@ class ExternalTrustIntegrationStatus(str, Enum):
     CONFIGURED_UNAUTHENTICATED = "configured_unauthenticated"
 
 
+class BrokerEvidenceLineage(ExternalTrustModel):
+    """Signed identity of one broker snapshot and reconciliation observation."""
+
+    evidence_provider_id: str = Field(min_length=1, max_length=160)
+    evidence_request_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    evidence_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    account_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    snapshot_observed_at: datetime
+    snapshot_retrieved_at: datetime
+    reconciliation_id: str = Field(min_length=1, max_length=160)
+    reconciliation_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    reconciliation_status: Literal["matched"] = "matched"
+
+    @field_validator("evidence_provider_id", "reconciliation_id", mode="before")
+    @classmethod
+    def normalize_identifier(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("snapshot_observed_at", "snapshot_retrieved_at")
+    @classmethod
+    def normalize_snapshot_time(cls, value: datetime) -> datetime:
+        return _utc(value)
+
+    @model_validator(mode="after")
+    def validate_snapshot_chronology(self) -> "BrokerEvidenceLineage":
+        if self.snapshot_observed_at > self.snapshot_retrieved_at:
+            raise ValueError("broker evidence snapshot chronology is inconsistent")
+        return self
+
+
 class ExternalTrustAttestationRequest(ExternalTrustModel):
     schema_version: Literal["external-trust-attestation-request/v1"] = (
         "external-trust-attestation-request/v1"
@@ -71,6 +109,7 @@ class ExternalTrustAttestationRequest(ExternalTrustModel):
     minimum_source_sequence: int = Field(ge=0)
     requested_at: datetime
     max_age_seconds: int = Field(gt=0, le=3600)
+    broker_lineage: BrokerEvidenceLineage | None = None
 
     @field_validator("expected_provider_id", "subject_id", "policy_version", mode="before")
     @classmethod
@@ -86,6 +125,20 @@ class ExternalTrustAttestationRequest(ExternalTrustModel):
     @property
     def request_fingerprint(self) -> str:
         return _fingerprint(self.model_dump(mode="json", exclude={"request_fingerprint"}))
+
+    @model_validator(mode="after")
+    def validate_capability_context(self) -> "ExternalTrustAttestationRequest":
+        if self.capability is ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION:
+            if self.broker_lineage is None:
+                raise ValueError("broker evidence requests require exact snapshot lineage")
+            if (
+                self.subject_fingerprint != self.broker_lineage.evidence_fingerprint
+                or self.scope_fingerprint != self.broker_lineage.evidence_request_fingerprint
+            ):
+                raise ValueError("broker evidence request subject and scope must bind the exact snapshot")
+        elif self.broker_lineage is not None:
+            raise ValueError("only broker evidence requests may contain snapshot lineage")
+        return self
 
 
 class ExternalTrustAttestationStatement(ExternalTrustModel):
@@ -119,6 +172,7 @@ class ExternalTrustAttestationStatement(ExternalTrustModel):
     evidence_fingerprint: str | None = Field(
         default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
+    broker_lineage: BrokerEvidenceLineage | None = None
     reason_codes: tuple[str, ...] = ()
 
     @field_validator(
@@ -157,9 +211,19 @@ class ExternalTrustAttestationStatement(ExternalTrustModel):
         elif (
             self.lifecycle is not None
             or self.evidence_fingerprint is None
+            or self.broker_lineage is None
             or self.reconciliation_status is ExternalReconciliationStatus.NOT_APPLICABLE
         ):
             raise ValueError("broker attestations require evidence and reconciliation state")
+        if self.broker_lineage is not None and self.evidence_fingerprint != self.broker_lineage.evidence_fingerprint:
+            raise ValueError("broker attestation evidence lineage is inconsistent")
+        if self.broker_lineage is not None and (
+            self.subject_fingerprint != self.broker_lineage.evidence_fingerprint
+            or self.scope_fingerprint != self.broker_lineage.evidence_request_fingerprint
+        ):
+            raise ValueError("broker attestation subject and scope must bind the exact snapshot")
+        if self.capability is not ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION and self.broker_lineage is not None:
+            raise ValueError("non-broker attestations cannot contain broker lineage")
         if self.lifecycle is ExternalTrustLifecycle.ACTIVE and self.reason_codes:
             raise ValueError("active lifecycle attestations cannot contain failure reasons")
         if self.lifecycle is not None and self.lifecycle is not ExternalTrustLifecycle.ACTIVE and not self.reason_codes:
@@ -206,6 +270,9 @@ class ExternalTrustAttestationAssessment(ExternalTrustModel):
         default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
     source_sequence: int | None = Field(default=None, gt=0)
+    validated_statement: ExternalTrustAttestationStatement | None = None
+    replay_binding_fingerprints: tuple[str, ...] = ()
+    replay_consumed: bool = False
     signature_verified: bool = False
     bindings_verified: bool = False
     reason_codes: tuple[str, ...] = ()
@@ -235,8 +302,33 @@ class ExternalTrustAttestationAssessment(ExternalTrustModel):
         verified = self.signature_verified or self.bindings_verified
         if verified and (self.statement_fingerprint is None or self.source_sequence is None):
             raise ValueError("verified attestations require immutable statement lineage")
+        if self.bindings_verified and (
+            self.statement_fingerprint is None
+            or self.source_sequence is None
+            or self.validated_statement is None
+        ):
+            raise ValueError("binding-verified attestations require the validated statement")
+        if self.validated_statement is not None and (
+            self.validated_statement.statement_fingerprint != self.statement_fingerprint
+            or self.validated_statement.source_sequence != self.source_sequence
+            or self.validated_statement.request_fingerprint != self.request_fingerprint
+        ):
+            raise ValueError("assessment statement lineage is inconsistent")
+        if self.replay_consumed:
+            if (
+                not self.bindings_verified
+                or len(self.replay_binding_fingerprints) != 2
+                or len(set(self.replay_binding_fingerprints)) != 2
+                or any(
+                    re.fullmatch(r"[0-9a-f]{64}", value) is None
+                    for value in self.replay_binding_fingerprints
+                )
+            ):
+                raise ValueError("consumed attestations require two durable replay bindings")
+        elif self.replay_binding_fingerprints:
+            raise ValueError("unconsumed attestations cannot advertise replay bindings")
         if self.status is ExternalTrustIntegrationStatus.CONFIGURED_UNAUTHENTICATED:
-            if not (self.signature_verified and self.bindings_verified):
+            if not (self.signature_verified and self.bindings_verified and self.replay_consumed):
                 raise ValueError("configured attestation requires signature and binding verification")
             if self.reason_codes != ("EXTERNAL_VERIFICATION_ROOT_NOT_INDEPENDENTLY_AUTHENTICATED",):
                 raise ValueError("configured attestation must disclose unavailable independent trust")

@@ -188,3 +188,28 @@ the checkpoint is treated as fully regression-validated.
 Until all blockers are operationally satisfied and independently reviewed,
 production authorization is not permitted and demo/live submission remains
 disabled.
+
+## Phase 18 hardening addendum
+
+Phase 18 preserves the Phase 16 non-authorizing boundary while closing three
+software-only gaps:
+
+- Broker attestations now sign and retain the exact validated-evidence request
+  and snapshot fingerprints, source-scoped account fingerprint, observation and
+  retrieval times, and matched reconciliation identity/fingerprint. Readiness
+  recomputes this lineage from the exact evidence and reconciliation objects.
+  A match is still `BLOCKED`, never `SATISFIED`, because no independent provider
+  or root is operational.
+- The existing Phase 14 SQLite schema is reused without migration. One
+  `BEGIN IMMEDIATE` transaction consumes a challenge stream and the applicable
+  provider/root/subject/scope/policy sequence stream, writes both claims and
+  both history events, validates semantic consistency, and commits them
+  together. Local durability still cannot detect coherent database rollback.
+- Provider reads have a configurable two-second default and a thirty-second
+  hard maximum. Calls use a process-wide budget of four daemon workers. Python
+  cannot safely terminate a blocked thread, so late responses are discarded;
+  exhausted capacity fails closed and no retry or cached success is attempted.
+
+Structured logging also redacts secret-looking values in every top-level
+identifier field, in addition to filtering custom fields. This is defensive
+redaction, not permission to send secrets to logging APIs.

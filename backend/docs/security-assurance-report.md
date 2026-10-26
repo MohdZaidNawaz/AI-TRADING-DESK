@@ -320,3 +320,31 @@ Operational independent trust, current revocation assurance, privileged-host
 rollback resistance, complete broker truth, and authoritative reconciliation
 remain external release blockers. See
 [`phase16-authenticated-external-trust.md`](phase16-authenticated-external-trust.md).
+
+## Phase 18 durable attestation and exact evidence-lineage hardening
+
+Phase 18 retains the complete normalized signed broker statement in its
+non-authorizing assessment and compares the signed evidence request, evidence
+snapshot, source-scoped account, source timestamps, and matched reconciliation
+fingerprints with the exact objects supplied to readiness. Unavailable or
+mismatched context is invalid; a correct match remains blocked because the
+verification root and provider are not independently authenticated.
+
+The Phase 14 replay database is extended through an atomic multi-binding API,
+not a new schema or competing store. Each valid attestation consumes a globally
+scoped challenge stream and a provider/root/subject/scope/policy sequence stream
+within one transaction. Claims, heads, and events either commit together or are
+reported unavailable. This provides local concurrency and restart durability,
+but it does not detect coherent rollback and is not external monotonic proof.
+
+Provider calls are time-bounded and globally capacity-bounded. A timed-out
+Python thread cannot be terminated safely, so it may finish later; its result is
+discarded and the bounded slot is released only when it exits. Exceptions,
+timeouts, and capacity exhaustion return generic unavailable codes. No network
+client, credential, retry, or cached-success behavior is present.
+
+All production-authorization, submission, execution, independent-authentication,
+authoritative-reconciliation, and external-rollback fields remain literal false.
+Operational trust-root provisioning, lifecycle/revocation service, external
+witness, authenticated broker provider, authoritative reconciliation, and
+independent production review remain blockers.
