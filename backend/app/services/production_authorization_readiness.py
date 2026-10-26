@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from app.audit.service import AuditService
 from app.execution.kill_switch import ExecutionKillSwitch
 from app.models.demo_execution import ControlledDemoExecutionPolicy
+from app.models.authenticated_external_trust import (
+    ExternalTrustAttestationAssessment,
+    ExternalTrustIntegrationStatus,
+)
 from app.models.durable_execution import DurableExecutionReservation
 from app.models.execution_state import ExecutionLifecycleState, ExecutionRecord
 from app.models.production_authorization import (
@@ -86,6 +90,8 @@ class ProductionAuthorizationReadinessGate:
         personal_trust: PersonalTrustBootstrapAssessment | None = None,
         trust_governance: IndependentTrustGovernanceAssessment | None = None,
         rollback_witness: ExternalRollbackWitnessAssessment | None = None,
+        root_provisioning: ExternalTrustAttestationAssessment | None = None,
+        broker_authentication: ExternalTrustAttestationAssessment | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
         replay_checks = self._independent_replay(checked_at, rollback_witness)
@@ -96,6 +102,12 @@ class ProductionAuthorizationReadinessGate:
                 "LOCAL_KEY_CUSTODY_NOT_INDEPENDENTLY_ASSESSED",
                 checked_at,
             ),
+            self._external_attestation(
+                root_provisioning,
+                ProductionReadinessPrerequisite.GOVERNANCE_ROOT_PROVISIONING,
+                "INDEPENDENT_GOVERNANCE_ROOT_PROVISIONING_UNAVAILABLE",
+                checked_at,
+            ),
             _failed(
                 ProductionReadinessPrerequisite.AUTHORIZED_POLICY_APPROVER,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
@@ -104,6 +116,7 @@ class ProductionAuthorizationReadinessGate:
             ),
             self._independent_trust_anchor(trust_governance, checked_at),
             self._independent_anchor_lifecycle(trust_governance, checked_at),
+            self._rotation_recovery_assurance(trust_governance, checked_at),
             self._personal_trust_bootstrap(personal_trust, checked_at),
             self._personal_key_status_authority(personal_trust, checked_at),
             self._personal_replay_protection(personal_trust, checked_at),
@@ -122,6 +135,12 @@ class ProductionAuthorizationReadinessGate:
             ),
             self._policy_integrity(policy, policy_resolution, checked_at),
             self._trusted_evidence(trusted_evidence, checked_at),
+            self._external_attestation(
+                broker_authentication,
+                ProductionReadinessPrerequisite.AUTHENTICATED_BROKER_EVIDENCE,
+                "AUTHENTICATED_BROKER_EVIDENCE_PROVIDER_UNAVAILABLE",
+                checked_at,
+            ),
             self._sentinel_risk(sentinel_risk_evidence, trusted_evidence, checked_at),
             self._sentinel_approval(proposal, decision, checked_at),
             self._reservation(reservation, checked_at),
@@ -175,6 +194,73 @@ class ProductionAuthorizationReadinessGate:
             evaluated_at=checked_at,
             checks=ordered,
             reason_codes=reasons,
+        )
+
+    @staticmethod
+    def _external_attestation(
+        assessment: ExternalTrustAttestationAssessment | None,
+        prerequisite: ProductionReadinessPrerequisite,
+        unavailable_code: str,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                unavailable_code,
+                now,
+            )
+        status = {
+            ExternalTrustIntegrationStatus.UNCONFIGURED: ProductionReadinessCheckStatus.UNAVAILABLE,
+            ExternalTrustIntegrationStatus.UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+            ExternalTrustIntegrationStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+            ExternalTrustIntegrationStatus.STALE: ProductionReadinessCheckStatus.STALE,
+            ExternalTrustIntegrationStatus.REVOKED: ProductionReadinessCheckStatus.REVOKED,
+            ExternalTrustIntegrationStatus.SUPERSEDED: ProductionReadinessCheckStatus.SUPERSEDED,
+            ExternalTrustIntegrationStatus.CONFLICT: ProductionReadinessCheckStatus.BLOCKED,
+            ExternalTrustIntegrationStatus.CONFIGURED_UNAUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+        }[assessment.status]
+        return _failed_many(
+            prerequisite,
+            status,
+            assessment.reason_codes,
+            now,
+            default=unavailable_code,
+            source_reference=assessment.provider_id,
+            evidence_fingerprint=assessment.fingerprint,
+        )
+
+    @staticmethod
+    def _rotation_recovery_assurance(
+        assessment: IndependentTrustGovernanceAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.ROTATION_RECOVERY_ASSURANCE
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "AUTHORITATIVE_ROTATION_RECOVERY_PROVIDER_UNAVAILABLE",
+                now,
+            )
+        status = {
+            IndependentTrustGovernanceStatus.UNCONFIGURED: ProductionReadinessCheckStatus.UNAVAILABLE,
+            IndependentTrustGovernanceStatus.CONFIGURED_UNAUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.VALID_INDEPENDENTLY_AUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.EXPIRED: ProductionReadinessCheckStatus.STALE,
+            IndependentTrustGovernanceStatus.REVOKED: ProductionReadinessCheckStatus.REVOKED,
+            IndependentTrustGovernanceStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+            IndependentTrustGovernanceStatus.ROTATION_PENDING: ProductionReadinessCheckStatus.BLOCKED,
+            IndependentTrustGovernanceStatus.GOVERNANCE_UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+        }[assessment.status]
+        return _failed_many(
+            prerequisite,
+            status,
+            assessment.reason_codes,
+            now,
+            default="AUTHORITATIVE_ROTATION_RECOVERY_ASSURANCE_UNAVAILABLE",
+            source_reference="signed_governance_manifest_local_verification_only",
+            evidence_fingerprint=assessment.fingerprint,
         )
 
     def _independent_replay(

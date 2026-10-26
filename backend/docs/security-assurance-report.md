@@ -291,3 +291,32 @@ submission.
 Until every blocker is implemented, independently verified, and operationally
 configured, **production authorization is not permitted**. Demo and live order
 submission must remain disabled.
+
+## Phase 16 authenticated external trust boundary
+
+Phase 16 adds immutable signed-attestation contracts and a read-only provider
+protocol for root provisioning, lifecycle status, and broker-evidence
+provenance. The verifier uses only separately configured Ed25519 public
+material; an attestation cannot provide or substitute its own verification
+key. Exact provider, root, request, challenge, capability, subject generation
+and fingerprint, scope, policy, sequence, chronology, expiry, lifecycle, and
+reconciliation bindings are checked at composition time.
+
+This is an integration boundary, not an operational authority. The existing
+configured-root model fixes independent trust to false, and Phase 16 assessment
+models fix independent authentication, authoritative lifecycle, external
+rollback assurance, broker authentication, authoritative reconciliation,
+production authorization, submission, and execution to false. A valid local
+signature therefore remains `CONFIGURED_UNAUTHENTICATED`.
+
+Readiness now distinguishes governance-root provisioning, rotation/recovery
+assurance, and authenticated broker evidence from the pre-existing trust,
+replay, structural evidence, reconciliation, review, and authorization checks.
+No new check can become satisfied from a test fake or locally configured key.
+
+No authenticated provisioning authority, lifecycle provider, external
+monotonic witness, or broker-evidence provider was available or contacted.
+Operational independent trust, current revocation assurance, privileged-host
+rollback resistance, complete broker truth, and authoritative reconciliation
+remain external release blockers. See
+[`phase16-authenticated-external-trust.md`](phase16-authenticated-external-trust.md).

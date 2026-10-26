@@ -94,6 +94,13 @@ npm run build
   Because that root is not independently authenticated, valid local evidence is
   still configured-but-unauthenticated. The external witness is unavailable by
   default and cannot be replaced by local state.
+- Phase 16 adds a no-I/O-by-default, provider-neutral attestation boundary for
+  governance-root provisioning, authoritative lifecycle retrieval, and broker
+  evidence provenance/reconciliation. It validates real Ed25519 signatures
+  against separately configured public material, but deliberately reports
+  configured-but-unauthenticated because no independently provisioned root or
+  operational external provider exists. Readiness reports these dependencies
+  separately and remains blocked.
 - Mock market values are explicitly labeled in both the API and UI.
 - The analysis endpoint reports deterministic_mock; it is not a live AI
   provider.

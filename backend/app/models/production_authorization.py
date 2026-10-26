@@ -20,9 +20,11 @@ class ProductionAuthorizationModel(APIModel):
 
 class ProductionReadinessPrerequisite(str, Enum):
     LOCAL_KEY_CUSTODY = "local_key_custody"
+    GOVERNANCE_ROOT_PROVISIONING = "governance_root_provisioning"
     AUTHORIZED_POLICY_APPROVER = "authorized_policy_approver"
     INDEPENDENT_TRUST_ANCHOR = "independent_trust_anchor"
     INDEPENDENT_ANCHOR_LIFECYCLE = "independent_anchor_lifecycle"
+    ROTATION_RECOVERY_ASSURANCE = "rotation_recovery_assurance"
     PERSONAL_TRUST_BOOTSTRAP = "personal_trust_bootstrap"
     PERSONAL_KEY_STATUS_AUTHORITY = "personal_key_status_authority"
     PERSONAL_REPLAY_ROLLBACK_PROTECTION = "personal_replay_rollback_protection"
@@ -33,6 +35,7 @@ class ProductionReadinessPrerequisite(str, Enum):
     AUTHORITATIVE_REVOCATION_SOURCE = "authoritative_revocation_source"
     POLICY_INTEGRITY = "policy_integrity"
     TRUSTED_EXECUTION_EVIDENCE = "trusted_execution_evidence"
+    AUTHENTICATED_BROKER_EVIDENCE = "authenticated_broker_evidence"
     SENTINEL_RISK_VERIFICATION = "sentinel_risk_verification"
     SENTINEL_TRADE_APPROVAL = "sentinel_trade_approval"
     DURABLE_RESERVATION = "durable_reservation"
