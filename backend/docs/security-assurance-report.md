@@ -348,3 +348,25 @@ authoritative-reconciliation, and external-rollback fields remain literal false.
 Operational trust-root provisioning, lifecycle/revocation service, external
 witness, authenticated broker provider, authoritative reconciliation, and
 independent production review remain blockers.
+
+## Phase 19 external trust operations assurance
+
+Phase 19 reuses the Phase 16/18 Ed25519, exact-binding, freshness, timeout, and
+atomic replay controls for five separate capabilities: root provisioning,
+lifecycle status, rollback witness, broker evidence, and authoritative
+reconciliation. Witness source sequences are bound to signed checkpoint
+sequences. Reconciliation signs exact account, scope, evidence, snapshot,
+reservation, execution-history, generation, coverage, and outcome lineage.
+
+The aggregate operational assessment accepts only complete locally verified
+lineage, yet remains `STRUCTURALLY_VALIDATED_UNAUTHENTICATED`. Its independent
+root, authoritative lifecycle, transport authentication, external rollback,
+broker authentication, authoritative reconciliation, production authorization,
+submission, and execution fields are all literal false. Readiness maps even a
+complete synthetic result to `BLOCKED`, never `SATISFIED`.
+
+No network transport, provider credential, private key, broker connection,
+external witness, retry loop, execution adapter, or schema migration was added.
+Local replay state still cannot detect coherent restoration without a real
+independently administered witness. The detailed crash and recovery model is in
+[`phase19-external-trust-operations.md`](phase19-external-trust-operations.md).

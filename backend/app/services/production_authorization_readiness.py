@@ -18,6 +18,10 @@ from app.models.authenticated_external_trust import (
 )
 from app.models.durable_execution import DurableExecutionReservation
 from app.models.execution_state import ExecutionLifecycleState, ExecutionRecord, ReconciliationReport
+from app.models.external_trust_operations import (
+    ExternalOperationsStatus,
+    ExternalTrustOperationalAssessment,
+)
 from app.models.production_authorization import (
     ProductionAuthorizationReadinessReport,
     ProductionReadinessCheck,
@@ -94,6 +98,7 @@ class ProductionAuthorizationReadinessGate:
         root_provisioning: ExternalTrustAttestationAssessment | None = None,
         broker_authentication: ExternalTrustAttestationAssessment | None = None,
         broker_reconciliation: ReconciliationReport | None = None,
+        external_operations: ExternalTrustOperationalAssessment | None = None,
     ) -> ProductionAuthorizationReadinessReport:
         checked_at = _utc(now)
         replay_checks = self._independent_replay(checked_at, rollback_witness)
@@ -123,6 +128,7 @@ class ProductionAuthorizationReadinessGate:
             self._personal_key_status_authority(personal_trust, checked_at),
             self._personal_replay_protection(personal_trust, checked_at),
             *replay_checks,
+            self._external_operations(external_operations, checked_at),
             _failed(
                 ProductionReadinessPrerequisite.AUTHORITATIVE_APPROVAL_SOURCE,
                 ProductionReadinessCheckStatus.UNAVAILABLE,
@@ -196,6 +202,37 @@ class ProductionAuthorizationReadinessGate:
             evaluated_at=checked_at,
             checks=ordered,
             reason_codes=reasons,
+        )
+
+    @staticmethod
+    def _external_operations(
+        assessment: ExternalTrustOperationalAssessment | None,
+        now: datetime,
+    ) -> ProductionReadinessCheck:
+        prerequisite = ProductionReadinessPrerequisite.EXTERNAL_TRUST_OPERATIONS
+        if assessment is None:
+            return _failed(
+                prerequisite,
+                ProductionReadinessCheckStatus.UNAVAILABLE,
+                "EXTERNAL_TRUST_OPERATIONS_UNAVAILABLE",
+                now,
+            )
+        status = {
+            ExternalOperationsStatus.UNCONFIGURED: ProductionReadinessCheckStatus.UNAVAILABLE,
+            ExternalOperationsStatus.UNAVAILABLE: ProductionReadinessCheckStatus.UNAVAILABLE,
+            ExternalOperationsStatus.INVALID: ProductionReadinessCheckStatus.INVALID,
+            ExternalOperationsStatus.STALE: ProductionReadinessCheckStatus.STALE,
+            ExternalOperationsStatus.CONFLICT: ProductionReadinessCheckStatus.BLOCKED,
+            ExternalOperationsStatus.STRUCTURALLY_VALIDATED_UNAUTHENTICATED: ProductionReadinessCheckStatus.BLOCKED,
+        }[assessment.status]
+        return _failed_many(
+            prerequisite,
+            status,
+            assessment.reason_codes,
+            now,
+            default="EXTERNAL_TRUST_OPERATIONS_UNAVAILABLE",
+            source_reference=assessment.provider_id,
+            evidence_fingerprint=assessment.fingerprint,
         )
 
     @staticmethod

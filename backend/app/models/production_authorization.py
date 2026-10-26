@@ -31,6 +31,7 @@ class ProductionReadinessPrerequisite(str, Enum):
     INDEPENDENT_REPLAY_STORAGE = "independent_replay_storage"
     ATOMIC_REPLAY_CONSUMPTION = "atomic_replay_consumption"
     EXTERNAL_ROLLBACK_ASSURANCE = "external_rollback_assurance"
+    EXTERNAL_TRUST_OPERATIONS = "external_trust_operations"
     AUTHORITATIVE_APPROVAL_SOURCE = "authoritative_approval_source"
     AUTHORITATIVE_REVOCATION_SOURCE = "authoritative_revocation_source"
     POLICY_INTEGRITY = "policy_integrity"

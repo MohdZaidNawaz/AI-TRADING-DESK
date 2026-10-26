@@ -153,7 +153,11 @@ def test_unconfigured_default_is_unavailable_and_non_authorizing() -> None:
 
 @pytest.mark.parametrize(
     "capability",
-    list(ExternalTrustCapability),
+    (
+        ExternalTrustCapability.ROOT_PROVISIONING,
+        ExternalTrustCapability.LIFECYCLE_STATUS,
+        ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION,
+    ),
 )
 def test_valid_signed_contract_remains_configured_unauthenticated(capability, tmp_path) -> None:
     private, root = _key_and_root()

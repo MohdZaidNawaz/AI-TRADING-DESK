@@ -28,6 +28,8 @@ class ExternalTrustCapability(str, Enum):
     ROOT_PROVISIONING = "root_provisioning"
     LIFECYCLE_STATUS = "lifecycle_status"
     BROKER_EVIDENCE_AUTHENTICATION = "broker_evidence_authentication"
+    ROLLBACK_WITNESS = "rollback_witness"
+    AUTHORITATIVE_RECONCILIATION = "authoritative_reconciliation"
 
 
 class ExternalTrustLifecycle(str, Enum):
@@ -93,6 +95,78 @@ class BrokerEvidenceLineage(ExternalTrustModel):
         return self
 
 
+class RollbackWitnessLineage(ExternalTrustModel):
+    """Canonical checkpoint identity signed by a future external witness."""
+
+    replay_store_id: str = Field(min_length=32, max_length=64, pattern=r"^[0-9a-f]+$")
+    replay_stream_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    sequence_head: int = Field(gt=0)
+    history_checkpoint_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    previous_checkpoint_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    witness_sequence: int = Field(gt=0)
+    update_idempotency_key: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    update_outcome: Literal["confirmed", "unknown", "conflict"]
+
+    @computed_field(return_type=str)
+    @property
+    def checkpoint_fingerprint(self) -> str:
+        return _fingerprint(self.model_dump(mode="json", exclude={"checkpoint_fingerprint"}))
+
+
+class AuthoritativeReconciliationLineage(ExternalTrustModel):
+    """Exact external reconciliation subject; it remains non-authorizing locally."""
+
+    account_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    scope_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    evidence_request_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    evidence_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    snapshot_generation: int = Field(gt=0)
+    reservation_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    execution_history_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    replay_checkpoint_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    reconciliation_generation: int = Field(gt=0)
+    coverage_complete: bool
+    record_count: int = Field(ge=0)
+    status: Literal["matched", "missing", "duplicate", "conflict", "unresolved"]
+
+    @model_validator(mode="after")
+    def validate_coverage(self) -> "AuthoritativeReconciliationLineage":
+        if self.status == "matched" and not self.coverage_complete:
+            raise ValueError("matched reconciliation requires complete coverage")
+        if self.status != "matched" and self.coverage_complete:
+            raise ValueError("failed reconciliation cannot claim complete coverage")
+        return self
+
+    @computed_field(return_type=str)
+    @property
+    def reconciliation_fingerprint(self) -> str:
+        return _fingerprint(
+            self.model_dump(mode="json", exclude={"reconciliation_fingerprint"})
+        )
+
+
 class ExternalTrustAttestationRequest(ExternalTrustModel):
     schema_version: Literal["external-trust-attestation-request/v1"] = (
         "external-trust-attestation-request/v1"
@@ -110,6 +184,8 @@ class ExternalTrustAttestationRequest(ExternalTrustModel):
     requested_at: datetime
     max_age_seconds: int = Field(gt=0, le=3600)
     broker_lineage: BrokerEvidenceLineage | None = None
+    witness_lineage: RollbackWitnessLineage | None = None
+    reconciliation_lineage: AuthoritativeReconciliationLineage | None = None
 
     @field_validator("expected_provider_id", "subject_id", "policy_version", mode="before")
     @classmethod
@@ -128,6 +204,11 @@ class ExternalTrustAttestationRequest(ExternalTrustModel):
 
     @model_validator(mode="after")
     def validate_capability_context(self) -> "ExternalTrustAttestationRequest":
+        contexts = (
+            self.broker_lineage,
+            self.witness_lineage,
+            self.reconciliation_lineage,
+        )
         if self.capability is ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION:
             if self.broker_lineage is None:
                 raise ValueError("broker evidence requests require exact snapshot lineage")
@@ -136,8 +217,31 @@ class ExternalTrustAttestationRequest(ExternalTrustModel):
                 or self.scope_fingerprint != self.broker_lineage.evidence_request_fingerprint
             ):
                 raise ValueError("broker evidence request subject and scope must bind the exact snapshot")
-        elif self.broker_lineage is not None:
-            raise ValueError("only broker evidence requests may contain snapshot lineage")
+            if self.witness_lineage is not None or self.reconciliation_lineage is not None:
+                raise ValueError("broker evidence requests cannot mix capability contexts")
+        elif self.capability is ExternalTrustCapability.ROLLBACK_WITNESS:
+            if self.witness_lineage is None:
+                raise ValueError("rollback witness requests require exact checkpoint lineage")
+            if (
+                self.subject_fingerprint != self.witness_lineage.checkpoint_fingerprint
+                or self.scope_fingerprint != self.witness_lineage.replay_stream_fingerprint
+            ):
+                raise ValueError("rollback witness request must bind the exact checkpoint")
+            if self.broker_lineage is not None or self.reconciliation_lineage is not None:
+                raise ValueError("rollback witness requests cannot mix capability contexts")
+        elif self.capability is ExternalTrustCapability.AUTHORITATIVE_RECONCILIATION:
+            if self.reconciliation_lineage is None:
+                raise ValueError("reconciliation requests require exact reconciliation lineage")
+            if (
+                self.subject_fingerprint
+                != self.reconciliation_lineage.reconciliation_fingerprint
+                or self.scope_fingerprint != self.reconciliation_lineage.scope_fingerprint
+            ):
+                raise ValueError("reconciliation request must bind the exact result")
+            if self.broker_lineage is not None or self.witness_lineage is not None:
+                raise ValueError("reconciliation requests cannot mix capability contexts")
+        elif any(context is not None for context in contexts):
+            raise ValueError("governance requests cannot contain operational lineage")
         return self
 
 
@@ -173,6 +277,8 @@ class ExternalTrustAttestationStatement(ExternalTrustModel):
         default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
     )
     broker_lineage: BrokerEvidenceLineage | None = None
+    witness_lineage: RollbackWitnessLineage | None = None
+    reconciliation_lineage: AuthoritativeReconciliationLineage | None = None
     reason_codes: tuple[str, ...] = ()
 
     @field_validator(
@@ -206,15 +312,44 @@ class ExternalTrustAttestationStatement(ExternalTrustModel):
             ExternalTrustCapability.ROOT_PROVISIONING,
             ExternalTrustCapability.LIFECYCLE_STATUS,
         }:
-            if self.lifecycle is None or self.reconciliation_status is not ExternalReconciliationStatus.NOT_APPLICABLE:
+            if (
+                self.lifecycle is None
+                or self.reconciliation_status is not ExternalReconciliationStatus.NOT_APPLICABLE
+                or self.evidence_fingerprint is not None
+                or self.broker_lineage is not None
+                or self.witness_lineage is not None
+                or self.reconciliation_lineage is not None
+            ):
                 raise ValueError("governance attestations require lifecycle-only state")
+        elif self.capability is ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION:
+            if (
+                self.lifecycle is not None
+                or self.evidence_fingerprint is None
+                or self.broker_lineage is None
+                or self.witness_lineage is not None
+                or self.reconciliation_lineage is not None
+                or self.reconciliation_status is ExternalReconciliationStatus.NOT_APPLICABLE
+            ):
+                raise ValueError("broker attestations require evidence and reconciliation state")
+        elif self.capability is ExternalTrustCapability.ROLLBACK_WITNESS:
+            if (
+                self.lifecycle is not None
+                or self.evidence_fingerprint is not None
+                or self.broker_lineage is not None
+                or self.witness_lineage is None
+                or self.reconciliation_lineage is not None
+                or self.reconciliation_status is not ExternalReconciliationStatus.NOT_APPLICABLE
+            ):
+                raise ValueError("rollback witness attestations require checkpoint-only state")
         elif (
             self.lifecycle is not None
             or self.evidence_fingerprint is None
-            or self.broker_lineage is None
+            or self.broker_lineage is not None
+            or self.witness_lineage is not None
+            or self.reconciliation_lineage is None
             or self.reconciliation_status is ExternalReconciliationStatus.NOT_APPLICABLE
         ):
-            raise ValueError("broker attestations require evidence and reconciliation state")
+            raise ValueError("reconciliation attestations require exact result lineage")
         if self.broker_lineage is not None and self.evidence_fingerprint != self.broker_lineage.evidence_fingerprint:
             raise ValueError("broker attestation evidence lineage is inconsistent")
         if self.broker_lineage is not None and (
@@ -224,6 +359,30 @@ class ExternalTrustAttestationStatement(ExternalTrustModel):
             raise ValueError("broker attestation subject and scope must bind the exact snapshot")
         if self.capability is not ExternalTrustCapability.BROKER_EVIDENCE_AUTHENTICATION and self.broker_lineage is not None:
             raise ValueError("non-broker attestations cannot contain broker lineage")
+        if self.witness_lineage is not None and (
+            self.subject_fingerprint != self.witness_lineage.checkpoint_fingerprint
+            or self.scope_fingerprint != self.witness_lineage.replay_stream_fingerprint
+            or self.source_sequence != self.witness_lineage.witness_sequence
+        ):
+            raise ValueError("rollback witness attestation lineage is inconsistent")
+        if self.reconciliation_lineage is not None and (
+            self.subject_fingerprint
+            != self.reconciliation_lineage.reconciliation_fingerprint
+            or self.scope_fingerprint != self.reconciliation_lineage.scope_fingerprint
+            or self.evidence_fingerprint != self.reconciliation_lineage.evidence_fingerprint
+            or self.source_sequence
+            != self.reconciliation_lineage.reconciliation_generation
+        ):
+            raise ValueError("authoritative reconciliation lineage is inconsistent")
+        if (
+            self.reconciliation_lineage is not None
+            and (
+                self.reconciliation_lineage.status == "matched"
+                or self.reconciliation_lineage.coverage_complete
+            )
+            != (self.reconciliation_status is ExternalReconciliationStatus.COMPLETE)
+        ):
+            raise ValueError("reconciliation status and coverage are inconsistent")
         if self.lifecycle is ExternalTrustLifecycle.ACTIVE and self.reason_codes:
             raise ValueError("active lifecycle attestations cannot contain failure reasons")
         if self.lifecycle is not None and self.lifecycle is not ExternalTrustLifecycle.ACTIVE and not self.reason_codes:
@@ -277,6 +436,7 @@ class ExternalTrustAttestationAssessment(ExternalTrustModel):
     bindings_verified: bool = False
     reason_codes: tuple[str, ...] = ()
     independently_authenticated: Literal[False] = False
+    transport_authenticated: Literal[False] = False
     authoritative_lifecycle: Literal[False] = False
     external_rollback_assurance: Literal[False] = False
     broker_evidence_authenticated: Literal[False] = False

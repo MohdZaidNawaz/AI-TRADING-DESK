@@ -178,6 +178,36 @@ class AuthenticatedExternalTrustIntegration:
                 envelope=envelope, signature_verified=True, bindings_verified=True,
                 replay_binding_fingerprints=replay.binding_fingerprints,
             )
+        if (
+            statement.witness_lineage is not None
+            and statement.witness_lineage.update_outcome != "confirmed"
+        ):
+            return _failure(
+                request,
+                provider_id,
+                now,
+                ExternalTrustIntegrationStatus.CONFLICT,
+                "EXTERNAL_WITNESS_UPDATE_UNCERTAIN",
+                envelope=envelope,
+                signature_verified=True,
+                bindings_verified=True,
+                replay_binding_fingerprints=replay.binding_fingerprints,
+            )
+        if (
+            statement.reconciliation_lineage is not None
+            and statement.reconciliation_lineage.status != "matched"
+        ):
+            return _failure(
+                request,
+                provider_id,
+                now,
+                ExternalTrustIntegrationStatus.CONFLICT,
+                "EXTERNAL_RECONCILIATION_INCOMPLETE",
+                envelope=envelope,
+                signature_verified=True,
+                bindings_verified=True,
+                replay_binding_fingerprints=replay.binding_fingerprints,
+            )
         # The configured root model is deliberately Literal[False] for
         # independently_trusted.  A valid local configuration therefore proves
         # structure only and cannot authorize production.
@@ -246,6 +276,11 @@ def _binding_codes(
         (item.scope_fingerprint == request.scope_fingerprint, "EXTERNAL_ATTESTATION_SCOPE_MISMATCH"),
         (item.policy_version == request.policy_version, "EXTERNAL_ATTESTATION_POLICY_MISMATCH"),
         (item.broker_lineage == request.broker_lineage, "EXTERNAL_ATTESTATION_BROKER_LINEAGE_MISMATCH"),
+        (item.witness_lineage == request.witness_lineage, "EXTERNAL_ATTESTATION_WITNESS_LINEAGE_MISMATCH"),
+        (
+            item.reconciliation_lineage == request.reconciliation_lineage,
+            "EXTERNAL_ATTESTATION_RECONCILIATION_LINEAGE_MISMATCH",
+        ),
         (item.source_sequence >= request.minimum_source_sequence, "EXTERNAL_ATTESTATION_SEQUENCE_ROLLBACK"),
     )
     codes = [code for valid, code in checks if not valid]

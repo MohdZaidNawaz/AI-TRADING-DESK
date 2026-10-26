@@ -134,3 +134,17 @@ hardens structured identifier logging. No schema migration or external service
 was added. The configured verification root remains independently untrusted,
 local SQLite has no external rollback assurance, readiness remains blocked, and
 all submission paths remain disabled.
+
+### Phase 19 — external trust operations (implemented locally, externally unavailable)
+
+Phase 19 extends the existing signed-attestation protocol with exact rollback-
+witness and authoritative-reconciliation lineages and composes root,
+lifecycle, witness, broker, and reconciliation assessments into one immutable
+non-authorizing diagnostic. It reuses Phase 18 atomic replay consumption and
+adds no network client, credential, execution route, or persistence schema.
+
+All operational independence claims remain false. Real root provisioning,
+authenticated transport and lifecycle service, an independently administered
+monotonic witness, broker evidence, authoritative reconciliation, and security
+approval remain external blockers. See
+[`phase19-external-trust-operations.md`](phase19-external-trust-operations.md).
