@@ -168,3 +168,32 @@ response, external integration gates, and the release checklist are specified
 in [`phase20-operational-readiness.md`](phase20-operational-readiness.md). No
 external service, deployment automation, credential, API route, or execution
 path was added. Staging and production remain unprovisioned.
+
+### Phase 21 — external dependency acceptance (implemented locally, integrations unavailable)
+
+Phase 21 adds a canonical nine-dependency registry, a sanitized provider-neutral
+evidence envelope, discriminated dependency-specific payloads, and a
+deterministic offline acceptance workflow. It aligns with the existing trust,
+attestation, replay, broker-lineage, readiness, and bounded-observability
+contracts without treating them as authenticated input. Caller status strings,
+booleans, reason codes, fingerprints, and
+claimed independent provenance cannot establish acceptance. Structurally valid
+synthetic fixtures are labeled synthetic-tested and retain an explicit
+non-operational blocker.
+
+Broker, reconciliation, monitoring, recovery, security-review, and human-
+approval payloads now have locally enforced completeness and policy rules.
+Security review and approval require exact release-commit binding. These typed
+payloads remain sanitized summaries: no signature, trust chain, issuer, receipt,
+capability, reviewer, or approver becomes trusted without a real independent
+verifier.
+
+The environment model distinguishes local development, deterministic tests,
+isolated sandbox, independently verified pre-production, and production.
+Phase 21 performs no automatic promotion and cannot emit independently-verified
+or accepted results. It is not connected to `/api/readiness`, Pilot,
+FinalExecutionGate, MT5, providers, deployment, or execution. Real trust-root
+provisioning, lifecycle authority, rollback witness, broker evidence,
+reconciliation, monitoring delivery, recovery rehearsal, independent review,
+and human approval remain blocked. See
+[`phase21-external-integration-acceptance.md`](phase21-external-integration-acceptance.md).

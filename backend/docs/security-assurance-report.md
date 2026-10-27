@@ -406,3 +406,48 @@ external blockers. See
 The Phase 20 evaluator is an offline assessment only. Existing runtime
 readiness and `/api/readiness` behavior are unchanged, and no Phase 20 module is
 referenced by Pilot, FinalExecutionGate, MT5, broker adapters, or API routes.
+
+## Phase 21 external-dependency acceptance assurance
+
+Phase 21 provides a complete immutable registry for the nine outstanding
+external dependencies and a sanitized evidence envelope bound to dependency,
+issuer, subject, environment, request, challenge, scope, chronology, sequence,
+typed payload fingerprint, policy version, and required release commit.
+Independent-security-review and human-production-approval evidence must bind
+the exact assessed commit in both envelope and typed payload. Canonical hashes prove
+deterministic local equality only; they are never described as signatures,
+authenticity, or independent trust.
+
+The offline evaluator rejects missing, malformed, stale, future-dated,
+revoked, duplicate, conflicting, incorrectly scoped, policy-mismatched, and
+missing/commit-mismatched evidence. Typed local policy checks cover broker field
+and capability metadata, reconciliation coverage, monitoring receipts, recovery
+objectives and consistency, review independence/findings, and approval scope,
+lifecycle, and decision. Caller-provided verification results and reason codes
+are not treated as policy findings. Synthetic fixtures can demonstrate local validation
+but cannot become independent acceptance. Even a well-formed envelope claiming
+independent verification remains blocked because no independently configured
+verifier exists. All dependency assessments and the aggregate report retain
+literal-false authority, submission, and execution fields.
+
+The evaluator constructs the canonical registry internally and never invokes
+caller equality or uses caller-supplied registry contents. Recovery evidence is
+additionally bound to evaluation time, the inclusive envelope window, and the
+registry's 30-day completion freshness limit. A fresh envelope cannot refresh
+an old rehearsal, and the exact freshness cutoff remains valid. Future or
+envelope-window-invalid recovery timestamps classify as invalid even when the
+envelope is stale; revoked identity remains the terminal higher-precedence
+state.
+
+Phase 21 extends the existing bounded operational-event enums for dependency
+evidence, identity, sequence, invalidation, alert delivery, recovery rehearsal,
+and approval state. It adds no raw payload or exception logging. The service
+has no provider, network, API, Pilot, FinalExecutionGate, MT5, broker, replay-
+mutation, deployment, or execution integration.
+
+This assurance remains local and synthetic. Trust-root provisioning,
+authoritative lifecycle/revocation, independent rollback witnessing,
+authenticated read-only broker evidence, authoritative reconciliation,
+verified monitoring delivery, recovery rehearsal, independent security review,
+and authenticated human production approval remain unavailable. See
+[`phase21-external-integration-acceptance.md`](phase21-external-integration-acceptance.md).
