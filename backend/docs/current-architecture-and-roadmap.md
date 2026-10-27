@@ -148,3 +148,23 @@ authenticated transport and lifecycle service, an independently administered
 monotonic witness, broker evidence, authoritative reconciliation, and security
 approval remain external blockers. See
 [`phase19-external-trust-operations.md`](phase19-external-trust-operations.md).
+
+### Phase 20 — operational readiness (implemented locally, deployment blocked)
+
+Phase 20 adds an immutable, deterministic operational-readiness diagnostic for
+configuration, independent trust/lifecycle/witness services, broker evidence,
+reconciliation, replay health, clocks, provider limits, audit/redaction,
+monitoring, recovery, security review, human approval, and execution controls.
+The evaluator is explicitly an offline operational acceptance assessment, not
+the existing runtime readiness checker or `/api/readiness` production-
+authorization diagnostic. Caller-shaped local, synthetic, external, and manual
+claims cannot satisfy gates. Only the exact durable replay store's read-only
+diagnostics currently supply a concrete verified local observation. A valid
+configuration policy remains runtime-unverified. The aggregate remains blocked
+and all authority fields are literal false.
+
+Deployment topology, configuration acceptance, monitoring, backups, incident
+response, external integration gates, and the release checklist are specified
+in [`phase20-operational-readiness.md`](phase20-operational-readiness.md). No
+external service, deployment automation, credential, API route, or execution
+path was added. Staging and production remain unprovisioned.

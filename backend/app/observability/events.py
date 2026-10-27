@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 import json
 import logging
 import re
@@ -11,6 +12,76 @@ from typing import Mapping
 from pydantic import ConfigDict, Field, field_validator
 
 from app.models.schemas import APIModel
+
+
+class OperationalSignal(str, Enum):
+    """Bounded operational signal names suitable for metrics and alerts."""
+
+    PROVIDER_AVAILABILITY = "provider_availability"
+    TRUST_ROOT_STATUS = "trust_root_status"
+    LIFECYCLE_STATUS = "lifecycle_status"
+    REPLAY_STORE_STATUS = "replay_store_status"
+    REPLAY_REJECTION = "replay_rejection"
+    ROLLBACK_WITNESS_STATUS = "rollback_witness_status"
+    BROKER_EVIDENCE_STATUS = "broker_evidence_status"
+    RECONCILIATION_STATUS = "reconciliation_status"
+    READINESS_STATUS_CHANGE = "readiness_status_change"
+    PROVIDER_CAPACITY = "provider_capacity"
+    CONFIGURATION_FAILURE = "configuration_failure"
+    RECOVERY_TRANSITION = "recovery_transition"
+
+
+class OperationalEventState(str, Enum):
+    BLOCKED = "blocked"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+    STALE = "stale"
+    HEALTHY = "healthy"
+    RECOVERED = "recovered"
+
+
+class OperationalReasonCode(str, Enum):
+    CONFIGURATION_INVALID = "CONFIGURATION_INVALID"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
+    PROVIDER_CAPACITY_EXHAUSTED = "PROVIDER_CAPACITY_EXHAUSTED"
+    TRUST_ROOT_UNAVAILABLE = "TRUST_ROOT_UNAVAILABLE"
+    LIFECYCLE_STALE = "LIFECYCLE_STALE"
+    REPLAY_STORE_UNAVAILABLE = "REPLAY_STORE_UNAVAILABLE"
+    REPLAY_REJECTED = "REPLAY_REJECTED"
+    WITNESS_CONFLICT = "WITNESS_CONFLICT"
+    BROKER_EVIDENCE_INVALID = "BROKER_EVIDENCE_INVALID"
+    RECONCILIATION_UNRESOLVED = "RECONCILIATION_UNRESOLVED"
+    READINESS_CHANGED = "READINESS_CHANGED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    RECOVERY_COMPLETED = "RECOVERY_COMPLETED"
+
+
+def operational_event(
+    *,
+    timestamp: datetime,
+    signal: OperationalSignal,
+    state: OperationalEventState,
+    reason_code: OperationalReasonCode,
+    severity: str = "WARNING",
+) -> "StructuredEvent":
+    """Build a bounded, sanitized signal without raw payload or secret fields."""
+
+    if type(signal) is not OperationalSignal:
+        raise ValueError("operational event signal must use the bounded vocabulary")
+    if type(state) is not OperationalEventState:
+        raise ValueError("operational event state must use the bounded vocabulary")
+    if type(reason_code) is not OperationalReasonCode:
+        raise ValueError("operational event reason code must use the bounded vocabulary")
+
+    return StructuredEvent(
+        timestamp=timestamp,
+        component="operational_readiness",
+        event_type=signal.value,
+        severity=severity,
+        state=state.value,
+        reason_code=reason_code.value,
+    )
 
 
 _SENSITIVE = ("password", "secret", "token", "apikey", "api_key", "credential", "authorization")

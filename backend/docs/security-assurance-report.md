@@ -370,3 +370,39 @@ external witness, retry loop, execution adapter, or schema migration was added.
 Local replay state still cannot detect coherent restoration without a real
 independently administered witness. The detailed crash and recovery model is in
 [`phase19-external-trust-operations.md`](phase19-external-trust-operations.md).
+
+## Phase 20 operational-readiness assurance
+
+Phase 20 readiness contracts are immutable, extra-forbid, deterministically
+ordered, and secret-reference rejecting. Missing, conflicting, future-dated,
+stale, invalid, unavailable, and synthetic evidence fail closed. Only a
+concrete read-only diagnostic from the exact durable replay store can currently
+be marked satisfied. Caller-created local, synthetic, external, and manual
+claims remain blocked. Structurally valid configuration remains blocked until
+runtime enforcement is observed. The aggregate is always blocked, and
+production authorization, submission, and execution are literal false.
+
+Replay diagnostics are invoked through the concrete class implementation,
+not a shadowable instance attribute. Exact model type, evaluation timestamp,
+validated fields, and canonical fingerprint are rechecked; malformed or
+exceptional results become sanitized blocked diagnostics. This is local process
+and SQLite integrity evidence only. Mutable host state and coherent rollback
+remain outside its trust guarantee.
+
+Operational signals use a bounded vocabulary and the existing identifier and
+field redaction boundary. Signal, state, and reason labels are finite enums;
+their exact enum types are required and foreign enums or value-like objects are
+rejected. No raw statement, provider payload, broker response,
+credential, or private material is accepted. The operations design explicitly
+treats monitoring failure, recovery uncertainty, witness disagreement, and
+restored local state without external checkpoint verification as blocking.
+
+This is local contract and synthetic-test assurance only. Independent service
+provisioning, alert delivery, backup rehearsal, vulnerability intelligence,
+organizational access controls, security review, and human approval remain
+external blockers. See
+[`phase20-operational-readiness.md`](phase20-operational-readiness.md).
+
+The Phase 20 evaluator is an offline assessment only. Existing runtime
+readiness and `/api/readiness` behavior are unchanged, and no Phase 20 module is
+referenced by Pilot, FinalExecutionGate, MT5, broker adapters, or API routes.
