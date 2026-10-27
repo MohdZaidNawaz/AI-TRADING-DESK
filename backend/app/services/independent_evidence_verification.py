@@ -232,6 +232,11 @@ class OfflineIndependentEvidenceVerifier:
             if any(reason in identity_reasons for reason in configuration_reasons)
             else IssuerAuthenticationStatus.UNAVAILABLE
         )
+        configuration_binding_status = (
+            BindingVerificationStatus.INVALID
+            if any(reason in identity_reasons for reason in configuration_reasons)
+            else BindingVerificationStatus.VALID
+        )
         if configuration_reasons:
             if configuration.lifecycle in {
                 ConfiguredKeyLifecycle.REVOKED,
@@ -251,7 +256,7 @@ class OfflineIndependentEvidenceVerifier:
                 disposition=disposition,
                 structural=structural,
                 issuer=issuer_status,
-                binding=BindingVerificationStatus.INVALID,
+                binding=configuration_binding_status,
                 freshness=freshness,
                 lifecycle=_configured_lifecycle(configuration.lifecycle),
                 evidence_fingerprint=evidence_fingerprint,

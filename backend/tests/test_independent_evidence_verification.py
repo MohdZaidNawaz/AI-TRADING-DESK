@@ -209,6 +209,16 @@ def _request(signed: SignedDependencyEvidence | None, **changes) -> EvidenceVeri
     return EvidenceVerificationRequest(**values)
 
 
+def _assert_non_authorizing(report) -> None:
+    assert report.independent_verification_available is False
+    assert report.independently_verified is False
+    assert report.operationally_accepted is False
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+    assert report.authorizes_execution is False
+
+
 def test_valid_synthetic_signature_is_verified_but_never_authoritative() -> None:
     private, public = _key_material()
     configuration = _configuration(public)
@@ -334,6 +344,8 @@ def test_unknown_issuer_rotated_key_and_root_mismatches_fail_closed(
         request=_request(signed), evaluated_at=NOW
     )
     assert report.disposition is EvidenceVerificationDisposition.BINDING_INVALID
+    assert report.binding_status is BindingVerificationStatus.INVALID
+    assert report.issuer_status is IssuerAuthenticationStatus.MISMATCH
     assert reason in report.reason_codes
     assert report.independently_verified is False
 
@@ -354,6 +366,9 @@ def test_configured_root_lifecycle_never_silently_trusts_rotation(lifecycle, rea
         request=_request(_signed(private, configuration)), evaluated_at=NOW
     )
     assert reason in report.reason_codes
+    assert report.binding_status is BindingVerificationStatus.VALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.issuer_status is IssuerAuthenticationStatus.UNAVAILABLE
     assert report.lifecycle_status is expected
     assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
     assert report.disposition is (
@@ -361,6 +376,7 @@ def test_configured_root_lifecycle_never_silently_trusts_rotation(lifecycle, rea
         if lifecycle is ConfiguredKeyLifecycle.UNKNOWN
         else EvidenceVerificationDisposition.REVOKED
     )
+    _assert_non_authorizing(report)
 
 
 def test_expired_configured_root_fails_closed() -> None:
@@ -379,7 +395,12 @@ def test_expired_configured_root_fails_closed() -> None:
         request=_request(_signed(private, configuration)), evaluated_at=NOW
     )
     assert report.disposition is EvidenceVerificationDisposition.STALE
+    assert report.binding_status is BindingVerificationStatus.VALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert report.issuer_status is IssuerAuthenticationStatus.UNAVAILABLE
     assert EvidenceVerificationReason.TRUST_ROOT_NOT_CURRENT in report.reason_codes
+    _assert_non_authorizing(report)
 
 
 @pytest.mark.parametrize(
@@ -412,6 +433,7 @@ def test_configured_dependency_environment_and_scope_permissions_are_enforced(
         request=_request(signed), evaluated_at=NOW
     )
     assert report.disposition is EvidenceVerificationDisposition.BINDING_INVALID
+    assert report.binding_status is BindingVerificationStatus.INVALID
     assert report.issuer_status is IssuerAuthenticationStatus.MISMATCH
     assert reason in report.reason_codes
 
@@ -516,6 +538,193 @@ def test_evidence_lifecycle_claims_fail_closed(state, status, reason) -> None:
     assert report.lifecycle_status is status
     assert reason in report.reason_codes
     assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+
+
+def test_stale_evidence_with_revocation_claim_preserves_both_failures() -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    issued_at = NOW - timedelta(days=2)
+    evidence = _evidence(
+        issued_at=issued_at,
+        verified_at=issued_at,
+        expires_at=NOW + timedelta(minutes=1),
+        revocation_state=EvidenceRevocationState.REVOKED,
+    )
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence)),
+        evaluated_at=NOW,
+    )
+
+    assert report.disposition is EvidenceVerificationDisposition.STALE
+    assert report.freshness_status is FreshnessVerificationStatus.STALE
+    assert report.lifecycle_status is LifecycleVerificationStatus.REVOKED
+    assert EvidenceVerificationReason.EVIDENCE_STALE in report.reason_codes
+    assert EvidenceVerificationReason.EVIDENCE_REVOKED in report.reason_codes
+    assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+    _assert_non_authorizing(report)
+
+
+def test_invalid_binding_precedes_untrusted_revocation_claim() -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    evidence = _evidence(
+        subject_id="other.release",
+        revocation_state=EvidenceRevocationState.REVOKED,
+    )
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence)),
+        evaluated_at=NOW,
+    )
+
+    assert report.disposition is EvidenceVerificationDisposition.BINDING_INVALID
+    assert report.binding_status is BindingVerificationStatus.INVALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.REVOKED
+    assert report.issuer_status is IssuerAuthenticationStatus.UNAVAILABLE
+    assert EvidenceVerificationReason.SUBJECT_BINDING_MISMATCH in report.reason_codes
+    assert EvidenceVerificationReason.EVIDENCE_REVOKED in report.reason_codes
+    assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+    _assert_non_authorizing(report)
+
+
+def test_future_validity_start_prevents_configured_root_use() -> None:
+    private, public = _key_material()
+    future_root = ConfiguredEd25519TrustAnchor(
+        authority_id="FIXTURE.ISSUER",
+        anchor_id="PHASE22.KEY.1",
+        anchor_version="1",
+        public_key_pem=public,
+        valid_from=NOW + timedelta(microseconds=1),
+        expires_at=NOW + timedelta(days=1),
+        provenance_reference="synthetic-test-fixture",
+    )
+    configuration = _configuration(public, trust_anchor=future_root)
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration)), evaluated_at=NOW
+    )
+
+    assert report.disposition is EvidenceVerificationDisposition.STALE
+    assert report.binding_status is BindingVerificationStatus.VALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert report.issuer_status is IssuerAuthenticationStatus.UNAVAILABLE
+    assert EvidenceVerificationReason.TRUST_ROOT_NOT_CURRENT in report.reason_codes
+    assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+    _assert_non_authorizing(report)
+
+
+def test_configured_root_is_usable_at_exact_validity_start() -> None:
+    private, public = _key_material()
+    root = ConfiguredEd25519TrustAnchor(
+        authority_id="FIXTURE.ISSUER",
+        anchor_id="PHASE22.KEY.1",
+        anchor_version="1",
+        public_key_pem=public,
+        valid_from=NOW,
+        expires_at=NOW + timedelta(days=1),
+        provenance_reference="synthetic-test-fixture",
+    )
+    configuration = _configuration(public, trust_anchor=root)
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration)), evaluated_at=NOW
+    )
+
+    assert (
+        report.disposition
+        is EvidenceVerificationDisposition.CONFIGURED_KEY_VERIFIED_NON_AUTHORITATIVE
+    )
+    assert report.binding_status is BindingVerificationStatus.VALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert report.issuer_status is IssuerAuthenticationStatus.CONFIGURED_SYNTHETIC_KEY
+    assert report.signature_status is SignatureVerificationStatus.VALID
+    assert EvidenceVerificationReason.TRUST_ROOT_NOT_CURRENT not in report.reason_codes
+    assert (
+        EvidenceVerificationReason.SYNTHETIC_TRUST_ROOT_NON_AUTHORITATIVE
+        in report.reason_codes
+    )
+    assert (
+        EvidenceVerificationReason.INDEPENDENT_LIFECYCLE_VERIFICATION_UNAVAILABLE
+        in report.reason_codes
+    )
+    assert (
+        EvidenceVerificationReason.EXTERNAL_REPLAY_PROTECTION_UNAVAILABLE
+        in report.reason_codes
+    )
+    _assert_non_authorizing(report)
+
+
+def test_configured_root_is_unusable_at_exact_expiry() -> None:
+    private, public = _key_material()
+    root = ConfiguredEd25519TrustAnchor(
+        authority_id="FIXTURE.ISSUER",
+        anchor_id="PHASE22.KEY.1",
+        anchor_version="1",
+        public_key_pem=public,
+        valid_from=NOW - timedelta(days=1),
+        expires_at=NOW,
+        provenance_reference="synthetic-test-fixture",
+    )
+    configuration = _configuration(public, trust_anchor=root)
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration)), evaluated_at=NOW
+    )
+
+    assert report.disposition is EvidenceVerificationDisposition.STALE
+    assert report.binding_status is BindingVerificationStatus.VALID
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert report.issuer_status is IssuerAuthenticationStatus.UNAVAILABLE
+    assert EvidenceVerificationReason.TRUST_ROOT_NOT_CURRENT in report.reason_codes
+    assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+    _assert_non_authorizing(report)
+
+
+def test_evidence_at_exact_maximum_age_is_fresh_but_non_authoritative() -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    issued_at = NOW - timedelta(seconds=86_400)
+    evidence = _evidence(
+        issued_at=issued_at,
+        verified_at=issued_at,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence)),
+        evaluated_at=NOW,
+    )
+
+    assert (
+        report.disposition
+        is EvidenceVerificationDisposition.CONFIGURED_KEY_VERIFIED_NON_AUTHORITATIVE
+    )
+    assert report.freshness_status is FreshnessVerificationStatus.FRESH
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert report.signature_status is SignatureVerificationStatus.VALID
+    assert EvidenceVerificationReason.EVIDENCE_STALE not in report.reason_codes
+    _assert_non_authorizing(report)
+
+
+def test_evidence_just_beyond_maximum_age_is_stale() -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    issued_at = NOW - timedelta(seconds=86_400, microseconds=1)
+    evidence = _evidence(
+        issued_at=issued_at,
+        verified_at=issued_at,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence)),
+        evaluated_at=NOW,
+    )
+
+    assert report.disposition is EvidenceVerificationDisposition.STALE
+    assert report.freshness_status is FreshnessVerificationStatus.STALE
+    assert report.lifecycle_status is LifecycleVerificationStatus.CLAIMED_ACTIVE_UNVERIFIED
+    assert EvidenceVerificationReason.EVIDENCE_STALE in report.reason_codes
+    assert report.signature_status is SignatureVerificationStatus.NOT_CHECKED
+    _assert_non_authorizing(report)
 
 
 def test_caller_independent_verification_claim_is_ignored() -> None:

@@ -41,6 +41,10 @@ The canonical ASCII JSON signature payload is domain-separated and binds:
 Canonical SHA-256 fingerprints prove deterministic equality only. Ed25519
 verification proves that the configured key signed those exact bytes. Neither
 operation proves that the key was independently provisioned or governed.
+Canonicalization operates on the fully validated Pydantic model, after its
+documented identifier, enumeration, and UTC timestamp normalization. It does
+not preserve or authenticate the original transport encoding, field order, or
+equivalent pre-validation representation.
 
 ## Explicit trust configuration
 
@@ -68,6 +72,28 @@ evaluation time to equal the context evaluation time and checks the canonical
 Phase 21 registry for evidence type, commit-binding, and freshness policy.
 Future, expired, stale, revoked, superseded, compromised, unknown, mismatched,
 and malformed evidence fails closed.
+
+Failure precedence is deterministic. Exact binding failures produce
+`binding_invalid`; otherwise future, expired, or stale evidence produces
+`stale`; otherwise revoked, superseded, or compromised evidence claims produce
+`revoked`, while an unknown lifecycle claim produces `unavailable`. Reports
+retain every already-computed freshness and lifecycle status and bounded reason
+even when an earlier category determines the disposition. Evidence lifecycle
+values remain signed caller claims, not independently authenticated revocation.
+
+Evidence/context binding and configured-root state remain distinct. Issuer,
+key, generation, permission, environment, or scope configuration mismatches set
+`binding_status=invalid`. A root that is not yet valid, has expired, or has a
+non-active lifecycle does not retroactively invalidate an already valid
+evidence/context binding: it preserves `binding_status=valid` and fails through
+the disposition, lifecycle status, issuer status, and bounded trust-root reason.
+
+Configured trust-root validity begins inclusively at `valid_from` and ends
+exclusively at `expires_at`. Evidence expiry is also exclusive: evidence is
+expired when `expires_at <= evaluated_at`. Registry freshness is inclusive at
+the maximum age: `evaluated_at - issued_at == freshness_seconds` is fresh, and
+any greater age is stale. UTC-normalized datetime precision, including
+microseconds, is retained for these comparisons.
 
 The request may supply previously seen evidence fingerprints for deterministic
 duplicate evaluation. This is pure input evaluation and mutates no store. Every

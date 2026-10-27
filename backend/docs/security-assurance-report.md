@@ -475,3 +475,20 @@ submission, and execution fields are literal false. The Phase 22 modules have
 no runtime readiness, API, Pilot, FinalExecutionGate, MT5, broker, or execution
 integration. See
 [`phase22-independent-evidence-verification.md`](phase22-independent-evidence-verification.md).
+
+Phase 23 locks the existing fail-closed precedence and temporal boundaries with
+real-verifier regression tests. Binding errors precede freshness failures,
+which precede untrusted evidence-lifecycle claims; all computed lifecycle and
+freshness reasons remain visible. Configured-root validity starts inclusively
+and expires exclusively, evidence expiry is exclusive, and the canonical
+registry's maximum evidence age is inclusive. Canonical signatures cover the
+validated normalized model rather than the original transport byte encoding.
+None of these local checks authenticates lifecycle claims or supplies external
+replay protection.
+
+Phase 23 also separates evidence/context binding from trust-root temporal and
+lifecycle state. Identity or permission mismatches remain binding-invalid, but
+a not-yet-valid, expired, revoked, superseded, compromised, or unknown root
+preserves a previously valid evidence binding and fails through its disposition,
+issuer/lifecycle status, and bounded root reason. All such outcomes remain
+non-authorizing.
