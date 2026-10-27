@@ -197,3 +197,21 @@ provisioning, lifecycle authority, rollback witness, broker evidence,
 reconciliation, monitoring delivery, recovery rehearsal, independent review,
 and human approval remain blocked. See
 [`phase21-external-integration-acceptance.md`](phase21-external-integration-acceptance.md).
+
+### Phase 22 — offline independent-evidence verification foundation
+
+Phase 22 adds immutable verification contracts and an offline Ed25519 verifier
+for signed Phase 21 evidence. Exact canonical bytes bind issuer/key identity,
+dependency, evidence type, subject, request, challenge, environment, scope,
+policy, release commit where applicable, timestamps, key generation, root
+version/fingerprint, and typed payload. The key must come from explicit verifier
+configuration; a key embedded in evidence is never trusted.
+
+The only supported configuration is synthetic and test-only. Successful local
+signature verification authenticates evidence to that configured test key but
+does not independently establish the key, lifecycle, revocation state, or
+external replay protection. These limitations remain explicit blockers, and
+every authority, acceptance, submission, and execution field remains false.
+Phase 22 is not imported by runtime readiness, Pilot, FinalExecutionGate, MT5,
+broker adapters, APIs, or execution code. See
+[`phase22-independent-evidence-verification.md`](phase22-independent-evidence-verification.md).

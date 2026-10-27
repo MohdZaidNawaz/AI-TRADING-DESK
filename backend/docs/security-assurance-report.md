@@ -451,3 +451,27 @@ authenticated read-only broker evidence, authoritative reconciliation,
 verified monitoring delivery, recovery rehearsal, independent security review,
 and authenticated human production approval remain unavailable. See
 [`phase21-external-integration-acceptance.md`](phase21-external-integration-acceptance.md).
+
+## Phase 22 offline evidence-verification assurance
+
+Phase 22 uses PyCA Ed25519 to verify domain-separated canonical Phase 21
+evidence against an explicitly supplied immutable public-key configuration. The
+signed bytes bind the complete evidence envelope plus algorithm, key identity
+and generation, configured root version/fingerprint, and Phase 22 policy. The
+service independently rechecks exact subject, request, challenge, environment,
+scope, Phase 21 policy, release commit, evidence type, freshness, and fixed
+evaluation time.
+
+There is no default root, algorithm fallback, network provider, or private-key
+operation in production code. Evidence-supplied keys and caller claims cannot
+establish trust. Configuration is restricted to synthetic non-production use,
+and valid signatures report configured-key authentication only. Independent
+root governance, lifecycle/revocation authority, and external replay/rollback
+protection remain unavailable blockers.
+
+Reports use bounded enums and retain no raw secret or broker payload. All
+independent-verification, operational-acceptance, production-authorization,
+submission, and execution fields are literal false. The Phase 22 modules have
+no runtime readiness, API, Pilot, FinalExecutionGate, MT5, broker, or execution
+integration. See
+[`phase22-independent-evidence-verification.md`](phase22-independent-evidence-verification.md).

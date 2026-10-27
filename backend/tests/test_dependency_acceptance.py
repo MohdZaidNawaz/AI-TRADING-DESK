@@ -1076,13 +1076,15 @@ def test_phase21_service_has_no_network_provider_or_execution_imports() -> None:
     assert all(symbol not in source for symbol in prohibited_symbols)
 
 
-def test_phase21_is_not_wired_into_runtime_api_or_execution_modules() -> None:
-    phase21_paths = {
+def test_phase21_is_only_consumed_by_offline_acceptance_and_verification_modules() -> None:
+    offline_dependency_paths = {
         Path("app/models/dependency_acceptance.py"),
         Path("app/services/dependency_acceptance.py"),
+        Path("app/models/independent_evidence_verification.py"),
+        Path("app/services/independent_evidence_verification.py"),
     }
     for path in Path("app").rglob("*.py"):
-        if path not in phase21_paths:
+        if path not in offline_dependency_paths:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             modules = {
                 alias.name

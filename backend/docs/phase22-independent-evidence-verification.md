@@ -1,0 +1,109 @@
+# Phase 22: independent evidence verification architecture
+
+## Boundary and threat model
+
+Phase 22 is a strictly offline, non-authorizing verification foundation. It
+accepts already-supplied Phase 21 evidence, an explicit immutable verification
+configuration, and a fixed evaluation time. It performs no provider, network,
+broker, MT5, readiness, submission, or execution operation.
+
+The boundary distinguishes:
+
+1. Pydantic structural validity and canonical payload integrity.
+2. Exact context, scope, policy, environment, challenge, request, and release
+   binding.
+3. Ed25519 signature validity against a separately configured public key.
+4. Authentication to that configured key identity.
+5. Lifecycle and revocation claims that remain independently unverified.
+6. Durable replay and rollback assurance, which remains unavailable.
+
+An evidence-supplied public key, issuer label, signature fingerprint,
+provenance label, verification result, or reason code cannot establish trust.
+The configured key model is explicitly synthetic and test-only, forbids the
+production environment, and fixes independent trust to false.
+
+## Cryptographic contract
+
+The implementation uses PyCA `cryptography` Ed25519, already present in the
+backend dependency set. There is no algorithm negotiation or fallback.
+Malformed keys, non-Ed25519 keys, malformed signatures, unsupported algorithm
+identifiers, and invalid signatures fail closed.
+
+The canonical ASCII JSON signature payload is domain-separated and binds:
+
+- algorithm, key ID, key generation, root version and root fingerprint;
+- Phase 22 verification-policy version;
+- exact issuer, dependency ID and evidence type;
+- the canonical Phase 21 envelope fingerprint and complete envelope content;
+- subject, request, challenge, environment, scope, Phase 21 policy, target
+  commit where applicable, timestamps, revocation claim, and typed payload.
+
+Canonical SHA-256 fingerprints prove deterministic equality only. Ed25519
+verification proves that the configured key signed those exact bytes. Neither
+operation proves that the key was independently provisioned or governed.
+
+## Explicit trust configuration
+
+`EvidenceTrustConfiguration` has no default instance. It must be supplied
+explicitly and binds the configured Ed25519 anchor to one issuer, key identity,
+generation, dependency set, non-production environment set, and scope set. The
+configuration is reconstructed at the verifier boundary, and subclasses or
+malformed copied models are not accepted as ambient trust.
+
+The configuration is deliberately `synthetic_test_only=True`,
+`independently_trusted=False`, and
+`lifecycle_independently_verified=False`. Active lifecycle is therefore a local
+configuration claim, not authoritative revocation evidence. Revoked,
+superseded, compromised, unknown, expired, and mismatched configurations block
+verification.
+
+A public key submitted with evidence is parsed only to reject malformed or
+private material. It is never selected as the verification key and is reported
+as untrusted metadata.
+
+## Evaluation and replay behavior
+
+The service revalidates exact models before evaluation. It requires the service
+evaluation time to equal the context evaluation time and checks the canonical
+Phase 21 registry for evidence type, commit-binding, and freshness policy.
+Future, expired, stale, revoked, superseded, compromised, unknown, mismatched,
+and malformed evidence fails closed.
+
+The request may supply previously seen evidence fingerprints for deterministic
+duplicate evaluation. This is pure input evaluation and mutates no store. Every
+successful configured-key verification still reports
+`EXTERNAL_REPLAY_PROTECTION_UNAVAILABLE`; it is not durable replay or rollback
+protection.
+
+## Report semantics
+
+The immutable report separately records structural, signature, configured-key
+issuer, binding, lifecycle, freshness, and supplied-set replay status. A valid
+synthetic signature may produce
+`configured_key_verified_non_authoritative`, but the report always retains:
+
+- `independent_verification_available = false`;
+- `independently_verified = false`;
+- `operationally_accepted = false`;
+- `production_authorization_available = false`;
+- `submission_allowed = false`;
+- `execution_authority = false`;
+- `authorizes_execution = false`.
+
+Reason codes are a bounded enum. Reports retain fingerprints and statuses, not
+private keys, credentials, raw broker responses, or arbitrary exception text.
+
+## Test isolation and remaining blockers
+
+Private-key generation exists only in isolated tests. Production code contains
+public-key verification only and never generates or persists trust material.
+Tests cover real Ed25519 verification, tampering, malformed encodings and key
+types, unconfigured and embedded-key trust attempts, key identity/generation/
+root rotation, exact context and release binding, lifecycle, freshness,
+duplicate evaluation, deterministic reports, and static runtime isolation.
+
+Phase 22 does not supply independently provisioned roots, authoritative
+lifecycle/revocation, an external monotonic witness, authenticated broker
+evidence, authoritative reconciliation, verified monitoring delivery, recovery
+rehearsal, independent security review, or authenticated human production
+approval. Production authorization and all trading execution remain disabled.
