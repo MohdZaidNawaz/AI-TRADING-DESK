@@ -130,6 +130,36 @@ The safe workflow is:
 The workflow never reads secrets, calls providers, mutates trust or replay
 state, acknowledges alerts, promotes an environment, deploys, or executes.
 
+Before the workflow reads any context field, it requires the exact
+`DependencyAcceptanceContext` type. It defensively copies the model's raw field
+state without invoking instance serialization methods, requires the raw keys to
+match the declared context fields exactly, rejects non-empty Pydantic extra
+state, and strictly reconstructs the canonical model. This catches the
+supported validation-bypassing copy cases, including missing or undeclared
+fields, shadowed serialization methods, wrong types, malformed identifiers and
+fingerprints, and naive timestamps. Invalid contexts raise a deterministic
+validation error; they do not produce a partially trusted report or fall back
+to caller data. This is a boundary for the documented Pydantic model state, not
+a claim to defend against arbitrary code already executing inside the process.
+
+## Deterministic maturity precedence
+
+General single-envelope failures are collected before one explicit maturity
+decision. The precedence is `revoked` > `invalid` > `stale` > `unavailable` >
+`local_contract`. Terminal revoked, superseded, or compromised identity state
+therefore remains visible; malformed, mismatched, future-dated, or otherwise
+invalid evidence cannot be softened to stale; stale evidence remains distinct
+from an unavailable dependency. Synthetic evidence is labeled
+`synthetic_tested` only when no failure maturity applies. Duplicate and
+conflicting multi-envelope cases retain their separate early classifications.
+
+Recovery evidence keeps its narrower established rule inside that general
+boundary: terminal revocation wins; future or envelope-window-invalid recovery
+timestamps beat staleness; an already invalid envelope remains invalid; an
+otherwise valid old rehearsal remains stale; and only then do other recovery
+payload defects classify as invalid. All applicable bounded reasons remain in
+the report regardless of which maturity wins.
+
 ## Dependency-specific gate rules
 
 Phase 21 uses discriminated, immutable payloads for local structural and policy

@@ -439,6 +439,20 @@ envelope-window-invalid recovery timestamps classify as invalid even when the
 envelope is stale; revoked identity remains the terminal higher-precedence
 state.
 
+The public evaluation boundary also requires the exact acceptance-context type
+and inspects a defensive copy of its raw field state without dispatching through
+instance serialization methods. Missing or undeclared fields, non-empty extra
+state, shadowed serializer attributes, wrong types, malformed identifiers, and
+naive timestamps fail with a deterministic validation error. This protects the
+documented Pydantic boundary from supported validation-bypassing copy cases; it
+does not claim protection from arbitrary in-process code execution. General
+single-envelope maturity uses an explicit
+`revoked > invalid > stale > unavailable > local_contract` precedence instead
+of branch assignment order. Recovery retains its documented special handling
+for timestamp-invalid versus merely old rehearsal evidence. Neither
+classification path can produce independent verification, acceptance,
+authorization, submission permission, or execution authority.
+
 Phase 21 extends the existing bounded operational-event enums for dependency
 evidence, identity, sequence, invalidation, alert delivery, recovery rehearsal,
 and approval state. It adds no raw payload or exception logging. The service

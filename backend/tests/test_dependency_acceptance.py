@@ -203,6 +203,16 @@ def _assessment(report: DependencyAcceptanceReport, dependency_id: ExternalDepen
     return next(item for item in report.assessments if item.dependency_id is dependency_id)
 
 
+def _assert_non_authorizing(report: DependencyAcceptanceReport, dependency_id: ExternalDependencyId) -> None:
+    item = _assessment(report, dependency_id)
+    assert item.independently_verified is False
+    assert item.operationally_accepted is False
+    assert item.authorizes_execution is False
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+
+
 def test_registry_is_complete_deterministic_and_non_authorizing() -> None:
     first = build_dependency_acceptance_registry()
     second = build_dependency_acceptance_registry()
@@ -220,6 +230,99 @@ def test_registry_is_complete_deterministic_and_non_authorizing() -> None:
         ExternalDependencyId.INDEPENDENT_SECURITY_REVIEW,
         ExternalDependencyId.HUMAN_PRODUCTION_APPROVAL,
     }
+
+
+def test_valid_context_is_canonically_reconstructed() -> None:
+    context = _context()
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(context=context)
+
+    assert report.context == context
+    assert report.context is not context
+    assert report.status == "blocked"
+    assert report.execution_authority is False
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"subject_id": 123},
+        {"environment": "synthetic_test"},
+        {"evaluated_at": NOW.replace(tzinfo=None)},
+        {"scope_fingerprint": "not-a-fingerprint"},
+    ),
+)
+def test_copied_context_with_unvalidated_changes_is_rejected(changes) -> None:
+    corrupted = _context().model_copy(update=changes)
+
+    with pytest.raises(ValidationError):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
+
+
+def test_context_missing_required_data_is_rejected() -> None:
+    values = _context().model_dump()
+    values.pop("request_id")
+    corrupted = DependencyAcceptanceContext.model_construct(**values)
+
+    with pytest.raises(ValueError, match="missing=.*request_id"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
+
+
+def test_context_subclass_and_custom_object_cannot_bypass_validation() -> None:
+    class ContextSubclass(DependencyAcceptanceContext):
+        pass
+
+    subclass = ContextSubclass(**_context().model_dump())
+
+    with pytest.raises(ValueError, match="unexpected dependency acceptance context type"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=subclass)
+    with pytest.raises(ValueError, match="unexpected dependency acceptance context type"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=object())  # type: ignore[arg-type]
+
+
+def test_context_with_model_copy_injected_extra_field_is_rejected() -> None:
+    corrupted = _context().model_copy(update={"undeclared_context_field": "ignored"})
+
+    with pytest.raises(ValueError, match="undeclared=.*undeclared_context_field"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
+
+
+def test_shadowed_model_dump_is_never_invoked() -> None:
+    calls: list[bool] = []
+
+    def shadowed_model_dump(**_kwargs):
+        calls.append(True)
+        return _context().model_dump()
+
+    corrupted = _context().model_copy(update={"model_dump": shadowed_model_dump})
+
+    with pytest.raises(ValueError, match="undeclared=.*model_dump"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
+    assert calls == []
+
+
+def test_shadowed_model_dump_cannot_hide_corrupted_required_field() -> None:
+    clean = _context()
+    calls: list[bool] = []
+
+    def clean_substitute(**_kwargs):
+        calls.append(True)
+        return clean.model_dump()
+
+    corrupted = clean.model_copy(
+        update={"subject_id": 123, "model_dump": clean_substitute}
+    )
+
+    with pytest.raises(ValueError, match="undeclared=.*model_dump"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
+    assert calls == []
+
+
+def test_context_with_nonempty_pydantic_extra_state_is_rejected() -> None:
+    corrupted = _context().model_copy()
+    object.__setattr__(corrupted, "__pydantic_extra__", {"unexpected": "value"})
+
+    with pytest.raises(ValueError, match="contains undeclared extra state"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
 
 
 def test_every_dependency_starts_unavailable_and_report_is_structurally_blocked() -> None:
@@ -330,6 +433,10 @@ def test_wrong_subject_environment_scope_policy_or_commit_fails_closed(change, r
 def test_expired_and_future_dated_evidence_fail_closed() -> None:
     expired = _evidence(
         ExternalDependencyId.MONITORING_ALERT_DELIVERY,
+        payload=_payload(
+            ExternalDependencyId.MONITORING_ALERT_DELIVERY,
+            event_at=NOW - timedelta(days=1, hours=12),
+        ),
         issued_at=NOW - timedelta(days=2),
         verified_at=NOW - timedelta(days=2),
         expires_at=NOW - timedelta(days=1),
@@ -347,6 +454,120 @@ def test_expired_and_future_dated_evidence_fail_closed() -> None:
     assert _assessment(report, expired.dependency_id).maturity is DependencyMaturity.STALE
     assert "DEPENDENCY_EVIDENCE_STALE" in _assessment(report, expired.dependency_id).reason_codes
     assert "DEPENDENCY_EVIDENCE_FUTURE_DATED" in _assessment(report, future.dependency_id).reason_codes
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected", "reasons"),
+    (
+        (
+            {
+                "issued_at": NOW - timedelta(days=2),
+                "verified_at": NOW + timedelta(seconds=1),
+                "expires_at": NOW - timedelta(days=1),
+            },
+            DependencyMaturity.INVALID,
+            ("DEPENDENCY_EVIDENCE_FUTURE_DATED", "DEPENDENCY_EVIDENCE_STALE"),
+        ),
+        (
+            {
+                "signature_fingerprint": None,
+                "trust_chain_fingerprint": None,
+                "revocation_state": EvidenceRevocationState.REVOKED,
+            },
+            DependencyMaturity.REVOKED,
+            ("DEPENDENCY_SIGNATURE_OR_TRUST_CHAIN_MISSING", "DEPENDENCY_IDENTITY_REVOKED"),
+        ),
+        (
+            {
+                "issued_at": NOW - timedelta(days=2),
+                "verified_at": NOW - timedelta(days=2),
+                "expires_at": NOW - timedelta(days=1),
+                "revocation_state": EvidenceRevocationState.REVOKED,
+            },
+            DependencyMaturity.REVOKED,
+            ("DEPENDENCY_EVIDENCE_STALE", "DEPENDENCY_IDENTITY_REVOKED"),
+        ),
+        (
+            {
+                "subject_id": "other.release",
+                "issued_at": NOW - timedelta(days=2),
+                "verified_at": NOW - timedelta(days=2),
+                "expires_at": NOW - timedelta(days=1),
+            },
+            DependencyMaturity.INVALID,
+            ("DEPENDENCY_SUBJECT_MISMATCH", "DEPENDENCY_EVIDENCE_STALE"),
+        ),
+        (
+            {
+                "issued_at": NOW + timedelta(seconds=1),
+                "verified_at": NOW + timedelta(seconds=1),
+                "expires_at": NOW + timedelta(minutes=1),
+            },
+            DependencyMaturity.INVALID,
+            ("DEPENDENCY_EVIDENCE_FUTURE_DATED",),
+        ),
+        (
+            {
+                "issued_at": NOW - timedelta(days=2),
+                "verified_at": NOW - timedelta(days=2),
+                "expires_at": NOW - timedelta(days=1),
+            },
+            DependencyMaturity.STALE,
+            ("DEPENDENCY_EVIDENCE_STALE",),
+        ),
+        (
+            {"revocation_state": EvidenceRevocationState.UNKNOWN},
+            DependencyMaturity.UNAVAILABLE,
+            ("DEPENDENCY_REVOCATION_UNKNOWN",),
+        ),
+        (
+            {"revocation_state": EvidenceRevocationState.REVOKED},
+            DependencyMaturity.REVOKED,
+            ("DEPENDENCY_IDENTITY_REVOKED",),
+        ),
+        (
+            {
+                "issued_at": NOW + timedelta(seconds=1),
+                "verified_at": NOW + timedelta(seconds=1),
+                "expires_at": NOW + timedelta(minutes=1),
+                "revocation_state": EvidenceRevocationState.REVOKED,
+            },
+            DependencyMaturity.REVOKED,
+            ("DEPENDENCY_EVIDENCE_FUTURE_DATED", "DEPENDENCY_IDENTITY_REVOKED"),
+        ),
+    ),
+)
+def test_general_maturity_precedence_is_explicit_and_deterministic(
+    changes, expected, reasons
+) -> None:
+    dependency_id = ExternalDependencyId.INDEPENDENT_TRUST_ROOT
+    evidence = _evidence(dependency_id, **changes)
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(evidence,)
+    )
+    item = _assessment(report, dependency_id)
+
+    assert item.maturity is expected
+    assert set(reasons).issubset(item.reason_codes)
+    contradictory_reasons = {
+        DependencyMaturity.REVOKED: ("DEPENDENCY_REVOCATION_UNKNOWN",),
+        DependencyMaturity.INVALID: (
+            "DEPENDENCY_IDENTITY_REVOKED",
+            "DEPENDENCY_REVOCATION_UNKNOWN",
+        ),
+        DependencyMaturity.STALE: (
+            "DEPENDENCY_EVIDENCE_FUTURE_DATED",
+            "DEPENDENCY_IDENTITY_REVOKED",
+            "DEPENDENCY_REVOCATION_UNKNOWN",
+        ),
+        DependencyMaturity.UNAVAILABLE: (
+            "DEPENDENCY_EVIDENCE_FUTURE_DATED",
+            "DEPENDENCY_EVIDENCE_STALE",
+            "DEPENDENCY_IDENTITY_REVOKED",
+        ),
+    }
+    assert set(contradictory_reasons[expected]).isdisjoint(item.reason_codes)
+    _assert_non_authorizing(report, dependency_id)
 
 
 @pytest.mark.parametrize(
@@ -849,17 +1070,16 @@ def test_stale_envelope_cannot_mask_future_recovery_completion() -> None:
         verified_at=NOW - timedelta(days=39),
         expires_at=NOW - timedelta(days=1),
     )
-    item = _assessment(
-        OfflineDependencyAcceptanceEvaluator().evaluate(
-            context=_context(), evidence=(evidence,)
-        ),
-        evidence.dependency_id,
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(evidence,)
     )
+    item = _assessment(report, evidence.dependency_id)
 
     assert item.maturity is DependencyMaturity.INVALID
     assert "DEPENDENCY_EVIDENCE_STALE" in item.reason_codes
     assert "RECOVERY_REHEARSAL_FUTURE_DATED" in item.reason_codes
     assert "RECOVERY_REHEARSAL_OUTSIDE_EVIDENCE_WINDOW" in item.reason_codes
+    _assert_non_authorizing(report, evidence.dependency_id)
 
 
 def test_stale_envelope_cannot_mask_recovery_window_violation() -> None:
@@ -927,16 +1147,15 @@ def test_revocation_remains_terminal_over_invalid_recovery_timestamps() -> None:
         payload=payload,
         revocation_state=EvidenceRevocationState.REVOKED,
     )
-    item = _assessment(
-        OfflineDependencyAcceptanceEvaluator().evaluate(
-            context=_context(), evidence=(evidence,)
-        ),
-        evidence.dependency_id,
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(evidence,)
     )
+    item = _assessment(report, evidence.dependency_id)
 
     assert item.maturity is DependencyMaturity.REVOKED
     assert "DEPENDENCY_IDENTITY_REVOKED" in item.reason_codes
     assert "RECOVERY_REHEARSAL_FUTURE_DATED" in item.reason_codes
+    _assert_non_authorizing(report, evidence.dependency_id)
 
 
 def test_recovery_completion_at_envelope_expiry_is_inside_inclusive_window() -> None:

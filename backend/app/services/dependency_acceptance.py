@@ -38,6 +38,19 @@ from app.models.dependency_acceptance import (
 PHASE21_POLICY_VERSION = "phase21-external-dependency-acceptance/v1"
 
 
+# General single-envelope maturity is resolved once from explicit candidates.
+# Terminal revocation is most important to retain, invalid evidence cannot be
+# softened by age, stale evidence remains distinct from unavailable evidence,
+# and none of these states can become acceptance.
+_GENERAL_MATURITY_PRECEDENCE = {
+    DependencyMaturity.LOCAL_CONTRACT: 0,
+    DependencyMaturity.UNAVAILABLE: 1,
+    DependencyMaturity.STALE: 2,
+    DependencyMaturity.INVALID: 3,
+    DependencyMaturity.REVOKED: 4,
+}
+
+
 def build_dependency_acceptance_registry() -> DependencyAcceptanceRegistry:
     """Return the canonical local registry; it is policy metadata, not authority."""
 
@@ -191,17 +204,18 @@ class OfflineDependencyAcceptanceEvaluator:
         context: DependencyAcceptanceContext,
         evidence: tuple[ExternalDependencyEvidenceEnvelope, ...] = (),
     ) -> DependencyAcceptanceReport:
+        canonical_context = _canonical_context(context)
         grouped: dict[ExternalDependencyId, list[ExternalDependencyEvidenceEnvelope]] = defaultdict(list)
         for item in evidence:
             grouped[item.dependency_id].append(item)
 
         assessments = tuple(
-            self._assess(entry, grouped[entry.dependency_id], context)
+            self._assess(entry, grouped[entry.dependency_id], canonical_context)
             for entry in self._registry.entries
         )
         blockers = tuple(sorted({code for item in assessments for code in item.reason_codes}))
         return DependencyAcceptanceReport(
-            context=context,
+            context=canonical_context,
             registry_fingerprint=self._registry.fingerprint,
             assessments=assessments,
             blocker_codes=blockers,
@@ -238,7 +252,7 @@ class OfflineDependencyAcceptanceEvaluator:
             return _assessment(entry, DependencyMaturity.INVALID, ("DEPENDENCY_EVIDENCE_MALFORMED",), now)
         fingerprint = item.envelope_fingerprint
         codes: list[str] = []
-        maturity = DependencyMaturity.LOCAL_CONTRACT
+        maturity_candidates = [DependencyMaturity.LOCAL_CONTRACT]
 
         if item.evidence_type not in entry.required_evidence_types:
             codes.append("DEPENDENCY_EVIDENCE_TYPE_MISMATCH")
@@ -256,35 +270,35 @@ class OfflineDependencyAcceptanceEvaluator:
             codes.append("DEPENDENCY_POLICY_VERSION_MISMATCH")
         if entry.requires_commit_binding and item.commit_hash is None:
             codes.append("DEPENDENCY_COMMIT_BINDING_MISSING")
-            maturity = DependencyMaturity.INVALID
+            maturity_candidates.append(DependencyMaturity.INVALID)
         elif item.commit_hash is not None and item.commit_hash != context.commit_hash:
             codes.append("DEPENDENCY_COMMIT_MISMATCH")
         if context.environment is IntegrationEnvironment.PRODUCTION:
             codes.append("PHASE21_PRODUCTION_ENVIRONMENT_UNAVAILABLE")
         if item.issued_at > now or (item.verified_at is not None and item.verified_at > now):
             codes.append("DEPENDENCY_EVIDENCE_FUTURE_DATED")
-            maturity = DependencyMaturity.INVALID
+            maturity_candidates.append(DependencyMaturity.INVALID)
         if item.expires_at <= now or now - item.issued_at > timedelta(seconds=entry.freshness_seconds):
             codes.append("DEPENDENCY_EVIDENCE_STALE")
-            maturity = DependencyMaturity.STALE
+            maturity_candidates.append(DependencyMaturity.STALE)
         if entry.requires_monotonic_sequence and item.source_sequence is None:
             codes.append("DEPENDENCY_SEQUENCE_MISSING")
-            maturity = DependencyMaturity.INVALID
+            maturity_candidates.append(DependencyMaturity.INVALID)
         if entry.requires_signature and (
             item.signature_fingerprint is None or item.trust_chain_fingerprint is None
         ):
             codes.append("DEPENDENCY_SIGNATURE_OR_TRUST_CHAIN_MISSING")
-            maturity = DependencyMaturity.INVALID
+            maturity_candidates.append(DependencyMaturity.INVALID)
         if item.revocation_state in {
             EvidenceRevocationState.REVOKED,
             EvidenceRevocationState.SUPERSEDED,
             EvidenceRevocationState.COMPROMISED,
         }:
             codes.append("DEPENDENCY_IDENTITY_REVOKED")
-            maturity = DependencyMaturity.REVOKED
+            maturity_candidates.append(DependencyMaturity.REVOKED)
         elif item.revocation_state is EvidenceRevocationState.UNKNOWN:
             codes.append("DEPENDENCY_REVOCATION_UNKNOWN")
-            maturity = DependencyMaturity.UNAVAILABLE
+            maturity_candidates.append(DependencyMaturity.UNAVAILABLE)
 
         (
             payload_codes,
@@ -297,22 +311,14 @@ class OfflineDependencyAcceptanceEvaluator:
             freshness_seconds=entry.freshness_seconds,
         )
         codes.extend(payload_codes)
-        if payload_timestamp_invalid and maturity is not DependencyMaturity.REVOKED:
-            maturity = DependencyMaturity.INVALID
-        elif payload_stale and maturity not in {
-            DependencyMaturity.REVOKED,
-            DependencyMaturity.INVALID,
-        }:
-            maturity = DependencyMaturity.STALE
-        elif payload_invalid and maturity not in {
-            DependencyMaturity.REVOKED,
-            DependencyMaturity.STALE,
-        }:
-            maturity = DependencyMaturity.INVALID
+        is_recovery = type(item.payload) is RecoveryRehearsalPayload
+        if not is_recovery:
+            if payload_invalid or payload_timestamp_invalid:
+                maturity_candidates.append(DependencyMaturity.INVALID)
+            if payload_stale:
+                maturity_candidates.append(DependencyMaturity.STALE)
 
         if item.synthetic:
-            if maturity is DependencyMaturity.LOCAL_CONTRACT:
-                maturity = DependencyMaturity.SYNTHETIC_TESTED
             codes.append("SYNTHETIC_EVIDENCE_NOT_OPERATIONAL")
         elif item.provenance is EvidenceProvenance.SANDBOX_PROVIDER:
             codes.append("DEPENDENCY_ISSUER_UNVERIFIED")
@@ -340,23 +346,27 @@ class OfflineDependencyAcceptanceEvaluator:
                     EvidenceVerificationResult.NOT_VERIFIED: "DEPENDENCY_EVIDENCE_NOT_VERIFIED",
                 }[item.verification_result]
             )
-            if maturity not in {
-                DependencyMaturity.REVOKED,
-                DependencyMaturity.STALE,
-                DependencyMaturity.INVALID,
-            }:
-                maturity = (
-                    DependencyMaturity.INVALID
-                    if item.verification_result is EvidenceVerificationResult.INVALID
-                    else DependencyMaturity.UNAVAILABLE
-                )
+            maturity_candidates.append(
+                DependencyMaturity.INVALID
+                if item.verification_result is EvidenceVerificationResult.INVALID
+                else DependencyMaturity.UNAVAILABLE
+            )
         elif item.verification_result is EvidenceVerificationResult.SANDBOX_ONLY:
             codes.append("SANDBOX_VERIFICATION_NOT_PRODUCTION_ACCEPTANCE")
         elif item.verification_result is EvidenceVerificationResult.INDEPENDENTLY_VERIFIED:
             codes.append("CLAIMED_INDEPENDENT_VERIFICATION_NOT_TRUSTED_OFFLINE")
 
         if any(code.endswith("MISMATCH") or code.endswith("MALFORMED") for code in codes):
-            maturity = DependencyMaturity.INVALID
+            maturity_candidates.append(DependencyMaturity.INVALID)
+        maturity = _resolve_maturity(
+            maturity_candidates,
+            recovery_payload=is_recovery,
+            payload_invalid=payload_invalid,
+            payload_stale=payload_stale,
+            payload_timestamp_invalid=payload_timestamp_invalid,
+        )
+        if item.synthetic and maturity is DependencyMaturity.LOCAL_CONTRACT:
+            maturity = DependencyMaturity.SYNTHETIC_TESTED
         return _assessment(entry, maturity, tuple(codes), now, (fingerprint,))
 
 
@@ -544,6 +554,67 @@ def _payload_codes(
         codes.append("APPROVER_AUTHENTICATION_UNVERIFIED")
 
     return tuple(codes), invalid, stale, timestamp_invalid
+
+
+def _canonical_context(context: DependencyAcceptanceContext) -> DependencyAcceptanceContext:
+    """Reconstruct the exact context model instead of trusting copied instances."""
+
+    if type(context) is not DependencyAcceptanceContext:
+        raise ValueError("unexpected dependency acceptance context type")
+    raw_state = object.__getattribute__(context, "__dict__")
+    if type(raw_state) is not dict or any(type(key) is not str for key in raw_state):
+        raise ValueError("dependency acceptance context state is malformed")
+    values = dict(raw_state)
+    expected_fields = set(DependencyAcceptanceContext.model_fields)
+    actual_fields = set(values)
+    if actual_fields != expected_fields:
+        missing = tuple(sorted(expected_fields - actual_fields))
+        undeclared = tuple(sorted(actual_fields - expected_fields))
+        raise ValueError(
+            "dependency acceptance context state fields do not match the model: "
+            f"missing={missing}, undeclared={undeclared}"
+        )
+    try:
+        extra_state = object.__getattribute__(context, "__pydantic_extra__")
+    except AttributeError as error:
+        raise ValueError("dependency acceptance context extra state is unavailable") from error
+    if extra_state is not None and (type(extra_state) is not dict or bool(extra_state)):
+        raise ValueError("dependency acceptance context contains undeclared extra state")
+    return DependencyAcceptanceContext.model_validate(
+        values,
+        strict=True,
+    )
+
+
+def _resolve_maturity(
+    candidates: list[DependencyMaturity],
+    *,
+    recovery_payload: bool,
+    payload_invalid: bool,
+    payload_stale: bool,
+    payload_timestamp_invalid: bool,
+) -> DependencyMaturity:
+    """Apply explicit general precedence while retaining recovery semantics."""
+
+    general = max(candidates, key=_GENERAL_MATURITY_PRECEDENCE.__getitem__)
+    if not recovery_payload:
+        return general
+
+    # Recovery identity revocation remains terminal. Timestamp-invalid recovery
+    # evidence cannot be softened by staleness. Otherwise an already invalid
+    # envelope remains invalid, while an otherwise valid but old rehearsal is
+    # stale even if it also has a non-temporal payload defect.
+    if general is DependencyMaturity.REVOKED:
+        return general
+    if payload_timestamp_invalid:
+        return DependencyMaturity.INVALID
+    if general is DependencyMaturity.INVALID:
+        return general
+    if general is DependencyMaturity.STALE or payload_stale:
+        return DependencyMaturity.STALE
+    if payload_invalid:
+        return DependencyMaturity.INVALID
+    return general
 
 
 def _canonical_evidence(
