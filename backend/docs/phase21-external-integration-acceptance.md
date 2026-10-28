@@ -142,6 +142,14 @@ validation error; they do not produce a partially trusted report or fall back
 to caller data. This is a boundary for the documented Pydantic model state, not
 a claim to defend against arbitrary code already executing inside the process.
 
+Every supplied evidence envelope and its typed payload are also reconstructed
+before the evaluator reads the dependency identity used for grouping. If any
+object cannot be reconstructed, its identity is neither trusted nor guessed:
+the complete offline report remains blocked, every dependency is classified
+`invalid`, and the bounded blocker is `DEPENDENCY_EVIDENCE_MALFORMED`. This
+prevents a mixed valid and unattributable-malformed set from silently dropping
+the malformed object or assigning it to caller-selected policy state.
+
 ## Deterministic maturity precedence
 
 General single-envelope failures are collected before one explicit maturity

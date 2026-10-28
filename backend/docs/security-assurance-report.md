@@ -486,6 +486,20 @@ serialization, so validation-bypassing copies are revalidated and redacted.
 These defenses cover malformed in-process model objects; they are not a claim
 of protection against arbitrary malicious code already running in the process.
 
+Phase 26 closes two remaining boundary gaps. Structured-event reconstruction
+now converts Pydantic validation failures into a bounded generic exception
+raised without a retained exception chain, preventing rejected input values
+from appearing in exception text. Phase 21 now reconstructs every evidence
+envelope and typed payload before reading its dependency identity; an
+unattributable malformed object blocks every dependency with the bounded
+`DEPENDENCY_EVIDENCE_MALFORMED` reason instead of escaping through field access
+or being silently ignored. These changes remain local and non-authorizing.
+
+Dependency resolution still uses reviewed compatible ranges rather than a
+lockfile. A tested Python/FastAPI/Pydantic compatibility matrix or established
+constraints workflow remains a reproducibility recommendation; Phase 26 does
+not introduce an untested dependency-management process.
+
 There is no default root, algorithm fallback, network provider, or private-key
 operation in production code. Evidence-supplied keys and caller claims cannot
 establish trust. Configuration is restricted to synthetic non-production use,

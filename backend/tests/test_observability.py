@@ -152,3 +152,21 @@ def test_log_event_rejects_invalid_and_unexpected_extra_state(caplog) -> None:
         log_event(extra)
 
     assert "hidden" not in caplog.text
+
+
+def test_log_event_validation_error_has_no_sensitive_exception_chain(caplog) -> None:
+    sensitive = "phase26-unique-secret-marker"
+    event = StructuredEvent(
+        timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        component="audit",
+        event_type="write",
+    ).model_copy(update={"severity": f"token={sensitive}"})
+    caplog.set_level(logging.INFO, logger="friday")
+
+    with pytest.raises(ValueError, match="^structured event validation failed$") as captured:
+        log_event(event)
+
+    assert sensitive not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert sensitive not in caplog.text

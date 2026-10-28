@@ -206,8 +206,15 @@ class OfflineDependencyAcceptanceEvaluator:
         evidence: tuple[ExternalDependencyEvidenceEnvelope, ...] = (),
     ) -> DependencyAcceptanceReport:
         canonical_context = _canonical_context(context)
-        grouped: dict[ExternalDependencyId, list[ExternalDependencyEvidenceEnvelope]] = defaultdict(list)
+        canonical_evidence: list[ExternalDependencyEvidenceEnvelope] = []
         for item in evidence:
+            try:
+                canonical_evidence.append(_canonical_evidence(item))
+            except Exception:
+                return _malformed_evidence_report(self._registry, canonical_context)
+
+        grouped: dict[ExternalDependencyId, list[ExternalDependencyEvidenceEnvelope]] = defaultdict(list)
+        for item in canonical_evidence:
             grouped[item.dependency_id].append(item)
 
         assessments = tuple(
@@ -369,6 +376,29 @@ class OfflineDependencyAcceptanceEvaluator:
         if item.synthetic and maturity is DependencyMaturity.LOCAL_CONTRACT:
             maturity = DependencyMaturity.SYNTHETIC_TESTED
         return _assessment(entry, maturity, tuple(codes), now, (fingerprint,))
+
+
+def _malformed_evidence_report(
+    registry: DependencyAcceptanceRegistry,
+    context: DependencyAcceptanceContext,
+) -> DependencyAcceptanceReport:
+    """Block every dependency when malformed evidence has no trusted identity."""
+
+    assessments = tuple(
+        _assessment(
+            entry,
+            DependencyMaturity.INVALID,
+            ("DEPENDENCY_EVIDENCE_MALFORMED",),
+            context.evaluated_at,
+        )
+        for entry in registry.entries
+    )
+    return DependencyAcceptanceReport(
+        context=context,
+        registry_fingerprint=registry.fingerprint,
+        assessments=assessments,
+        blocker_codes=("DEPENDENCY_EVIDENCE_MALFORMED",),
+    )
 
 
 def _entry(

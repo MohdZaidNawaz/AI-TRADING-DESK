@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Mapping
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, ValidationError, field_validator
 
 from app.models.schemas import APIModel
 
@@ -224,4 +224,10 @@ def _canonical_event(event: StructuredEvent) -> StructuredEvent:
         raise ValueError("structured event extra state is unavailable") from error
     if extra_state is not None and (type(extra_state) is not dict or bool(extra_state)):
         raise ValueError("structured event contains undeclared extra state")
-    return StructuredEvent.model_validate(values, strict=True)
+    try:
+        return StructuredEvent.model_validate(values, strict=True)
+    except ValidationError:
+        # Raise outside the handler so neither __cause__ nor __context__ retains
+        # Pydantic's rejected input representation for downstream loggers.
+        pass
+    raise ValueError("structured event validation failed")

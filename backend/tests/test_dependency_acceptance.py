@@ -380,6 +380,74 @@ def test_corrupted_nested_evidence_payload_is_revalidated() -> None:
     _assert_non_authorizing(report, evidence.dependency_id)
 
 
+def test_evidence_missing_dependency_identity_blocks_every_dependency() -> None:
+    clean = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT)
+    values = dict(object.__getattribute__(clean, "__dict__"))
+    values.pop("dependency_id")
+    malformed = ExternalDependencyEvidenceEnvelope.model_construct(**values)
+
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(malformed,)
+    )
+
+    assert all(item.maturity is DependencyMaturity.INVALID for item in report.assessments)
+    assert all(
+        item.reason_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+        for item in report.assessments
+    )
+    assert report.blocker_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+
+
+def test_unsupported_top_level_evidence_is_rejected_before_field_access() -> None:
+    calls: list[str] = []
+
+    class UnsupportedEvidence:
+        @property
+        def dependency_id(self):
+            calls.append("dependency_id")
+            return ExternalDependencyId.INDEPENDENT_TRUST_ROOT
+
+        def model_dump(self, **_kwargs):
+            calls.append("model_dump")
+            return {}
+
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(UnsupportedEvidence(),)  # type: ignore[arg-type]
+    )
+
+    assert calls == []
+    assert all(item.maturity is DependencyMaturity.INVALID for item in report.assessments)
+    assert report.blocker_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+
+
+def test_mixed_valid_and_unattributable_malformed_evidence_is_deterministically_blocked() -> None:
+    valid = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT)
+    values = dict(object.__getattribute__(valid, "__dict__"))
+    values.pop("dependency_id")
+    malformed = ExternalDependencyEvidenceEnvelope.model_construct(**values)
+    evaluator = OfflineDependencyAcceptanceEvaluator()
+
+    first = evaluator.evaluate(context=_context(), evidence=(valid, malformed))
+    second = evaluator.evaluate(context=_context(), evidence=(malformed, valid))
+
+    assert first == second
+    assert first.fingerprint == second.fingerprint
+    assert all(item.maturity is DependencyMaturity.INVALID for item in first.assessments)
+    assert first.blocker_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    assert all(item.independently_verified is False for item in first.assessments)
+    assert all(item.operationally_accepted is False for item in first.assessments)
+    assert all(item.authorizes_execution is False for item in first.assessments)
+    assert first.production_authorization_available is False
+    assert first.submission_allowed is False
+    assert first.execution_authority is False
+
+
 def test_every_dependency_starts_unavailable_and_report_is_structurally_blocked() -> None:
     report = OfflineDependencyAcceptanceEvaluator().evaluate(context=_context())
 
