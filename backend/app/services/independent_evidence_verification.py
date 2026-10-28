@@ -37,7 +37,13 @@ from app.models.independent_evidence_verification import (
     StructuralVerificationStatus,
     canonical_dependency_evidence_payload,
 )
-from app.services.dependency_acceptance import build_dependency_acceptance_registry
+from app.models.independent_trust_verification import ConfiguredEd25519TrustAnchor
+from app.services.dependency_acceptance import (
+    _canonical_context,
+    _canonical_evidence,
+    _exact_model_state,
+    build_dependency_acceptance_registry,
+)
 
 
 def build_evidence_verification_policy() -> EvidenceVerificationPolicy:
@@ -48,17 +54,9 @@ class OfflineIndependentEvidenceVerifier:
     """Verify configured-key signatures without claiming independent authority."""
 
     def __init__(self, configuration: EvidenceTrustConfiguration | None = None) -> None:
-        if type(configuration) is EvidenceTrustConfiguration:
-            try:
-                self._configuration = EvidenceTrustConfiguration.model_validate(
-                    configuration.model_dump(
-                        exclude={"fingerprint"},
-                        exclude_computed_fields=True,
-                    )
-                )
-            except Exception:
-                self._configuration = None
-        else:
+        try:
+            self._configuration = _canonical_configuration(configuration)
+        except Exception:
             self._configuration = None
         self._policy = build_evidence_verification_policy()
 
@@ -78,15 +76,10 @@ class OfflineIndependentEvidenceVerifier:
                 reasons=(EvidenceVerificationReason.EVIDENCE_STRUCTURE_INVALID,),
             )
         try:
-            canonical_request = EvidenceVerificationRequest.model_validate(
-                request.model_dump(
-                    exclude={"fingerprint"},
-                    exclude_computed_fields=True,
-                )
-            )
+            canonical_request = _canonical_request(request)
         except Exception:
             return self._report(
-                request_fingerprint=_safe_request_fingerprint(request),
+                request_fingerprint="0" * 64,
                 now=now,
                 disposition=EvidenceVerificationDisposition.STRUCTURALLY_INVALID,
                 structural=StructuralVerificationStatus.INVALID,
@@ -387,6 +380,50 @@ def _binding_reasons(
     return reasons
 
 
+def _canonical_configuration(
+    configuration: EvidenceTrustConfiguration | None,
+) -> EvidenceTrustConfiguration:
+    values = _exact_model_state(
+        configuration,
+        EvidenceTrustConfiguration,
+        "evidence trust configuration",
+    )
+    anchor = values["trust_anchor"]
+    anchor_values = _exact_model_state(
+        anchor,
+        ConfiguredEd25519TrustAnchor,
+        "configured trust anchor",
+    )
+    values["trust_anchor"] = ConfiguredEd25519TrustAnchor.model_validate(
+        anchor_values,
+        strict=True,
+    )
+    return EvidenceTrustConfiguration.model_validate(values, strict=True)
+
+
+def _canonical_request(request: EvidenceVerificationRequest) -> EvidenceVerificationRequest:
+    values = _exact_model_state(
+        request,
+        EvidenceVerificationRequest,
+        "evidence verification request",
+    )
+    values["context"] = _canonical_context(values["context"])
+    signed = values["signed_evidence"]
+    if signed is not None:
+        values["signed_evidence"] = _canonical_signed_evidence(signed)
+    return EvidenceVerificationRequest.model_validate(values, strict=True)
+
+
+def _canonical_signed_evidence(signed: SignedDependencyEvidence) -> SignedDependencyEvidence:
+    values = _exact_model_state(
+        signed,
+        SignedDependencyEvidence,
+        "signed dependency evidence",
+    )
+    values["evidence"] = _canonical_evidence(values["evidence"])
+    return SignedDependencyEvidence.model_validate(values, strict=True)
+
+
 def _freshness(*, evidence, now: datetime, max_age_seconds: int):
     if evidence.issued_at > now or (evidence.verified_at is not None and evidence.verified_at > now):
         return FreshnessVerificationStatus.FUTURE_DATED, [EvidenceVerificationReason.EVIDENCE_FUTURE_DATED]
@@ -469,16 +506,6 @@ def _signature_valid(
 
 def _same(left: str, right: str) -> bool:
     return compare_digest(left.encode("utf-8"), right.encode("utf-8"))
-
-
-def _safe_request_fingerprint(value: object) -> str:
-    try:
-        candidate = getattr(value, "fingerprint", None)
-    except Exception:
-        return "0" * 64
-    if isinstance(candidate, str) and len(candidate) == 64:
-        return candidate
-    return "0" * 64
 
 
 def _utc(value: datetime) -> datetime:

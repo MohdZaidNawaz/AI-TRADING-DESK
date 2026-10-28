@@ -51,8 +51,11 @@ equivalent pre-validation representation.
 `EvidenceTrustConfiguration` has no default instance. It must be supplied
 explicitly and binds the configured Ed25519 anchor to one issuer, key identity,
 generation, dependency set, non-production environment set, and scope set. The
-configuration is reconstructed at the verifier boundary, and subclasses or
-malformed copied models are not accepted as ambient trust.
+configuration is reconstructed at the verifier boundary from an exact-class,
+defensive copy of its raw declared field state. The nested trust anchor is
+reconstructed the same way. Instance serializers are never invoked, and
+subclasses, missing or undeclared fields, non-empty extra state, malformed
+copied models, and malformed nested anchors are not accepted as ambient trust.
 
 The configuration is deliberately `synthetic_test_only=True`,
 `independently_trusted=False`, and
@@ -67,7 +70,10 @@ as untrusted metadata.
 
 ## Evaluation and replay behavior
 
-The service revalidates exact models before evaluation. It requires the service
+The service revalidates exact request, context, signed-envelope, evidence, and
+typed-payload models from defensive raw-state copies before evaluation or
+signature verification. It does not dispatch through caller-shadowable model
+serializers. It requires the service
 evaluation time to equal the context evaluation time and checks the canonical
 Phase 21 registry for evidence type, commit-binding, and freshness policy.
 Future, expired, stale, revoked, superseded, compromised, unknown, mismatched,
@@ -133,3 +139,5 @@ lifecycle/revocation, an external monotonic witness, authenticated broker
 evidence, authoritative reconciliation, verified monitoring delivery, recovery
 rehearsal, independent security review, or authenticated human production
 approval. Production authorization and all trading execution remain disabled.
+These checks harden malformed in-process model boundaries; they do not protect
+against arbitrary malicious code already executing inside the process.

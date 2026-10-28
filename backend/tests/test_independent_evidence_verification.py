@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 import pytest
 
+import app.services.independent_evidence_verification as verification_service
 from app.models.dependency_acceptance import (
     DependencyAcceptanceContext,
     EvidenceProvenance,
@@ -448,6 +449,125 @@ def test_malformed_copied_configuration_is_revalidated_and_not_trusted() -> None
     )
     assert report.disposition is EvidenceVerificationDisposition.UNAVAILABLE
     assert EvidenceVerificationReason.VERIFIER_CONFIGURATION_UNAVAILABLE in report.reason_codes
+
+
+def test_shadowed_configuration_model_dump_is_never_invoked() -> None:
+    private, public = _key_material()
+    clean = _configuration(public)
+    calls: list[bool] = []
+
+    def shadowed_model_dump(**_kwargs):
+        calls.append(True)
+        return clean.model_dump(exclude_computed_fields=True)
+
+    corrupted = clean.model_copy(update={"model_dump": shadowed_model_dump})
+    report = OfflineIndependentEvidenceVerifier(corrupted).verify(
+        request=_request(_signed(private, clean)), evaluated_at=NOW
+    )
+
+    assert calls == []
+    assert report.disposition is EvidenceVerificationDisposition.UNAVAILABLE
+    assert EvidenceVerificationReason.VERIFIER_CONFIGURATION_UNAVAILABLE in report.reason_codes
+    _assert_non_authorizing(report)
+
+
+def test_missing_extra_and_corrupted_nested_configuration_fail_closed() -> None:
+    private, public = _key_material()
+    clean = _configuration(public)
+    missing_values = dict(object.__getattribute__(clean, "__dict__"))
+    missing_values.pop("issuer_id")
+    missing = EvidenceTrustConfiguration.model_construct(**missing_values)
+    extra = clean.model_copy()
+    object.__setattr__(extra, "__pydantic_extra__", {"unexpected": "value"})
+    corrupted_anchor = clean.trust_anchor.model_copy(update={"public_key_pem": "invalid"})
+    nested = clean.model_copy(update={"trust_anchor": corrupted_anchor})
+
+    for configuration in (missing, extra, nested):
+        report = OfflineIndependentEvidenceVerifier(configuration).verify(
+            request=_request(_signed(private, clean)), evaluated_at=NOW
+        )
+        assert report.disposition is EvidenceVerificationDisposition.UNAVAILABLE
+        assert (
+            EvidenceVerificationReason.VERIFIER_CONFIGURATION_UNAVAILABLE
+            in report.reason_codes
+        )
+        _assert_non_authorizing(report)
+
+
+def test_shadowed_request_serializer_is_rejected_before_signature_verification(
+    monkeypatch,
+) -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    clean = _request(_signed(private, configuration))
+    dump_calls: list[bool] = []
+    signature_calls: list[bool] = []
+
+    def shadowed_model_dump(**_kwargs):
+        dump_calls.append(True)
+        return clean.model_dump(exclude_computed_fields=True)
+
+    def counted_signature(*_args, **_kwargs):
+        signature_calls.append(True)
+        return True
+
+    request = clean.model_copy(update={"model_dump": shadowed_model_dump})
+    monkeypatch.setattr(verification_service, "_signature_valid", counted_signature)
+
+    report = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=request, evaluated_at=NOW
+    )
+
+    assert dump_calls == []
+    assert signature_calls == []
+    assert report.disposition is EvidenceVerificationDisposition.STRUCTURALLY_INVALID
+    assert report.request_fingerprint == "0" * 64
+    assert EvidenceVerificationReason.EVIDENCE_STRUCTURE_INVALID in report.reason_codes
+    _assert_non_authorizing(report)
+
+
+def test_malformed_request_and_nested_models_fail_before_signature_verification(
+    monkeypatch,
+) -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    signed = _signed(private, configuration)
+    clean = _request(signed)
+    signature_calls: list[bool] = []
+
+    def counted_signature(*_args, **_kwargs):
+        signature_calls.append(True)
+        return True
+
+    missing = clean.model_copy()
+    object.__getattribute__(missing, "__dict__").pop("policy_version")
+    extra = clean.model_copy()
+    object.__setattr__(extra, "__pydantic_extra__", {"unexpected": "value"})
+    bad_context = clean.model_copy(
+        update={"context": clean.context.model_copy(update={"subject_id": 123})}
+    )
+    bad_signed = clean.model_copy(
+        update={
+            "signed_evidence": signed.model_copy(update={"signature_base64": "invalid"})
+        }
+    )
+    bad_payload = signed.evidence.payload.model_copy(update={"lineage_fingerprint": 123})
+    bad_evidence = signed.evidence.model_copy(update={"payload": bad_payload})
+    bad_nested_evidence = clean.model_copy(
+        update={"signed_evidence": signed.model_copy(update={"evidence": bad_evidence})}
+    )
+    monkeypatch.setattr(verification_service, "_signature_valid", counted_signature)
+
+    for request in (missing, extra, bad_context, bad_signed, bad_nested_evidence):
+        report = OfflineIndependentEvidenceVerifier(configuration).verify(
+            request=request, evaluated_at=NOW
+        )
+        assert report.disposition is EvidenceVerificationDisposition.STRUCTURALLY_INVALID
+        assert report.request_fingerprint == "0" * 64
+        assert EvidenceVerificationReason.EVIDENCE_STRUCTURE_INVALID in report.reason_codes
+        _assert_non_authorizing(report)
+
+    assert signature_calls == []
 
 
 @pytest.mark.parametrize(

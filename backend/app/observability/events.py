@@ -191,12 +191,37 @@ class StructuredEvent(APIModel):
 
 
 def log_event(event: StructuredEvent, *, logger: logging.Logger | None = None) -> None:
-    """Emit a stable safe JSON record; callers cannot supply arbitrary objects."""
+    """Emit a stable safe JSON record from the exact validated event contract."""
+
+    canonical_event = _canonical_event(event)
     target = logger or logging.getLogger("friday")
-    payload = event.model_dump(mode="json")
-    target.log(getattr(logging, event.severity), json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    payload = StructuredEvent.model_dump(canonical_event, mode="json")
+    target.log(
+        getattr(logging, canonical_event.severity),
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def safe_fields(values: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
     """Convert only safe scalar metadata into a frozen logging representation."""
     return tuple((str(key), str(value)) for key, value in values.items())
+
+
+def _canonical_event(event: StructuredEvent) -> StructuredEvent:
+    """Revalidate exact raw event state without dispatching caller methods."""
+
+    if type(event) is not StructuredEvent:
+        raise ValueError("structured logging requires the exact event type")
+    raw_state = object.__getattribute__(event, "__dict__")
+    if type(raw_state) is not dict or any(type(key) is not str for key in raw_state):
+        raise ValueError("structured event state is malformed")
+    values = dict(raw_state)
+    if set(values) != set(StructuredEvent.model_fields):
+        raise ValueError("structured event fields do not match the contract")
+    try:
+        extra_state = object.__getattribute__(event, "__pydantic_extra__")
+    except AttributeError as error:
+        raise ValueError("structured event extra state is unavailable") from error
+    if extra_state is not None and (type(extra_state) is not dict or bool(extra_state)):
+        raise ValueError("structured event contains undeclared extra state")
+    return StructuredEvent.model_validate(values, strict=True)

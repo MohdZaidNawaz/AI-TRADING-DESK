@@ -31,6 +31,7 @@ from app.models.dependency_acceptance import (
     RehearsalOutcome,
     ReviewDecision,
     SecurityReviewPayload,
+    TrustDependencyPayload,
     VerificationMode,
 )
 
@@ -620,14 +621,49 @@ def _resolve_maturity(
 def _canonical_evidence(
     item: ExternalDependencyEvidenceEnvelope,
 ) -> ExternalDependencyEvidenceEnvelope:
-    if type(item) is not ExternalDependencyEvidenceEnvelope:
-        raise ValueError("unexpected dependency evidence type")
-    return ExternalDependencyEvidenceEnvelope.model_validate(
-        item.model_dump(
-            exclude={"envelope_fingerprint"},
-            exclude_computed_fields=True,
-        )
+    values = _exact_model_state(
+        item,
+        ExternalDependencyEvidenceEnvelope,
+        "dependency evidence",
     )
+    payload = values["payload"]
+    payload_types = (
+        TrustDependencyPayload,
+        BrokerEvidencePayload,
+        ReconciliationEvidencePayload,
+        MonitoringDeliveryPayload,
+        RecoveryRehearsalPayload,
+        SecurityReviewPayload,
+        HumanApprovalPayload,
+    )
+    if type(payload) not in payload_types:
+        raise ValueError("dependency evidence payload type is unsupported")
+    values["payload"] = _exact_model_state(
+        payload,
+        type(payload),
+        "dependency evidence payload",
+    )
+    return ExternalDependencyEvidenceEnvelope.model_validate(values, strict=True)
+
+
+def _exact_model_state(instance, model_type, label: str) -> dict[str, object]:
+    """Copy exact Pydantic field state without invoking instance serialization."""
+
+    if type(instance) is not model_type:
+        raise ValueError(f"unexpected {label} type")
+    raw_state = object.__getattribute__(instance, "__dict__")
+    if type(raw_state) is not dict or any(type(key) is not str for key in raw_state):
+        raise ValueError(f"{label} state is malformed")
+    values = dict(raw_state)
+    if set(values) != set(model_type.model_fields):
+        raise ValueError(f"{label} fields do not match the contract")
+    try:
+        extra_state = object.__getattribute__(instance, "__pydantic_extra__")
+    except AttributeError as error:
+        raise ValueError(f"{label} extra state is unavailable") from error
+    if extra_state is not None and (type(extra_state) is not dict or bool(extra_state)):
+        raise ValueError(f"{label} contains undeclared extra state")
+    return values
 
 
 def _safe_fingerprints(items: list[ExternalDependencyEvidenceEnvelope]) -> tuple[str, ...]:

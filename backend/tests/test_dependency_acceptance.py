@@ -325,6 +325,61 @@ def test_context_with_nonempty_pydantic_extra_state_is_rejected() -> None:
         OfflineDependencyAcceptanceEvaluator().evaluate(context=corrupted)
 
 
+def test_shadowed_evidence_model_dump_is_never_invoked() -> None:
+    calls: list[bool] = []
+
+    def shadowed_model_dump(**_kwargs):
+        calls.append(True)
+        return _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT).model_dump()
+
+    evidence = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT).model_copy(
+        update={"model_dump": shadowed_model_dump}
+    )
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(evidence,)
+    )
+    item = _assessment(report, evidence.dependency_id)
+
+    assert calls == []
+    assert item.maturity is DependencyMaturity.INVALID
+    assert item.reason_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    _assert_non_authorizing(report, evidence.dependency_id)
+
+
+def test_missing_undeclared_and_extra_evidence_state_fail_closed() -> None:
+    clean = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT)
+    missing_values = dict(object.__getattribute__(clean, "__dict__"))
+    missing_values.pop("subject_id")
+    missing = ExternalDependencyEvidenceEnvelope.model_construct(**missing_values)
+    undeclared = clean.model_copy(update={"unexpected": "value"})
+    extra = clean.model_copy()
+    object.__setattr__(extra, "__pydantic_extra__", {"unexpected": "value"})
+
+    for evidence in (missing, undeclared, extra):
+        report = OfflineDependencyAcceptanceEvaluator().evaluate(
+            context=_context(), evidence=(evidence,)
+        )
+        item = _assessment(report, evidence.dependency_id)
+        assert item.maturity is DependencyMaturity.INVALID
+        assert item.reason_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+        _assert_non_authorizing(report, evidence.dependency_id)
+
+
+def test_corrupted_nested_evidence_payload_is_revalidated() -> None:
+    clean = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT)
+    corrupted_payload = clean.payload.model_copy(update={"lineage_fingerprint": 123})
+    evidence = clean.model_copy(update={"payload": corrupted_payload})
+
+    report = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=_context(), evidence=(evidence,)
+    )
+    item = _assessment(report, evidence.dependency_id)
+
+    assert item.maturity is DependencyMaturity.INVALID
+    assert item.reason_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    _assert_non_authorizing(report, evidence.dependency_id)
+
+
 def test_every_dependency_starts_unavailable_and_report_is_structurally_blocked() -> None:
     report = OfflineDependencyAcceptanceEvaluator().evaluate(context=_context())
 

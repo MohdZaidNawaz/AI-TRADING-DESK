@@ -476,6 +476,16 @@ service independently rechecks exact subject, request, challenge, environment,
 scope, Phase 21 policy, release commit, evidence type, freshness, and fixed
 evaluation time.
 
+The Phase 21 evidence boundary and Phase 22 configuration/request boundary now
+require exact model classes, defensively copy exact declared raw fields, reject
+missing or undeclared fields and non-empty extra state, and independently
+reconstruct nested payload, trust-anchor, context, signed-envelope, and evidence
+models before policy or cryptographic evaluation. Caller-shadowed serializers
+are never invoked. Structured logging applies the same boundary before safe
+serialization, so validation-bypassing copies are revalidated and redacted.
+These defenses cover malformed in-process model objects; they are not a claim
+of protection against arbitrary malicious code already running in the process.
+
 There is no default root, algorithm fallback, network provider, or private-key
 operation in production code. Evidence-supplied keys and caller claims cannot
 establish trust. Configuration is restricted to synthetic non-production use,
