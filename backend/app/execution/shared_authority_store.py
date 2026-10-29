@@ -44,6 +44,14 @@ from app.models.proposals import SentinelDecision, SentinelDecisionStatus
 _SCHEMA_VERSION = "2"
 _MIGRATION_STATE_READY = "READY"
 _MIGRATION_STATE_MIGRATING = "MIGRATING"
+_HISTORICAL_V1_MIGRATION_CHECKSUM = (
+    "05087daba15f6689cf92d668a9820bf8533d2f3d7fa77dfc3d31db5050f407e6"
+)
+_HISTORICAL_V1_CUTOVER_TABLE_SQL = """CREATE TABLE shared_authority_cutover_state (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    state TEXT NOT NULL CHECK (state = 'bootstrap_non_authoritative'),
+    updated_at TEXT NOT NULL
+)"""
 _BOOTSTRAP_ENTITY_ID = "shared-authority-schema-bootstrap"
 _BOOTSTRAP_ENTITY_FINGERPRINT = sha256(_BOOTSTRAP_ENTITY_ID.encode()).hexdigest()
 _REQUIRED_TABLES = frozenset(
@@ -1236,7 +1244,20 @@ class SharedAuthorityStore:
                             ).fetchall()
                         )
                         if metadata.get("schema_version") == "1":
-                            self._verify_existing_schema(connection, tables, schema_version="1")
+                            migration = connection.execute(
+                                "SELECT name, checksum FROM shared_authority_schema_migrations "
+                                "WHERE version = 1"
+                            ).fetchone()
+                            historical_v1 = migration == (
+                                "shared_authority_bootstrap",
+                                _HISTORICAL_V1_MIGRATION_CHECKSUM,
+                            )
+                            self._verify_existing_schema(
+                                connection,
+                                tables,
+                                schema_version="1",
+                                historical_v1=historical_v1,
+                            )
                             self._apply_v2_migration(connection)
                         else:
                             self._verify_existing_schema(connection, tables)
@@ -1328,9 +1349,16 @@ class SharedAuthorityStore:
             raise
 
     def _verify_existing_schema(
-        self, connection: sqlite3.Connection, tables: set[str], *, schema_version: str | None = None
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+        *,
+        schema_version: str | None = None,
+        historical_v1: bool = False,
     ) -> None:
         expected_version = schema_version or _SCHEMA_VERSION
+        if historical_v1 and expected_version != "1":
+            raise SharedAuthorityUnavailable("shared authority migration history is invalid")
         if not _REQUIRED_TABLES.issubset(tables):
             raise SharedAuthorityUnavailable("shared authority schema is missing or partially migrated")
         if not _REQUIRED_INDEXES.issubset(_index_names(connection)):
@@ -1345,7 +1373,20 @@ class SharedAuthorityStore:
         migration = connection.execute(
             "SELECT name, checksum FROM shared_authority_schema_migrations WHERE version = 1"
         ).fetchone()
-        if migration != ("shared_authority_bootstrap", _migration_checksum(1)):
+        accepted_v1_migrations = {
+            ("shared_authority_bootstrap", _migration_checksum(1)),
+        }
+        if expected_version == "2":
+            # A migrated database retains its exact historical v1 provenance.
+            # The old checksum is never rewritten merely to satisfy current code.
+            accepted_v1_migrations.add(
+                ("shared_authority_bootstrap", _HISTORICAL_V1_MIGRATION_CHECKSUM)
+            )
+        elif historical_v1:
+            accepted_v1_migrations = {
+                ("shared_authority_bootstrap", _HISTORICAL_V1_MIGRATION_CHECKSUM)
+            }
+        if migration not in accepted_v1_migrations:
             raise SharedAuthorityUnavailable("shared authority migration history is invalid")
         if expected_version == "2":
             migration_v2 = connection.execute(
@@ -1368,7 +1409,10 @@ class SharedAuthorityStore:
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise SharedAuthorityUnavailable("shared authority foreign-key integrity check failed")
 
-        expected_tables, expected_indexes = _canonical_schema_structure(expected_version)
+        if historical_v1:
+            expected_tables, expected_indexes = _historical_v1_schema_structure()
+        else:
+            expected_tables, expected_indexes = _canonical_schema_structure(expected_version)
         actual_tables = {
             table_name: _table_structure(connection, table_name)
             for table_name in _REQUIRED_TABLES
@@ -1632,6 +1676,34 @@ def _canonical_schema_structure(schema_version: str = _SCHEMA_VERSION) -> tuple[
     try:
         connection.execute("PRAGMA foreign_keys = ON")
         _create_canonical_schema(connection, schema_version=schema_version)
+        return (
+            {name: _table_structure(connection, name) for name in _REQUIRED_TABLES},
+            {name: _index_structure(connection, name) for name in _REQUIRED_INDEXES},
+        )
+    finally:
+        connection.close()
+
+
+@lru_cache(maxsize=1)
+def _historical_v1_schema_structure() -> tuple[
+    dict[str, _TableStructure], dict[str, _IndexStructure]
+]:
+    """Return the exact Phase 13C-1 schema signature from commit 3fdb6dc.
+
+    All historical v1 objects other than the cutover constraint are byte-for-
+    byte equivalent after SQL normalization to the current v1 definitions.
+    Keeping the original equality constraint explicit prevents accepting a
+    merely similar or caller-invented legacy schema.
+    """
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        statements = list(_canonical_table_sql("1"))
+        statements[2] = _HISTORICAL_V1_CUTOVER_TABLE_SQL
+        for statement in statements:
+            connection.execute(statement)
+        for statement in _canonical_index_sql():
+            connection.execute(statement)
         return (
             {name: _table_structure(connection, name) for name in _REQUIRED_TABLES},
             {name: _index_structure(connection, name) for name in _REQUIRED_INDEXES},
