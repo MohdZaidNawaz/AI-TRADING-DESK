@@ -380,36 +380,6 @@ class ApprovalRegistry:
             return "CANDIDATE_PROTOCOL_DISCONNECTED"
         return "SHARED_DURABLE_SENTINEL_APPROVAL_OWNER"
 
-    def _record_approved_decision(
-        self,
-        proposal: TradeProposal,
-        decision: SentinelDecision,
-    ) -> SentinelDecision:
-        """Store one Sentinel-issued approval or return the existing decision.
-
-        Compatibility seam for legacy internal callers.
-
-        The normal application path is the trusted issuance service. This
-        underscore-prefixed hook exists only for legacy internal test helpers;
-        it is not a public issuance API and never participates in app
-        composition. It derives a distinct compatibility decision identity so
-        a test helper cannot overwrite a real trusted decision with the same
-        caller-supplied ``decision_id``.
-        """
-        if decision.decision is not SentinelDecisionStatus.APPROVED:
-            return decision
-        compatibility_decision = decision.model_copy(
-            update={
-                "decision_id": _fingerprint(
-                    {
-                        "compatibility_registration": True,
-                        "decision": decision.model_dump(mode="json"),
-                    }
-                )
-            }
-        )
-        return self._persist_trusted_evaluation(proposal, compatibility_decision)
-
     def _persist_trusted_evaluation(
         self,
         proposal: TradeProposal,

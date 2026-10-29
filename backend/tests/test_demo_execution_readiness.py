@@ -22,7 +22,7 @@ from app.models.events import AssetClass
 from app.models.mt5 import BrokerInstrumentContract, MT5AccountSnapshot, MT5PositionSnapshot
 from app.models.portfolio_risk import SourceAccountKey
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
-from app.services.trade_proposal_workflow import ApprovalRegistry, proposal_fingerprint
+from app.services.trade_proposal_workflow import proposal_fingerprint
 from tests.test_execution import approved_execution_pair
 
 
@@ -68,9 +68,12 @@ def _position(ticket: int = 1, **changes: object) -> MT5PositionSnapshot:
 
 
 def _pair():
-    proposal, decision, _old_registry, _old_now = approved_execution_pair()
-    registry = ApprovalRegistry()
-    decision = registry._record_approved_decision(proposal, decision.model_copy(update={"approval_id": None, "account_id": ACCOUNT.account_id, "expires_at": NOW + timedelta(minutes=5)}))
+    proposal, decision, registry, _old_now = approved_execution_pair(
+        account=ACCOUNT,
+        as_of=NOW,
+        approval_ttl_seconds=5 * 60,
+        proposal_expires_at=NOW + timedelta(minutes=5),
+    )
     params = proposal.parameters
     assert params is not None and params.direction is not None and params.reference_price is not None and params.stop_loss is not None and params.targets
     intent = ExecutionIntent(

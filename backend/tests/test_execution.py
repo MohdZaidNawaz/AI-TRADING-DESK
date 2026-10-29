@@ -5,8 +5,10 @@ from pydantic import ValidationError
 
 from app.models.events import AssetClass
 from app.models.execution import ExecutionIntent, ExecutionStatus
+from app.models.portfolio_risk import SourceAccountKey
 from app.models.proposals import TradeDirection, TradeProposalStatus
-from app.services.trade_proposal_workflow import ApprovalRegistry, SentinelRiskGate
+from app.models.risk_assessment import SentinelAccountBinding
+from app.services.trade_proposal_workflow import ApprovalRegistry, SentinelRiskGate, transition_proposal
 from tests.test_trade_proposal_workflow import MOMENT, _proposal, _risk_context, _snapshot
 
 
@@ -28,24 +30,44 @@ def _intent(**changes: object) -> ExecutionIntent:
     return ExecutionIntent(**data)
 
 
-def approved_execution_pair():
-    """Produce a registered, bound Sentinel approval without adapters or I/O."""
-    snapshot = _snapshot()
+def approved_execution_pair(
+    *,
+    account: SourceAccountKey | None = None,
+    as_of: datetime = MOMENT + timedelta(minutes=1),
+    approval_ttl_seconds: int = 120,
+    proposal_expires_at: datetime | None = None,
+):
+    """Produce an approval through the real trusted Sentinel issuance path."""
+    account = account or SourceAccountKey(
+        source_id="test", source_account_id="source-account-1"
+    )
+    snapshot = _snapshot(timestamp=as_of - timedelta(minutes=1))
     pending_proposal = _proposal(snapshot=snapshot)
-    original = SentinelRiskGate().evaluate(
-        proposal=pending_proposal, snapshot=snapshot, risk_context=_risk_context()
-    )
-    proposal = pending_proposal.model_copy(update={"status": TradeProposalStatus.APPROVED})
-    decision = original.model_copy(
-        update={
-            "approval_id": None, "account_id": "source-account-1",
-            "portfolio_snapshot_id": "portfolio-1", "portfolio_snapshot_fingerprint": "p" * 64,
-            "metrics_snapshot_id": "metrics-1", "metrics_snapshot_fingerprint": "m" * 64,
-        }
-    )
+    if proposal_expires_at is not None:
+        pending_proposal = pending_proposal.model_copy(
+            update={"expires_at": proposal_expires_at}
+        )
     registry = ApprovalRegistry()
-    registered = registry._record_approved_decision(proposal, decision)
-    return proposal, registered, registry, MOMENT + timedelta(minutes=1)
+    gate = SentinelRiskGate(
+        registry=registry,
+        account_binding=SentinelAccountBinding(
+            account=account,
+            portfolio_snapshot_id="portfolio-1",
+            portfolio_snapshot_fingerprint="p" * 64,
+            metrics_snapshot_id="metrics-1",
+            metrics_snapshot_fingerprint="m" * 64,
+        ),
+    )
+    decision = gate.evaluate(
+        proposal=pending_proposal,
+        snapshot=snapshot,
+        risk_context=_risk_context(
+            as_of=as_of, approval_ttl_seconds=approval_ttl_seconds
+        ),
+    )
+    proposal = transition_proposal(pending_proposal, decision)
+    assert proposal.status is TradeProposalStatus.APPROVED
+    return proposal, decision, registry, as_of
 
 
 def test_intent_is_immutable_and_identity_is_deterministic() -> None:

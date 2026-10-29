@@ -500,6 +500,24 @@ lockfile. A tested Python/FastAPI/Pydantic compatibility matrix or established
 constraints workflow remains a reproducibility recommendation; Phase 26 does
 not introduce an untested dependency-management process.
 
+Phase 28 narrows Phase 21 and Phase 22 canonicalization handling to expected
+model-validation failures. Malformed caller data still produces the documented
+fail-closed reports, while unexpected internal exceptions propagate instead of
+being mislabeled as ordinary unavailable or malformed evidence. Direct
+cross-service regression cases use the same canonical evidence at both
+boundaries to lock fingerprint agreement, freshness equality, intentional
+binding-versus-lifecycle precedence, deterministic results, and literal-false
+authority outputs.
+
+The existing virtual environment observed for Phase 28 uses Python 3.13.1,
+FastAPI 0.141.1, and Pydantic 2.13.5. The declared Pydantic range is intentional:
+these boundaries require Pydantic v2 strict `model_validate` behavior and the
+project uses v2 serialization options such as `exclude_computed_fields`. This
+single environment is not a compatibility matrix or clean-install proof. A
+future dependency workflow should test the declared lower bounds and the latest
+compatible versions in separate clean environments before adopting a lock or
+constraints file; Phase 28 does not invent an untested lockfile.
+
 There is no default root, algorithm fallback, network provider, or private-key
 operation in production code. Evidence-supplied keys and caller claims cannot
 establish trust. Configuration is restricted to synthetic non-production use,

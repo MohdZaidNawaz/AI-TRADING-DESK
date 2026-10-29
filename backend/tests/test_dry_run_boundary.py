@@ -12,23 +12,19 @@ from app.models.execution_state import ExecutionLifecycleState
 from app.models.execution_state import build_execution_record
 from app.models.mt5 import MT5ExecutionMode
 from app.services.execution_gate import FinalExecutionGate
-from app.services.trade_proposal_workflow import ApprovalRegistry
 from tests.test_execution import approved_execution_pair
 from tests.test_mt5_adapter import FakeMT5, _settings
 
 
 def _approved_pair_for_mt5():
-    proposal, decision, _registry, now = approved_execution_pair()
     adapter = MT5ExecutionAdapter(
         settings=_settings(), mt5_module=FakeMT5(),
         symbol_mappings={"XAUUSD": "XAUUSD.a"}, execution_mode=MT5ExecutionMode.DRY_RUN,
     )
     account, codes = adapter.account_information()
     assert not codes and account is not None
-    registry = ApprovalRegistry()
-    decision = registry._record_approved_decision(
-        proposal,
-        decision.model_copy(update={"approval_id": None, "account_id": account.account.account_id}),
+    proposal, decision, registry, now = approved_execution_pair(
+        account=account.account
     )
     return proposal, decision, registry, now, adapter
 
