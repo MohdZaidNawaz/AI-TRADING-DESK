@@ -1,4 +1,5 @@
 import math
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -34,7 +35,12 @@ class Market(APIModel):
     high: float
     low: float
     currency: str = Field(default="USD", min_length=3, max_length=8, pattern=r"^[A-Z0-9]+$")
-    is_mock: Literal[True] = True
+    is_mock: bool = True
+    data_source: Literal["mock", "twelve_data"] = "mock"
+    quote_timestamp: datetime | None = None
+    quote_age_seconds: float | None = None
+    freshness: Literal["live", "delayed", "stale", "mock"] = "mock"
+    is_market_open: bool | None = None
 
     @field_validator("symbol", "currency", mode="before")
     @classmethod
@@ -57,14 +63,18 @@ class Market(APIModel):
     @model_validator(mode="after")
     def coherent_mock_quote(self) -> "Market":
         if self.price <= 0 or self.high <= 0 or self.low <= 0:
-            raise ValueError("mock market prices must be positive")
+            raise ValueError("market prices must be positive")
         if not self.low <= self.price <= self.high:
             raise ValueError("mock market price must be inside the displayed range")
+        if self.data_source == "mock" and not self.is_mock:
+            raise ValueError("mock data source must set is_mock=True")
+        if self.data_source == "twelve_data" and self.is_mock:
+            raise ValueError("twelve_data source must set is_mock=False")
         return self
 
 
 class MarketListResponse(APIModel):
-    data_source: Literal["mock"]
+    data_source: Literal["mock", "twelve_data"]
     count: int = Field(ge=0)
     markets: list[Market]
 
@@ -72,6 +82,10 @@ class MarketListResponse(APIModel):
     def count_matches_mock_values(self) -> "MarketListResponse":
         if self.count != len(self.markets):
             raise ValueError("market count must match the mock fixture list")
+        if any(m.data_source != self.data_source for m in self.markets):
+            raise ValueError("all markets must match the response data_source")
+        if any(m.is_mock != (self.data_source == "mock") for m in self.markets):
+            raise ValueError("market is_mock flag must match response data_source")
         return self
 
 

@@ -31,10 +31,15 @@ export type Market = {
   low: number
   currency: string
   is_mock: boolean
+  data_source?: "mock" | "twelve_data"
+  quote_timestamp?: string | null
+  quote_age_seconds?: number | null
+  freshness?: "live" | "delayed" | "stale" | "mock"
+  is_market_open?: boolean | null
 }
 
 export type MarketListResponse = {
-  data_source: "mock"
+  data_source: "mock" | "twelve_data"
   count: number
   markets: Market[]
 }
