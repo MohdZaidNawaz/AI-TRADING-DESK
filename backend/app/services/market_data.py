@@ -48,7 +48,7 @@ class MarketDataService:
         try:
             results = await asyncio.gather(
                 *(
-                    self._client.fetch_snapshot(provider_sym)
+                    self._fetch_snapshot_with_received_at(provider_sym)
                     for _, provider_sym, _ in self._symbols
                 ),
                 return_exceptions=True,
@@ -67,13 +67,13 @@ class MarketDataService:
                 markets=MARKETS,
             )
 
-        now = datetime.now(UTC)
         live_markets: list[Market] = []
 
-        for (dash_sym, _, default_name), payload in zip(
+        for (dash_sym, _, default_name), result in zip(
             self._symbols, results, strict=True
         ):
             try:
+                payload, received_at = result
                 if not isinstance(payload, dict):
                     return MarketListResponse(
                         data_source="mock", count=len(MARKETS), markets=MARKETS
@@ -95,16 +95,30 @@ class MarketDataService:
             else:
                 quote_ts = quote_ts.astimezone(UTC)
 
-            age_seconds = max(0.0, round((now - quote_ts).total_seconds(), 2))
+            age_seconds = max(0.0, round((received_at - quote_ts).total_seconds(), 2))
             is_open = event.attributes.get("is_market_open")
-            is_delayed = bool(event.raw_payload.get("is_delayed"))
+            raw_provider_is_delayed = event.raw_payload.get("is_delayed")
+            provider_is_delayed = (
+                raw_provider_is_delayed
+                if isinstance(raw_provider_is_delayed, bool)
+                else None
+            )
 
-            if age_seconds >= 900.0 or is_open is False:
+            if is_open is False:
                 freshness = "stale"
-            elif 60.0 <= age_seconds < 900.0 or is_delayed:
+                freshness_reason = "market_closed"
+            elif age_seconds >= 900.0:
+                freshness = "stale"
+                freshness_reason = "stale_quote_age"
+            elif provider_is_delayed is True:
                 freshness = "delayed"
+                freshness_reason = "provider_delayed"
+            elif age_seconds >= 60.0:
+                freshness = "delayed"
+                freshness_reason = "quote_age"
             else:
                 freshness = "live"
+                freshness_reason = "fresh_quote"
 
             price = float(event.price)
             high_val = (
@@ -136,8 +150,11 @@ class MarketDataService:
                     is_mock=False,
                     data_source="twelve_data",
                     quote_timestamp=quote_ts,
+                    received_at=received_at,
                     quote_age_seconds=age_seconds,
+                    provider_is_delayed=provider_is_delayed,
                     freshness=freshness,
+                    freshness_reason=freshness_reason,
                     is_market_open=is_open if isinstance(is_open, bool) else None,
                 )
             )
@@ -147,6 +164,12 @@ class MarketDataService:
             count=len(live_markets),
             markets=live_markets,
         )
+
+    async def _fetch_snapshot_with_received_at(
+        self, provider_symbol: str
+    ) -> tuple[object, datetime]:
+        payload = await self._client.fetch_snapshot(provider_symbol)
+        return payload, datetime.now(UTC)
 
 
 def get_market_data_service() -> MarketDataService:

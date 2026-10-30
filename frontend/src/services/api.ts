@@ -33,8 +33,17 @@ export type Market = {
   is_mock: boolean
   data_source?: "mock" | "twelve_data"
   quote_timestamp?: string | null
+  received_at?: string | null
   quote_age_seconds?: number | null
+  provider_is_delayed?: boolean | null
   freshness?: "live" | "delayed" | "stale" | "mock"
+  freshness_reason?:
+    | "fresh_quote"
+    | "quote_age"
+    | "provider_delayed"
+    | "stale_quote_age"
+    | "market_closed"
+    | "mock"
   is_market_open?: boolean | null
 }
 

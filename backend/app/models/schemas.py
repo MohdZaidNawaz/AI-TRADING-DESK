@@ -38,8 +38,18 @@ class Market(APIModel):
     is_mock: bool = True
     data_source: Literal["mock", "twelve_data"] = "mock"
     quote_timestamp: datetime | None = None
+    received_at: datetime | None = None
     quote_age_seconds: float | None = None
+    provider_is_delayed: bool | None = None
     freshness: Literal["live", "delayed", "stale", "mock"] = "mock"
+    freshness_reason: Literal[
+        "fresh_quote",
+        "quote_age",
+        "provider_delayed",
+        "stale_quote_age",
+        "market_closed",
+        "mock",
+    ] = "mock"
     is_market_open: bool | None = None
 
     @field_validator("symbol", "currency", mode="before")

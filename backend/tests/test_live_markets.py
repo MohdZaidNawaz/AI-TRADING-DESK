@@ -74,6 +74,16 @@ def _run(coroutine: Any) -> Any:
     return asyncio.run(coroutine)
 
 
+def _response_from_payloads(payloads: dict[str, dict[str, Any]]) -> MarketListResponse:
+    client = TwelveDataClient(
+        "test-key",
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json=payloads[req.url.params["symbol"]])
+        ),
+    )
+    return _run(MarketDataService(client=client).get_markets())
+
+
 def test_market_data_service_unconfigured_returns_mock_fixtures() -> None:
     service = MarketDataService(client=None)
     response = _run(service.get_markets())
@@ -84,6 +94,9 @@ def test_market_data_service_unconfigured_returns_mock_fixtures() -> None:
     assert all(m.is_mock for m in response.markets)
     assert all(m.data_source == "mock" for m in response.markets)
     assert all(m.freshness == "mock" for m in response.markets)
+    assert all(m.freshness_reason == "mock" for m in response.markets)
+    assert all(m.provider_is_delayed is None for m in response.markets)
+    assert all(m.received_at is None for m in response.markets)
     assert [m.symbol for m in response.markets] == ["XAUUSD", "EURUSD", "BTCUSD"]
     assert response.markets[0].price == MARKETS[0].price
 
@@ -121,7 +134,9 @@ def test_market_data_service_configured_fetches_and_normalizes_all_three_symbols
     assert xau.is_mock is False
     assert xau.data_source == "twelve_data"
     assert xau.quote_timestamp is not None
+    assert xau.received_at is not None
     assert xau.quote_age_seconds is not None
+    assert xau.provider_is_delayed is None
 
     eur = market_map["EURUSD"]
     assert eur.price == 1.0845
@@ -184,50 +199,76 @@ def test_market_data_service_falls_back_to_mock_on_single_symbol_failure() -> No
     assert all(m.data_source == "mock" for m in response.markets)
 
 
-def test_market_data_service_freshness_classification() -> None:
+def test_market_data_service_marks_missing_provider_delay_flag_as_unknown() -> None:
     now = datetime.now(UTC)
 
-    # 1. Fresh quote (< 60s, market open)
     live_payload = _mock_payloads()
     for item in live_payload.values():
         item["timestamp"] = int((now - timedelta(seconds=15)).timestamp())
         item["is_market_open"] = True
 
-    client = TwelveDataClient(
-        "test-key",
-        transport=httpx.MockTransport(lambda req: httpx.Response(200, json=live_payload[req.url.params["symbol"]])),
-    )
-    service = MarketDataService(client=client)
-    res_live = _run(service.get_markets())
+    res_live = _response_from_payloads(live_payload)
     assert all(m.freshness == "live" for m in res_live.markets)
+    assert all(m.freshness_reason == "fresh_quote" for m in res_live.markets)
+    assert all(m.provider_is_delayed is None for m in res_live.markets)
+    assert all(m.received_at is not None for m in res_live.markets)
 
-    # 2. Delayed quote (5 mins old)
+
+def test_market_data_service_marks_provider_delayed_quotes_separately() -> None:
+    now = datetime.now(UTC)
+    provider_delayed_payload = _mock_payloads()
+    for item in provider_delayed_payload.values():
+        item["timestamp"] = int((now - timedelta(seconds=15)).timestamp())
+        item["is_market_open"] = True
+        item["is_delayed"] = True
+
+    response = _response_from_payloads(provider_delayed_payload)
+
+    assert all(m.freshness == "delayed" for m in response.markets)
+    assert all(m.freshness_reason == "provider_delayed" for m in response.markets)
+    assert all(m.provider_is_delayed is True for m in response.markets)
+
+
+def test_market_data_service_marks_age_delayed_quotes_separately() -> None:
+    now = datetime.now(UTC)
+
     delayed_payload = _mock_payloads()
     for item in delayed_payload.values():
         item["timestamp"] = int((now - timedelta(minutes=5)).timestamp())
         item["is_market_open"] = True
 
-    client_delayed = TwelveDataClient(
-        "test-key",
-        transport=httpx.MockTransport(lambda req: httpx.Response(200, json=delayed_payload[req.url.params["symbol"]])),
-    )
-    service_delayed = MarketDataService(client=client_delayed)
-    res_delayed = _run(service_delayed.get_markets())
-    assert all(m.freshness == "delayed" for m in res_delayed.markets)
+    response = _response_from_payloads(delayed_payload)
 
-    # 3. Stale quote (market closed or > 15 mins)
+    assert all(m.freshness == "delayed" for m in response.markets)
+    assert all(m.freshness_reason == "quote_age" for m in response.markets)
+    assert all(m.provider_is_delayed is None for m in response.markets)
+
+
+def test_market_data_service_marks_stale_quotes_by_age() -> None:
+    now = datetime.now(UTC)
     stale_payload = _mock_payloads()
     for item in stale_payload.values():
         item["timestamp"] = int((now - timedelta(minutes=30)).timestamp())
+        item["is_market_open"] = True
+
+    response = _response_from_payloads(stale_payload)
+
+    assert all(m.freshness == "stale" for m in response.markets)
+    assert all(m.freshness_reason == "stale_quote_age" for m in response.markets)
+
+
+def test_market_data_service_marks_closed_market_quotes_stale() -> None:
+    now = datetime.now(UTC)
+
+    closed_payload = _mock_payloads()
+    for item in closed_payload.values():
+        item["timestamp"] = int((now - timedelta(seconds=15)).timestamp())
         item["is_market_open"] = False
 
-    client_stale = TwelveDataClient(
-        "test-key",
-        transport=httpx.MockTransport(lambda req: httpx.Response(200, json=stale_payload[req.url.params["symbol"]])),
-    )
-    service_stale = MarketDataService(client=client_stale)
-    res_stale = _run(service_stale.get_markets())
-    assert all(m.freshness == "stale" for m in res_stale.markets)
+    response = _response_from_payloads(closed_payload)
+
+    assert all(m.freshness == "stale" for m in response.markets)
+    assert all(m.freshness_reason == "market_closed" for m in response.markets)
 
 
 def test_schema_rejects_mixed_or_misleading_data_sources() -> None:

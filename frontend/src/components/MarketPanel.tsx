@@ -14,6 +14,18 @@ const decimalsBySymbol: Record<string, number> = {
   BTCUSD: 2,
 }
 
+const freshnessReasonLabels: Record<
+  NonNullable<Market["freshness_reason"]>,
+  string
+> = {
+  fresh_quote: "FRESH QUOTE",
+  quote_age: "AGE DELAY",
+  provider_delayed: "PROVIDER DELAY",
+  stale_quote_age: "STALE AGE",
+  market_closed: "MARKET CLOSED",
+  mock: "MOCK DATA",
+}
+
 const formatMarketValue = (market: Market, value: number) =>
   new Intl.NumberFormat("en-US", {
     minimumFractionDigits: decimalsBySymbol[market.symbol] ?? 2,
@@ -138,6 +150,15 @@ function MarketPanel() {
             : market.freshness
               ? market.freshness.toUpperCase()
               : "PROVIDER"
+          const reasonLabel = market.freshness_reason
+            ? freshnessReasonLabels[market.freshness_reason]
+            : "REASON UNKNOWN"
+          const providerDelayLabel =
+            market.provider_is_delayed === true
+              ? "PROVIDER DELAY: YES"
+              : market.provider_is_delayed === false
+                ? "PROVIDER DELAY: NO"
+                : "PROVIDER DELAY: UNKNOWN"
 
           return (
             <article className="market-card" key={market.symbol}>
@@ -195,6 +216,15 @@ function MarketPanel() {
                           : `${Math.round(market.quote_age_seconds / 60)}m ago`}
                       </span>
                     )}
+                    <span
+                      style={{
+                        fontFamily: 'Consolas, "Courier New", monospace',
+                        fontSize: "8px",
+                        color: "#6a7081",
+                      }}
+                    >
+                      {reasonLabel} · {providerDelayLabel}
+                    </span>
                   </div>
                 )}
               </div>
