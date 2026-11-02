@@ -1,6 +1,9 @@
 """Twelve Data client and adapter for provider-neutral market events."""
 
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -18,6 +21,16 @@ from app.models.events import (
     NormalizedDataEvent,
     SourceMetadata,
     SourceTransport,
+)
+from app.models.instruments import (
+    ExchangeResolution,
+    InstrumentAlias,
+    InstrumentCatalogueEntry,
+    InstrumentCataloguePage,
+    InstrumentCategory,
+    InstrumentProviderMapping,
+    InstrumentSourceProvenance,
+    canonical_instrument_id,
 )
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
@@ -49,9 +62,31 @@ class TwelveDataConfigurationError(TwelveDataError):
 class TwelveDataProviderError(TwelveDataError):
     """Raised when Twelve Data rejects or cannot complete a request."""
 
+    def __init__(
+        self,
+        message: str = "Twelve Data request failed.",
+        *,
+        category: str = "provider_error",
+        status_code: int | None = None,
+        provider_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+        self.provider_code = provider_code
+
 
 class TwelveDataPayloadError(TwelveDataError):
     """Raised when provider output cannot be normalized."""
+
+    def __init__(
+        self,
+        message: str = "Twelve Data returned malformed data.",
+        *,
+        category: str = "malformed_response",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 class TwelveDataClient:
@@ -98,6 +133,115 @@ class TwelveDataClient:
 
     async def fetch_snapshot(self, symbol: str) -> Mapping[str, Any]:
         normalized_symbol = _normalize_symbol(symbol)
+        return await self._fetch_json(
+            "/quote",
+            {
+                "symbol": normalized_symbol,
+                "interval": "1min",
+                "timezone": "UTC",
+            },
+            payload_error="Twelve Data returned malformed market data.",
+        )
+
+    async def fetch_forex_pairs(
+        self,
+        *,
+        symbol: str | None = None,
+        currency_base: str | None = None,
+        currency_quote: str | None = None,
+        page: int = 1,
+        outputsize: int | None = None,
+    ) -> InstrumentCataloguePage:
+        """Return one normalized page from Twelve Data's forex directory."""
+        payload = await self._fetch_catalogue(
+            "/forex_pairs",
+            {
+                "symbol": _optional_symbol_filter(symbol),
+                "currency_base": _optional_filter_text(currency_base, "currency_base"),
+                "currency_quote": _optional_filter_text(currency_quote, "currency_quote"),
+                "page": _positive_request_integer(page, "page"),
+                "outputsize": _optional_positive_request_integer(outputsize, "outputsize"),
+            },
+        )
+        return _normalize_catalogue_page(
+            payload,
+            category=InstrumentCategory.FOREX,
+            page=page,
+            outputsize=outputsize,
+        )
+
+    async def fetch_commodities(
+        self,
+        *,
+        symbol: str | None = None,
+        category: str | None = None,
+        page: int = 1,
+        outputsize: int | None = None,
+    ) -> InstrumentCataloguePage:
+        """Return one normalized page from Twelve Data's commodity directory."""
+        payload = await self._fetch_catalogue(
+            "/commodities",
+            {
+                "symbol": _optional_symbol_filter(symbol),
+                "category": _optional_filter_text(category, "category"),
+                "page": _positive_request_integer(page, "page"),
+                "outputsize": _optional_positive_request_integer(outputsize, "outputsize"),
+            },
+        )
+        return _normalize_catalogue_page(
+            payload,
+            category=InstrumentCategory.COMMODITY,
+            page=page,
+            outputsize=outputsize,
+        )
+
+    async def fetch_cryptocurrencies(
+        self,
+        *,
+        symbol: str | None = None,
+        exchange: str | None = None,
+        currency_base: str | None = None,
+        currency_quote: str | None = None,
+        page: int = 1,
+        outputsize: int | None = None,
+    ) -> InstrumentCataloguePage:
+        """Return one normalized page from Twelve Data's crypto directory."""
+        payload = await self._fetch_catalogue(
+            "/cryptocurrencies",
+            {
+                "symbol": _optional_symbol_filter(symbol),
+                "exchange": _optional_filter_text(exchange, "exchange"),
+                "currency_base": _optional_filter_text(currency_base, "currency_base"),
+                "currency_quote": _optional_filter_text(currency_quote, "currency_quote"),
+                "page": _positive_request_integer(page, "page"),
+                "outputsize": _optional_positive_request_integer(outputsize, "outputsize"),
+            },
+        )
+        return _normalize_catalogue_page(
+            payload,
+            category=InstrumentCategory.CRYPTO,
+            page=page,
+            outputsize=outputsize,
+        )
+
+    async def _fetch_catalogue(
+        self,
+        endpoint: str,
+        params: Mapping[str, str | int | None],
+    ) -> Mapping[str, Any]:
+        return await self._fetch_json(
+            endpoint,
+            {key: value for key, value in params.items() if value is not None},
+            payload_error="Twelve Data returned malformed catalogue data.",
+        )
+
+    async def _fetch_json(
+        self,
+        endpoint: str,
+        params: Mapping[str, str | int],
+        *,
+        payload_error: str,
+    ) -> Mapping[str, Any]:
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url,
@@ -105,29 +249,54 @@ class TwelveDataClient:
                 transport=self._transport,
             ) as client:
                 response = await client.get(
-                    "/quote",
-                    params={
-                        "symbol": normalized_symbol,
-                        "interval": "1min",
-                        "timezone": "UTC",
-                    },
+                    endpoint,
+                    params=params,
                     headers={"Authorization": f"apikey {self._api_key}"},
                 )
+        except httpx.TimeoutException:
+            raise TwelveDataProviderError(
+                "Twelve Data request failed.",
+                category="timeout",
+            ) from None
         except httpx.RequestError:
-            raise TwelveDataProviderError("Twelve Data request failed.") from None
+            raise TwelveDataProviderError(
+                "Twelve Data request failed.",
+                category="network",
+            ) from None
 
         if not response.is_success:
-            raise TwelveDataProviderError("Twelve Data request failed.")
+            category = "http_error"
+            if response.status_code in (401, 403):
+                category = "authentication"
+            elif response.status_code == 429:
+                category = "rate_limit"
+            elif response.status_code >= 500:
+                category = "server_error"
+            raise TwelveDataProviderError(
+                "Twelve Data request failed.",
+                category=category,
+                status_code=response.status_code,
+            )
 
         try:
             payload = response.json()
         except ValueError:
-            raise TwelveDataPayloadError("Twelve Data returned malformed market data.") from None
+            raise TwelveDataPayloadError(payload_error, category="malformed_response") from None
 
         if not isinstance(payload, dict):
-            raise TwelveDataPayloadError("Twelve Data returned malformed market data.")
+            raise TwelveDataPayloadError(payload_error, category="malformed_response")
         if payload.get("status") == "error":
-            raise TwelveDataProviderError("Twelve Data request failed.")
+            provider_code = payload.get("code")
+            if isinstance(provider_code, (str, int)):
+                provider_code = str(provider_code)
+            else:
+                provider_code = None
+            raise TwelveDataProviderError(
+                "Twelve Data request failed.",
+                category="provider_error",
+                status_code=response.status_code,
+                provider_code=provider_code,
+            )
         return _sanitize_value(payload, forbidden_value=self._api_key)
 
 
@@ -177,6 +346,187 @@ def _normalize_symbol(value: str) -> str:
     if not symbol or len(symbol) > 40 or _SYMBOL_PATTERN.fullmatch(symbol) is None:
         raise TwelveDataPayloadError("symbol is invalid.")
     return symbol
+
+
+def _optional_symbol_filter(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _normalize_symbol(value)
+
+
+def _optional_filter_text(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TwelveDataPayloadError(f"{field_name} is invalid.")
+    normalized = value.strip()
+    if not normalized:
+        raise TwelveDataPayloadError(f"{field_name} is invalid.")
+    return normalized
+
+
+def _positive_request_integer(value: int, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise TwelveDataPayloadError(f"{field_name} is invalid.")
+    return value
+
+
+def _optional_positive_request_integer(value: int | None, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_request_integer(value, field_name)
+
+
+def _normalize_catalogue_page(
+    payload: Mapping[str, Any],
+    *,
+    category: InstrumentCategory,
+    page: int,
+    outputsize: int | None,
+) -> InstrumentCataloguePage:
+    raw_count = payload.get("count")
+    raw_records = payload.get("data")
+    if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+        logger.warning("catalogue normalization failed: category=%s detail=count invalid type=%s", category.value, type(raw_count).__name__)
+        raise TwelveDataPayloadError("Twelve Data returned malformed catalogue data.")
+    if not isinstance(raw_records, list):
+        logger.warning("catalogue normalization failed: category=%s detail=data invalid type=%s", category.value, type(raw_records).__name__)
+        raise TwelveDataPayloadError("Twelve Data returned malformed catalogue data.")
+    if raw_count > 0 and not raw_records:
+        raise TwelveDataPayloadError("Twelve Data returned incomplete catalogue data.")
+
+    observed_at = datetime.now(UTC)
+    instruments: list[InstrumentCatalogueEntry] = []
+    for raw_record in raw_records:
+        if not isinstance(raw_record, Mapping):
+            raise TwelveDataPayloadError("Twelve Data returned malformed catalogue data.")
+        try:
+            instruments.append(
+                _normalize_catalogue_entry(
+                    raw_record,
+                    category,
+                    observed_at=observed_at,
+                )
+            )
+        except TwelveDataPayloadError as exc:
+            logger.warning(
+                "catalogue normalization failed: category=%s detail=%s",
+                category.value,
+                str(exc),
+            )
+            raise
+
+    return InstrumentCataloguePage(
+        source_id=TWELVE_DATA_SOURCE.source_id,
+        category=category,
+        page=page,
+        outputsize=outputsize,
+        provider_count=raw_count,
+        instruments=tuple(instruments),
+    )
+
+
+def _normalize_catalogue_entry(
+    payload: Mapping[str, Any],
+    category: InstrumentCategory,
+    *,
+    observed_at: datetime,
+) -> InstrumentCatalogueEntry:
+    provider_symbol = _normalize_symbol(
+        _required_text(payload.get("symbol"), "catalogue symbol")
+    )
+    display_name = _optional_text(payload.get("name"))
+    base_currency = _optional_text(payload.get("currency_base"))
+    quote_currency = _optional_text(payload.get("currency_quote"))
+    commodity_category = _optional_text(payload.get("category"))
+    forex_group = _optional_text(payload.get("currency_group"))
+    description = _optional_text(payload.get("description"))
+    available_exchanges = _normalize_exchange_identifiers(
+        payload.get("available_exchanges")
+    )
+    exchange_id = (_optional_text(payload.get("exchange")) or "GLOBAL").upper()
+    exchange_resolution = (
+        ExchangeResolution.VENUE_NEUTRAL
+        if exchange_id == "GLOBAL"
+        else ExchangeResolution.RESOLVED
+    )
+    canonical_symbol = provider_symbol.upper()
+    instrument_id = (
+        f"{TWELVE_DATA_SOURCE.source_id}:{category.value}:{provider_symbol}"
+        if exchange_id == "GLOBAL"
+        else (
+            f"{TWELVE_DATA_SOURCE.source_id}:{category.value}:"
+            f"{exchange_id}:{provider_symbol}"
+        )
+    )
+    display_symbol = provider_symbol.replace("/", "")
+    aliases = (
+        (
+            InstrumentAlias(
+                alias=display_symbol,
+                exchange_id=exchange_id,
+                source_id=TWELVE_DATA_SOURCE.source_id,
+            ),
+        )
+        if display_symbol != provider_symbol
+        else ()
+    )
+
+    return InstrumentCatalogueEntry(
+        instrument_id=instrument_id,
+        canonical_instrument_id=canonical_instrument_id(
+            category, exchange_id, canonical_symbol
+        ),
+        source_id=TWELVE_DATA_SOURCE.source_id,
+        category=category,
+        provider_symbol=provider_symbol,
+        canonical_symbol=canonical_symbol,
+        exchange_id=exchange_id,
+        exchange_resolution=exchange_resolution,
+        exchange_name=_optional_text(payload.get("exchange")),
+        display_symbol=display_symbol,
+        display_name=display_name,
+        base_currency=base_currency,
+        quote_currency=quote_currency,
+        forex_group=forex_group,
+        commodity_category=commodity_category,
+        description=description,
+        available_exchanges=available_exchanges,
+        provider_mappings=(
+            InstrumentProviderMapping(
+                source_id=TWELVE_DATA_SOURCE.source_id,
+                provider_symbol=provider_symbol,
+                provider_exchange_id=exchange_id,
+                provider_contract_id="NONE",
+                provider_instrument_id=instrument_id,
+            ),
+        ),
+        aliases=aliases,
+        source_provenance=(
+            InstrumentSourceProvenance(
+                source_id=TWELVE_DATA_SOURCE.source_id,
+                source_record_id=instrument_id,
+                observed_at=observed_at,
+            ),
+        ),
+        created_at=observed_at,
+        updated_at=observed_at,
+    )
+
+
+def _normalize_exchange_identifiers(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise TwelveDataPayloadError("available_exchanges is invalid.")
+    exchanges: list[str] = []
+    for item in value:
+        exchange = _optional_text(item)
+        if exchange is None:
+            raise TwelveDataPayloadError("available_exchanges is invalid.")
+        if exchange not in exchanges:
+            exchanges.append(exchange)
+    return tuple(exchanges)
 
 
 def _first_present(payload: Mapping[str, Any], *keys: str) -> Any:
