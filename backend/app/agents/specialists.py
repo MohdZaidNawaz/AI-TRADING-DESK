@@ -1156,6 +1156,32 @@ class OracleQuantAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        backtest = context.backtest_validation
+        if backtest is not None:
+            metrics = backtest.metrics
+            return self.result(
+                summary=(
+                    f"Reviewed deterministic historical validation for {context.symbol}; "
+                    f"status={backtest.status.value}, completed trades={metrics.total_trades}."
+                ),
+                findings=[
+                    f"Gross result basis={metrics.basis}; cost basis={backtest.cost_basis}; "
+                    f"cost evidence={backtest.cost_assessment.status.value}.",
+                    f"Development/out-of-sample windows={len(backtest.validation_windows)}; "
+                    f"completed candles={backtest.data_quality.completed_bar_count}.",
+                    f"Gross total return status={metrics.gross.total_return.status.value}, "
+                    f"value={metrics.gross.total_return.value if metrics.gross.total_return.value is not None else 'undefined'}; "
+                    f"net metrics={'available' if metrics.net is not None else 'unavailable'}.",
+                    f"Maximum drawdown status={metrics.maximum_drawdown.status.value}, "
+                    f"value={metrics.maximum_drawdown.value if metrics.maximum_drawdown.value is not None else 'undefined'}.",
+                ],
+                limitations=[
+                    *backtest.warnings,
+                    *backtest.limitations,
+                    "Historical validation is sample-specific and is not a forecast or execution instruction.",
+                ],
+                confidence=0.72 if backtest.status.value in {"available", "partial"} else 0.35,
+            )
         limitations = (
             [
                 "Deterministic return/statistical features remain descriptive; no inference, forecast, backtest, probability, or direction was produced."
@@ -1238,6 +1264,28 @@ class SentinelRiskOfficerAgent(BaseAgent):
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
         risk_strategy = context.risk_strategy_intelligence
         intelligence = context.news_intelligence
+        backtest = context.backtest_validation
+        if backtest is not None:
+            return self.result(
+                summary=(
+                    f"Reviewed historical validation controls for {context.symbol}; "
+                    f"cost basis={backtest.cost_basis}, cost evidence={backtest.cost_assessment.status.value}, "
+                    f"completed trades={backtest.metrics.total_trades}, incomplete={backtest.incomplete_trade_count}."
+                ),
+                findings=[
+                    f"Collision policy={backtest.parameters.collision_policy}; overlapping positions disabled.",
+                    f"Missing intervals={backtest.data_quality.missing_interval_count}; "
+                    f"provisional candles excluded={backtest.data_quality.provisional_bar_count}.",
+                    f"Sharpe status={backtest.metrics.sharpe_ratio.status.value}; "
+                    f"profit-factor status={backtest.metrics.profit_factor.status.value}.",
+                ],
+                limitations=[
+                    *backtest.warnings,
+                    "Gross-only results must not be described as net profitability.",
+                    "No historical result grants production authorization, submission, or execution authority.",
+                ],
+                confidence=0.7 if backtest.status.value in {"available", "partial"} else 0.35,
+            )
         if risk_strategy is not None:
             scenario_findings = [
                 (

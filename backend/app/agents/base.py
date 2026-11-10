@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from app.evidence.models import (
     AgentEvidence,
@@ -57,6 +57,9 @@ from app.models.macro_intelligence import MacroIntelligenceReport
 from app.models.liquidity_intelligence import LiquidityIntelligenceReport
 from app.models.risk_strategy_intelligence import RiskStrategyIntelligenceReport
 
+if TYPE_CHECKING:
+    from app.models.backtesting import BacktestReport
+
 
 @dataclass(frozen=True, slots=True)
 class PriorAgentResult:
@@ -91,6 +94,7 @@ class AnalysisContext:
     macro_intelligence: MacroIntelligenceReport | None = None
     liquidity_intelligence: LiquidityIntelligenceReport | None = None
     risk_strategy_intelligence: RiskStrategyIntelligenceReport | None = None
+    backtest_validation: "BacktestReport | None" = None
 
 
 class BaseAgent(ABC):
