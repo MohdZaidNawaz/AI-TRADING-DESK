@@ -94,6 +94,9 @@ class ResolvedResearchInstrument(BaseModel):
     instrument_id: str | None = Field(default=None, max_length=160)
     canonical_instrument_id: str | None = Field(default=None, max_length=160)
     canonical_symbol: str | None = Field(default=None, max_length=120)
+    provider_source_id: str | None = Field(default=None, max_length=64)
+    provider_symbol: str | None = Field(default=None, max_length=120)
+    provider_exchange_id: str | None = Field(default=None, max_length=120)
     category: InstrumentCategory | None = None
     display_name: str | None = Field(default=None, max_length=240)
     base_currency: str | None = Field(default=None, max_length=120)

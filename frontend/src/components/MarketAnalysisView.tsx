@@ -1,10 +1,11 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import type { FormEvent } from "react"
 import type {
   AnalyzeResponse,
   AgentAnalysis,
   BacktestMetric,
   BacktestResponse,
+  HistoricalDatasetMetadata,
   EconomicCalendarItem,
   NewsEconomicIntelligenceReport,
   MacroIntelligenceReport,
@@ -13,7 +14,7 @@ import type {
   TechnicalIndicator,
   TechnicalTimeframeAnalysis,
 } from "../services/api"
-import { runHistoricalBacktest } from "../services/api"
+import { getHistoricalDatasets, ingestHistoricalDataset, runHistoricalBacktest } from "../services/api"
 import CommandBar from "./CommandBar"
 import type { AssistantVisualState } from "./assistantState"
 
@@ -181,6 +182,46 @@ function HistoricalValidationPanel({ analysis }: { analysis: AnalyzeResponse | n
   const [response, setResponse] = useState<BacktestResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [datasets, setDatasets] = useState<HistoricalDatasetMetadata[]>([])
+  const [selectedDatasetId, setSelectedDatasetId] = useState("")
+  const [ingesting, setIngesting] = useState(false)
+  const [datasetStatus, setDatasetStatus] = useState<string | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    getHistoricalDatasets(controller.signal)
+      .then((result) => setDatasets(result.datasets))
+      .catch(() => setDatasetStatus("Stored dataset metadata is currently unavailable."))
+    return () => controller.abort()
+  }, [])
+
+  const requestDataset = async () => {
+    const requestedSymbol = symbol.trim() || suggestedSymbol
+    if (!requestedSymbol || !startDate || !endDate) {
+      setDatasetStatus("Instrument, start date and end date are required for explicit ingestion.")
+      return
+    }
+    setIngesting(true)
+    setDatasetStatus(null)
+    try {
+      const result = await ingestHistoricalDataset({
+        symbol: requestedSymbol,
+        timeframe: timeframe || suggestedTimeframe,
+        start_at: new Date(`${startDate}T00:00:00Z`).toISOString(),
+        end_at: new Date(`${endDate}T23:59:59Z`).toISOString(),
+      })
+      setDatasetStatus(`${result.status.replaceAll("_", " ")}: ${result.reason_codes.join(" / ")}`)
+      if (result.dataset) {
+        const refreshed = await getHistoricalDatasets()
+        setDatasets(refreshed.datasets)
+        setSelectedDatasetId(result.dataset.dataset_id)
+      }
+    } catch (requestError) {
+      setDatasetStatus(requestError instanceof Error ? requestError.message : "Historical ingestion failed.")
+    } finally {
+      setIngesting(false)
+    }
+  }
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -192,11 +233,16 @@ function HistoricalValidationPanel({ analysis }: { analysis: AnalyzeResponse | n
     setRunning(true)
     setError(null)
     try {
+      const selectedDataset = datasets.find((item) => item.dataset_id === selectedDatasetId)
       const result = await runHistoricalBacktest({
         symbol: requestedSymbol,
         timeframe: timeframe || suggestedTimeframe,
         ...(startDate ? { start_at: new Date(`${startDate}T00:00:00Z`).toISOString() } : {}),
         ...(endDate ? { end_at: new Date(`${endDate}T23:59:59Z`).toISOString() } : {}),
+        ...(selectedDataset ? {
+          dataset_id: selectedDataset.dataset_id,
+          dataset_fingerprint: selectedDataset.content_fingerprint,
+        } : {}),
       })
       setResponse(result)
     } catch (requestError) {
@@ -214,14 +260,21 @@ function HistoricalValidationPanel({ analysis }: { analysis: AnalyzeResponse | n
         <div><span>08 / HISTORICAL EVIDENCE</span><h2 id="historical-validation-title">Strategy Validation</h2></div>
         <b>{running ? "EVALUATING" : report?.status.replaceAll("_", " ") ?? "NOT RUN"}</b>
       </div>
-      <p className="backtest-intro">Evaluate the documented trend-confirmed Phase 5.6 scenario against cached validated candles. This does not fetch data, predict returns, or authorize execution.</p>
+      <p className="backtest-intro">Explicitly retrieve a bounded immutable dataset, then evaluate the documented Phase 5.6 scenario against that exact evidence. Backtesting never fetches provider data, predicts returns, or authorizes execution.</p>
       <form className="backtest-controls" onSubmit={submit}>
         <label><span>Instrument</span><input value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder={suggestedSymbol || "e.g. XAU/USD"} /></label>
         <label><span>Timeframe</span><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>{["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"].map((item) => <option key={item}>{item}</option>)}</select></label>
         <label><span>Start (optional)</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
         <label><span>End (optional)</span><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+        <label className="dataset-selector"><span>Stored dataset</span><select value={selectedDatasetId} onChange={(event) => setSelectedDatasetId(event.target.value)}><option value="">Cached evidence (legacy)</option>{datasets.map((item) => <option key={item.dataset_id} value={item.dataset_id}>{item.canonical_symbol} · {item.timeframe} · {item.completeness} · {item.completed_bar_count} bars</option>)}</select></label>
+        <button type="button" className="dataset-ingest-button" disabled={ingesting} onClick={requestDataset}>{ingesting ? "Request in progress..." : "Retrieve historical dataset"}</button>
         <button type="submit" disabled={running}>{running ? "Running validation..." : "Run historical validation"}</button>
       </form>
+      {datasetStatus && <div className="dataset-status" role="status">{datasetStatus}</div>}
+      {selectedDatasetId && (() => {
+        const item = datasets.find((dataset) => dataset.dataset_id === selectedDatasetId)
+        return item ? <div className={`dataset-summary dataset-${item.completeness}`}><span><b>{item.completeness}</b> validation state</span><span><b>{item.completed_bar_count}</b> completed</span><span><b>{item.provisional_bar_count}</b> provisional</span><span><b>{item.observed_gap_count}</b> observed gaps</span><span><b>{item.provider_id}</b> source</span><span><b>{item.venue ?? "unknown"}</b>{item.provider_identity_verified ? "verified identity" : "identity unverified"}</span><small>Coverage {new Date(item.coverage_start).toLocaleString()} to {new Date(item.coverage_end).toLocaleString()}. Missing trading intervals are not asserted without calendar evidence.</small></div> : null
+      })()}
       {error && <div className="backtest-error" role="alert">{error}</div>}
       {report && (
         <div className="backtest-results">

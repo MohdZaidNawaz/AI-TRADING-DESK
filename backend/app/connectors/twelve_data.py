@@ -194,6 +194,8 @@ class TwelveDataClient:
         *,
         outputsize: int,
         start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        exchange: str | None = None,
     ) -> Mapping[str, Any]:
         """Fetch one bounded historical response without retrying provider failures."""
         normalized_symbol = _normalize_symbol(symbol)
@@ -207,6 +209,15 @@ class TwelveDataClient:
             )
         else:
             normalized_start_date = None
+        if end_date is not None:
+            if end_date.tzinfo is None or end_date.utcoffset() is None:
+                raise TwelveDataPayloadError("Historical end date is invalid.")
+            normalized_end_date = end_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+        else:
+            normalized_end_date = None
+        if start_date is not None and end_date is not None and start_date >= end_date:
+            raise TwelveDataPayloadError("Historical date range is invalid.")
+        normalized_exchange = _optional_filter_text(exchange, "exchange") if exchange else None
         return await self._fetch_json(
             "/time_series",
             {
@@ -218,6 +229,8 @@ class TwelveDataClient:
                     "timezone": TWELVE_DATA_HISTORICAL_REQUEST_TIMEZONE,
                     "order": "ASC",
                     "start_date": normalized_start_date,
+                    "end_date": normalized_end_date,
+                    "exchange": normalized_exchange,
                 }.items()
                 if value is not None
             },

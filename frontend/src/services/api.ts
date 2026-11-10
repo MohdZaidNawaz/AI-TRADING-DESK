@@ -847,6 +847,58 @@ export type BacktestResponse = {
   master_synthesis: AnalyzeResponse["synthesis"]
 }
 
+export type HistoricalDatasetMetadata = {
+  schema_version: 1
+  dataset_version: 1
+  dataset_id: string
+  content_fingerprint: string
+  provider_id: "twelve_data"
+  provider_symbol: string
+  canonical_symbol: string
+  canonical_instrument_id: string | null
+  requested_provider_exchange_id: string | null
+  timeframe: string
+  venue: string | null
+  exchange_metadata_available: boolean
+  provider_identity_verified: boolean
+  adjustment_semantics: "provider_unspecified"
+  requested_start_at: string
+  requested_end_at: string
+  coverage_start: string
+  coverage_end: string
+  retrieved_at: string
+  validated_bar_count: number
+  completed_bar_count: number
+  provisional_bar_count: number
+  observed_gap_count: number
+  missing_interval_count: null
+  provider_request_count: number
+  completeness: "complete" | "partial"
+  warning_codes: string[]
+  created_at: string
+}
+
+export type HistoricalDatasetListResponse = {
+  datasets: HistoricalDatasetMetadata[]
+  corrupt_dataset_count: number
+  production_authorization_available: false
+  submission_allowed: false
+  execution_authority: false
+}
+
+export type HistoricalDatasetIngestionResponse = {
+  status: "available" | "partial" | "unavailable" | "not_configured" | "rate_limited" | "timeout" | "invalid_response" | "storage_error"
+  dataset: HistoricalDatasetMetadata | null
+  provider_request_count: number
+  received_bar_count: number
+  validated_bar_count: number
+  reason_codes: string[]
+  error_category: string | null
+  production_authorization_available: false
+  submission_allowed: false
+  execution_authority: false
+}
+
 async function requestJson<T>(
   path: string,
   init: RequestInit,
@@ -912,6 +964,8 @@ export const runHistoricalBacktest = (
     start_at?: string
     end_at?: string
     source_id?: string
+    dataset_id?: string
+    dataset_fingerprint?: string
   },
   signal?: AbortSignal,
 ) =>
@@ -924,3 +978,26 @@ export const runHistoricalBacktest = (
     },
     signal,
   )
+
+export const getHistoricalDatasets = (signal?: AbortSignal) =>
+  getJson<HistoricalDatasetListResponse>("/api/historical-datasets", signal)
+
+export const ingestHistoricalDataset = (
+  request: {
+    symbol: string
+    timeframe: string
+    start_at: string
+    end_at: string
+    max_requests?: number
+    max_bars?: number
+  },
+  signal?: AbortSignal,
+) => requestJson<HistoricalDatasetIngestionResponse>(
+  "/api/historical-datasets/ingestions",
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+  signal,
+)

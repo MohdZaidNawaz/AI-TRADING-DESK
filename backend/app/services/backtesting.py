@@ -41,6 +41,7 @@ from app.models.backtesting import (
     ValidationWindowKind,
 )
 from app.models.market_series import MarketBarState, canonical_market_symbol, timeframe_seconds
+from app.models.historical_datasets import DatasetCompleteness
 from app.models.research_requests import InstrumentResolutionStatus
 from app.models.risk_strategy_intelligence import (
     CalculationStatus,
@@ -58,6 +59,10 @@ from app.services.technical_analysis import TechnicalAnalysisService
 
 class HistoricalEvidenceOwner(Protocol):
     def evidence_snapshot(self, *, symbol: str | None = None): ...
+
+
+class HistoricalDatasetReader(Protocol):
+    def series(self, dataset_id: str): ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,7 @@ class BacktestingService:
         *,
         evidence_owner: HistoricalEvidenceOwner,
         resolver: ResearchRequestService,
+        dataset_store: HistoricalDatasetReader | None = None,
         signal_evaluator: SignalEvaluator | None = None,
         minimum_history_bars: int = 200,
         now: Callable[[], datetime] | None = None,
@@ -106,6 +112,7 @@ class BacktestingService:
             raise ValueError("minimum_history_bars must be between 1 and 500")
         self._evidence_owner = evidence_owner
         self._resolver = resolver
+        self._dataset_store = dataset_store
         self._signal_evaluator = signal_evaluator or _ExistingStrategySignalEvaluator()
         self._minimum_history_bars = minimum_history_bars
         self._now = now or (lambda: datetime.now(UTC))
@@ -126,6 +133,8 @@ class BacktestingService:
             return self._integrate(request.symbol, report, None)
 
         storage_symbol = canonical_market_symbol(canonical)
+        if request.dataset_id is not None:
+            return self._run_dataset(request, canonical, storage_symbol)
         snapshot = self._evidence_owner.evidence_snapshot(symbol=storage_symbol)
         candidates = tuple(
             item
@@ -154,6 +163,72 @@ class BacktestingService:
         normalized_request = request.model_copy(update={"symbol": canonical})
         report = self.run_series(normalized_request, candidates[0])
         return self._integrate(canonical, report, candidates[0])
+
+    def _run_dataset(
+        self,
+        request: BacktestRequest,
+        canonical: str,
+        storage_symbol: str,
+    ) -> BacktestResponse:
+        if self._dataset_store is None:
+            return self._integrate(
+                canonical,
+                _unavailable_report(
+                    request.model_copy(update={"symbol": canonical}),
+                    evaluated_at=self._now(),
+                    warning="HISTORICAL_DATASET_STORE_UNAVAILABLE",
+                    limitation="The selected immutable dataset store is unavailable.",
+                ),
+                None,
+            )
+        try:
+            metadata, series = self._dataset_store.series(request.dataset_id)
+        except Exception as exc:
+            from app.services.historical_datasets import HistoricalDatasetError
+
+            if not isinstance(exc, HistoricalDatasetError):
+                raise
+            return self._integrate(
+                canonical,
+                _unavailable_report(
+                    request.model_copy(update={"symbol": canonical}),
+                    evaluated_at=self._now(),
+                    warning="HISTORICAL_DATASET_UNAVAILABLE",
+                    limitation="The selected dataset was missing or failed integrity validation.",
+                ),
+                None,
+            )
+        normalized = request.model_copy(update={"symbol": canonical})
+        mismatch = None
+        if canonical_market_symbol(metadata.canonical_symbol) != storage_symbol:
+            mismatch = "HISTORICAL_DATASET_INSTRUMENT_MISMATCH"
+        elif metadata.timeframe != request.timeframe:
+            mismatch = "HISTORICAL_DATASET_TIMEFRAME_MISMATCH"
+        elif request.dataset_fingerprint is not None and request.dataset_fingerprint != metadata.content_fingerprint:
+            mismatch = "HISTORICAL_DATASET_FINGERPRINT_MISMATCH"
+        elif (
+            metadata.completeness is not DatasetCompleteness.COMPLETE
+            or metadata.provisional_bar_count
+            or not metadata.provider_identity_verified
+        ):
+            mismatch = "HISTORICAL_DATASET_UNSUITABLE"
+        elif request.start_at is not None and request.start_at < metadata.coverage_start:
+            mismatch = "HISTORICAL_DATASET_RANGE_MISMATCH"
+        elif request.end_at is not None and request.end_at > metadata.coverage_end:
+            mismatch = "HISTORICAL_DATASET_RANGE_MISMATCH"
+        if mismatch is not None:
+            return self._integrate(
+                canonical,
+                _unavailable_report(
+                    normalized,
+                    evaluated_at=self._now(),
+                    warning=mismatch,
+                    limitation="The exact selected dataset did not satisfy the requested identity, integrity, coverage, or completeness policy.",
+                ),
+                None,
+            )
+        report = self.run_series(normalized, series)
+        return self._integrate(canonical, report, series)
 
     def run_series(
         self,
@@ -944,6 +1019,7 @@ def get_backtesting_service() -> BacktestingService:
     """Compose the read-only cached-evidence backtest boundary."""
     from app.catalogue.store import InstrumentCatalogueSchemaError, read_catalogue_snapshot
     from app.services.friday_core import get_friday_core
+    from app.services.historical_datasets import get_historical_dataset_store
     from app.services.instrument_catalogue import DEFAULT_CATALOGUE_CACHE_PATH
 
     try:
@@ -953,4 +1029,5 @@ def get_backtesting_service() -> BacktestingService:
     return BacktestingService(
         evidence_owner=get_friday_core(),
         resolver=ResearchRequestService(catalogue_entries=catalogue_entries),
+        dataset_store=get_historical_dataset_store(),
     )
