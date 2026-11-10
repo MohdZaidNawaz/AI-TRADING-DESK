@@ -546,7 +546,7 @@ def _news_sort_key(
     evidence: NewsEvidence,
 ) -> tuple[float, str, str, str, str, str]:
     return (
-        -evidence.published_at.timestamp(),
+        -evidence.provenance.event_timestamp.timestamp(),
         evidence.provenance.event_id,
         evidence.provenance.source_id,
         evidence.url,

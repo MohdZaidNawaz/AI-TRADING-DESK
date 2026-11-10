@@ -438,6 +438,7 @@ def test_positioning_cannot_satisfy_sentinel_or_enable_pilot_and_public_analyze_
         "routing",
         "agent_results",
         "synthesis",
+            "coordination",
     }
     assert workflow.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
     assert "market_evidence" in workflow.sentinel_decision.missing_requirements

@@ -461,7 +461,7 @@ def test_macro_evidence_cannot_satisfy_market_requirements_or_change_public_api(
         AnalyzeRequest(symbol="XAUUSD", query="macro yield review")
     )
     assert set(response.model_dump()) == {
-        "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis"
+            "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis", "coordination"
     }
     assert workflow.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
     assert "market_evidence" in workflow.sentinel_decision.missing_requirements

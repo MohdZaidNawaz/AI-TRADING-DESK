@@ -286,7 +286,7 @@ def test_portfolio_evidence_satisfies_only_portfolio_context_and_api_is_unchange
     response = core.analyze(request)
     workflow = core.run_trade_proposal_workflow(request)
     assert set(response.model_dump()) == {
-        "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis"
+            "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis", "coordination"
     }
     assert workflow.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
     assert "portfolio_context" not in workflow.sentinel_decision.missing_requirements

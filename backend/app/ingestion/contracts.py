@@ -9,6 +9,7 @@ from app.models.events import (
     SourceMetadata,
 )
 from app.models.market_series import NormalizedMarketBar
+from app.models.macro_providers import MacroProviderBatch, MacroProviderRequest
 from app.models.economic_events import NormalizedEconomicEvent
 from app.models.macro_series import MacroSeriesSource, NormalizedMacroObservation
 from app.models.positioning import PositioningSource, NormalizedPositioningObservation
@@ -100,6 +101,14 @@ class MarketDataClient(Protocol):
 
     async def fetch_snapshot(self, symbol: str) -> Mapping[str, Any]:
         """Return one raw market snapshot for connector normalization."""
+
+
+@runtime_checkable
+class MacroProviderClient(Protocol):
+    """Retrieves one bounded, typed macro batch without implicit retries."""
+
+    async def fetch(self, request: MacroProviderRequest) -> MacroProviderBatch:
+        """Return normalized observations/events plus safe provider diagnostics."""
 
 
 @runtime_checkable

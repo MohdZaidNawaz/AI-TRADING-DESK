@@ -211,16 +211,18 @@ def test_news_timestamp_is_normalized_to_utc() -> None:
     assert event.timestamp.isoformat() == "2026-09-29T12:00:00+00:00"
 
 
-def test_news_event_requires_summary_or_content() -> None:
-    with pytest.raises(ValidationError, match="summary or content"):
-        NormalizedNewsResearchEvent(
-            event_id="news-empty",
-            source=NEWS_SOURCE,
-            provider="Example Research Wire",
-            title="Empty item",
-            url="https://example.com/research/empty",
-            timestamp=datetime(2026, 9, 29, 12, 0, tzinfo=UTC),
-        )
+def test_news_event_allows_headline_metadata_without_inventing_article_content() -> None:
+    event = NormalizedNewsResearchEvent(
+        event_id="news-metadata-only",
+        source=NEWS_SOURCE,
+        provider="Example Discovery Index",
+        title="Metadata-only item",
+        url="https://example.com/research/metadata-only",
+        timestamp=datetime(2026, 9, 29, 12, 0, tzinfo=UTC),
+    )
+
+    assert event.summary is None
+    assert event.content is None
 
 
 def test_news_event_rejects_a_non_news_source_domain() -> None:

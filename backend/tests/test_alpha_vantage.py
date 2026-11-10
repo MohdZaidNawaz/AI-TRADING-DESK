@@ -10,11 +10,17 @@ import pytest
 
 from app import config as config_module
 from app.connectors.alpha_vantage import (
+    AlphaVantageAuthenticationError,
     AlphaVantageConfigurationError,
+    AlphaVantageErrorCategory,
+    AlphaVantageInvalidRequestError,
+    AlphaVantageNetworkError,
     AlphaVantageNewsClient,
     AlphaVantagePayloadError,
     AlphaVantageProviderError,
     AlphaVantageRateLimitError,
+    AlphaVantageServerError,
+    AlphaVantageTimeoutError,
     alpha_vantage_news_connector,
 )
 from app.ingestion.contracts import NewsResearchConnector
@@ -1036,27 +1042,48 @@ def test_alpha_vantage_event_ids_preserve_query_order_and_duplicates() -> None:
 
 
 @pytest.mark.parametrize(
-    ("response_payload", "expected_error", "expected_diagnostic"),
+    (
+        "response_payload",
+        "expected_error",
+        "expected_diagnostic",
+        "expected_category",
+        "expected_reason_code",
+    ),
     [
         (
             {"Error Message": "Invalid API call."},
-            AlphaVantageProviderError,
+            AlphaVantageInvalidRequestError,
             "Invalid API call.",
+            AlphaVantageErrorCategory.INVALID_REQUEST,
+            "PROVIDER_INVALID_REQUEST",
         ),
         (
             {"message": "The requested news filters are invalid."},
-            AlphaVantageProviderError,
+            AlphaVantageInvalidRequestError,
             "The requested news filters are invalid.",
+            AlphaVantageErrorCategory.INVALID_REQUEST,
+            "PROVIDER_INVALID_REQUEST",
+        ),
+        (
+            {"message": "Invalid API key supplied."},
+            AlphaVantageAuthenticationError,
+            "Invalid API key supplied.",
+            AlphaVantageErrorCategory.AUTHENTICATION,
+            "PROVIDER_AUTHENTICATION_REJECTED",
         ),
         (
             {"Note": "The standard API rate limit is 25 requests per day."},
             AlphaVantageRateLimitError,
             "The standard API rate limit is 25 requests per day.",
+            AlphaVantageErrorCategory.RATE_LIMIT,
+            "PROVIDER_RATE_LIMIT",
         ),
         (
             {"Information": "API call frequency has been exceeded."},
             AlphaVantageRateLimitError,
             "API call frequency has been exceeded.",
+            AlphaVantageErrorCategory.RATE_LIMIT,
+            "PROVIDER_RATE_LIMIT",
         ),
     ],
 )
@@ -1064,6 +1091,8 @@ def test_alpha_vantage_client_handles_documented_error_responses(
     response_payload: Mapping[str, Any],
     expected_error: type[AlphaVantageProviderError],
     expected_diagnostic: str,
+    expected_category: AlphaVantageErrorCategory,
+    expected_reason_code: str,
 ) -> None:
     api_key = secrets.token_urlsafe(32)
 
@@ -1075,6 +1104,12 @@ def test_alpha_vantage_client_handles_documented_error_responses(
 
     assert expected_diagnostic in str(error.value)
     assert api_key not in str(error.value)
+    assert error.value.category is expected_category
+    assert error.value.provider_reason_code == expected_reason_code
+    assert error.value.failure_stage == "provider_message"
+    assert error.value.http_status_code == 200
+    assert error.value.http_status_class == "2xx"
+    assert error.value.request_sent is True
 
 
 def test_alpha_vantage_client_handles_http_errors_without_leaking_the_key() -> None:
@@ -1087,6 +1122,13 @@ def test_alpha_vantage_client_handles_http_errors_without_leaking_the_key() -> N
         _run(_mock_client(handler, api_key).fetch_news())
 
     assert api_key not in str(error.value)
+    assert isinstance(error.value, AlphaVantageServerError)
+    assert error.value.category is AlphaVantageErrorCategory.SERVER_ERROR
+    assert error.value.http_status_code == 500
+    assert error.value.http_status_class == "5xx"
+    assert error.value.provider_reason_code == "HTTP_SERVER_ERROR"
+    assert error.value.failure_stage == "http_response"
+    assert error.value.request_sent is True
 
 
 def test_alpha_vantage_client_handles_http_429() -> None:
@@ -1099,6 +1141,47 @@ def test_alpha_vantage_client_handles_http_429() -> None:
         _run(_mock_client(handler, api_key).fetch_news())
 
     assert api_key not in str(error.value)
+    assert error.value.category is AlphaVantageErrorCategory.RATE_LIMIT
+    assert error.value.http_status_code == 429
+    assert error.value.provider_reason_code == "HTTP_RATE_LIMIT"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type", "category", "reason_code"),
+    [
+        (401, AlphaVantageAuthenticationError, AlphaVantageErrorCategory.AUTHENTICATION, "HTTP_AUTHENTICATION_REJECTED"),
+        (403, AlphaVantageAuthenticationError, AlphaVantageErrorCategory.AUTHENTICATION, "HTTP_AUTHENTICATION_REJECTED"),
+        (400, AlphaVantageInvalidRequestError, AlphaVantageErrorCategory.INVALID_REQUEST, "HTTP_INVALID_REQUEST"),
+        (422, AlphaVantageInvalidRequestError, AlphaVantageErrorCategory.INVALID_REQUEST, "HTTP_INVALID_REQUEST"),
+        (503, AlphaVantageServerError, AlphaVantageErrorCategory.SERVER_ERROR, "HTTP_SERVER_ERROR"),
+        (418, AlphaVantageProviderError, AlphaVantageErrorCategory.PROVIDER_ERROR, "HTTP_PROVIDER_ERROR"),
+    ],
+)
+def test_alpha_vantage_client_maps_http_failures_to_safe_structured_diagnostics(
+    status_code: int,
+    error_type: type[AlphaVantageProviderError],
+    category: AlphaVantageErrorCategory,
+    reason_code: str,
+) -> None:
+    api_key = secrets.token_urlsafe(32)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            text=f"secret body {api_key} {request.url}",
+        )
+
+    with pytest.raises(error_type) as error:
+        _run(_mock_client(handler, api_key).fetch_news())
+
+    assert error.value.category is category
+    assert error.value.http_status_code == status_code
+    assert error.value.http_status_class == f"{status_code // 100}xx"
+    assert error.value.provider_reason_code == reason_code
+    assert error.value.failure_stage == "http_response"
+    assert error.value.request_sent is True
+    assert api_key not in str(error.value)
+    assert "secret body" not in str(error.value)
 
 
 def test_alpha_vantage_client_handles_request_errors_without_secret_leakage(
@@ -1115,6 +1198,11 @@ def test_alpha_vantage_client_handles_request_errors_without_secret_leakage(
 
     assert api_key not in str(error.value)
     assert api_key not in caplog.text
+    assert isinstance(error.value, AlphaVantageNetworkError)
+    assert error.value.category is AlphaVantageErrorCategory.NETWORK
+    assert error.value.provider_reason_code == "NETWORK_FAILURE"
+    assert error.value.failure_stage == "request"
+    assert error.value.request_sent is True
 
 
 def test_alpha_vantage_client_handles_timeouts_without_secret_leakage() -> None:
@@ -1123,10 +1211,29 @@ def test_alpha_vantage_client_handles_timeouts_without_secret_leakage() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout(f"timed out for {api_key}", request=request)
 
-    with pytest.raises(AlphaVantageProviderError) as error:
+    with pytest.raises(AlphaVantageTimeoutError) as error:
         _run(_mock_client(handler, api_key).fetch_news())
 
     assert api_key not in str(error.value)
+    assert error.value.category is AlphaVantageErrorCategory.TIMEOUT
+    assert error.value.provider_reason_code == "REQUEST_TIMEOUT"
+    assert error.value.failure_stage == "request"
+    assert error.value.request_sent is True
+
+
+def test_alpha_vantage_client_classifies_connection_and_dns_failures_as_network() -> None:
+    api_key = secrets.token_urlsafe(32)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("DNS failed with sensitive detail", request=request)
+
+    with pytest.raises(AlphaVantageNetworkError) as error:
+        _run(_mock_client(handler, api_key).fetch_news())
+
+    assert error.value.category is AlphaVantageErrorCategory.NETWORK
+    assert error.value.provider_reason_code == "CONNECTION_FAILED"
+    assert error.value.request_sent is False
+    assert "sensitive detail" not in str(error.value)
 
 
 def test_alpha_vantage_client_rejects_malformed_json() -> None:
@@ -1135,8 +1242,15 @@ def test_alpha_vantage_client_rejects_malformed_json() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not-json")
 
-    with pytest.raises(AlphaVantagePayloadError, match="malformed news data"):
+    with pytest.raises(AlphaVantagePayloadError, match="malformed news data") as error:
         _run(_mock_client(handler, api_key).fetch_news())
+
+    assert error.value.category is AlphaVantageErrorCategory.MALFORMED_RESPONSE
+    assert error.value.http_status_code == 200
+    assert error.value.http_status_class == "2xx"
+    assert error.value.provider_reason_code == "INVALID_JSON"
+    assert error.value.failure_stage == "response_decode"
+    assert error.value.request_sent is True
 
 
 @pytest.mark.parametrize(
@@ -1244,7 +1358,8 @@ def test_alpha_vantage_provider_error_payload_cannot_expose_the_api_key(
             200,
             json={
                 "message": (
-                    f"Invalid credential: {api_key}. Request URL: {provider_url}"
+                    f"Invalid credential: {api_key}. Request URL: {provider_url}. "
+                    "Authorization: Bearer private-bearer-value password=private-password"
                 ),
                 "raw_provider_detail": "raw-provider-marker",
             },
@@ -1260,9 +1375,40 @@ def test_alpha_vantage_provider_error_payload_cannot_expose_the_api_key(
     assert "[REDACTED_URL]" in diagnostic
     assert "alphavantage.co" not in diagnostic
     assert "raw-provider-marker" not in diagnostic
+    assert "private-bearer-value" not in diagnostic
+    assert "private-password" not in diagnostic
     assert api_key not in diagnostic
     assert api_key not in caplog.text
     assert "raw-provider-marker" not in caplog.text
+
+
+def test_unknown_provider_message_uses_bounded_fallback_category() -> None:
+    api_key = secrets.token_urlsafe(32)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"Information": "Provider maintenance state with no known classification."},
+        )
+
+    with pytest.raises(AlphaVantageProviderError) as error:
+        _run(_mock_client(handler, api_key).fetch_news())
+
+    assert type(error.value) is AlphaVantageProviderError
+    assert error.value.category is AlphaVantageErrorCategory.PROVIDER_ERROR
+    assert error.value.provider_reason_code == "PROVIDER_MESSAGE_UNCLASSIFIED"
+    assert error.value.failure_stage == "provider_message"
+    assert error.value.request_sent is True
+
+
+def test_structured_reason_code_rejects_unbounded_or_sensitive_text() -> None:
+    error = AlphaVantageProviderError(
+        "safe message",
+        provider_reason_code="unsafe reason with token=do-not-retain",
+    )
+
+    assert error.provider_reason_code == "UNCLASSIFIED_PROVIDER_FAILURE"
+    assert "do-not-retain" not in error.provider_reason_code
 
 
 @pytest.mark.parametrize("unsafe_value", [None, "", {"detail": "not text"}])

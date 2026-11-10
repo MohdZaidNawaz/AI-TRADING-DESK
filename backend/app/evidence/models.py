@@ -28,6 +28,7 @@ from app.models.economic_events import (
     EconomicImpact,
     EconomicReleaseStatus,
     EconomicValue,
+    EconomicValueProvenance,
     NormalizedEconomicEvent,
 )
 from app.models.market_series import (
@@ -39,6 +40,7 @@ from app.models.market_series import (
 from app.models.macro_series import (
     MacroReferencePeriod,
     MacroSeriesKey,
+    MacroSeriesSource,
     NormalizedMacroObservation,
 )
 from app.models.positioning import (
@@ -98,6 +100,8 @@ class EvidenceProvenance:
     domain: DataDomain
     event_timestamp: datetime
     received_at: datetime
+    origin_id: str | None = None
+    origin_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +121,13 @@ class EconomicEventEvidence:
     release_status: EconomicReleaseStatus
     expected_impact: EconomicImpact
     previous: EconomicValue | None
+    previous_provenance: EconomicValueProvenance | None
     revised_previous: EconomicValue | None
+    revised_previous_provenance: EconomicValueProvenance | None
     forecast: EconomicValue | None
+    forecast_provenance: EconomicValueProvenance | None
     actual: EconomicValue | None
+    actual_provenance: EconomicValueProvenance | None
     release_version: int
     revision_of_event_id: str | None
     provenance: EvidenceProvenance
@@ -147,9 +155,13 @@ class EconomicEventEvidence:
             release_status=event.release_status,
             expected_impact=event.expected_impact,
             previous=event.previous,
+            previous_provenance=event.previous_provenance,
             revised_previous=event.revised_previous,
+            revised_previous_provenance=event.revised_previous_provenance,
             forecast=event.forecast,
+            forecast_provenance=event.forecast_provenance,
             actual=event.actual,
+            actual_provenance=event.actual_provenance,
             release_version=event.release_version,
             revision_of_event_id=event.revision_of_event_id,
             provenance=_provenance_from_source(
@@ -950,6 +962,7 @@ class MarketBarEvidence:
     volume_kind: VolumeKind
     state: MarketBarState
     received_at: datetime
+    source_timestamp: str | None
     revision: int | None
 
     @classmethod
@@ -968,6 +981,7 @@ class MarketBarEvidence:
             volume_kind=bar.volume_kind,
             state=bar.state,
             received_at=_as_utc(bar.received_at),
+            source_timestamp=bar.source_timestamp,
             revision=bar.revision,
         )
 
@@ -1115,11 +1129,16 @@ class NewsEvidence:
     provider: str
     title: str
     url: str
-    published_at: datetime
+    published_at: datetime | None
+    seen_at: datetime | None
     symbols: tuple[str, ...]
     topics: tuple[str, ...]
     authors: tuple[str, ...]
     publisher_domain: str | None
+    language: str | None
+    source_country: str | None
+    search_query: str | None
+    search_category: str | None
     category: str | None
     image_url: str | None
     overall_sentiment: OverallSentimentEvidence | None
@@ -1151,11 +1170,24 @@ class NewsEvidence:
             provider=event.provider,
             title=event.title,
             url=str(event.url),
-            published_at=_as_utc(event.timestamp),
+            published_at=(
+                _as_utc(event.published_at)
+                if event.published_at is not None
+                else None
+            ),
+            seen_at=(
+                _as_utc(event.seen_at)
+                if event.seen_at is not None
+                else None
+            ),
             symbols=tuple(event.symbols),
             topics=tuple(event.topics),
             authors=tuple(event.authors),
             publisher_domain=event.publisher_domain,
+            language=event.language,
+            source_country=event.source_country,
+            search_query=event.search_query,
+            search_category=event.search_category,
             category=event.category,
             image_url=str(event.image_url) if event.image_url is not None else None,
             overall_sentiment=overall_sentiment,
@@ -1505,6 +1537,7 @@ def _provenance_from_source(
     source: (
         SourceMetadata
         | EconomicEventSource
+        | MacroSeriesSource
         | FundamentalSource
         | EstimateSource
         | CorporateActionSource
@@ -1522,6 +1555,8 @@ def _provenance_from_source(
         domain=source.domain,
         event_timestamp=_as_utc(event_timestamp),
         received_at=_as_utc(received_at),
+        origin_id=getattr(source, "origin_id", None),
+        origin_name=getattr(source, "origin_name", None),
     )
 
 

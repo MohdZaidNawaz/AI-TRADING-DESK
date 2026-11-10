@@ -3,11 +3,14 @@ import type {
   ApiConnectionState,
   ProductionReadinessReport,
 } from "../services/api"
+import { ASSISTANT_STATE_LABELS } from "./assistantState"
+import type { AssistantVisualState } from "./assistantState"
 
 type AICoreProps = {
   connection: ApiConnectionState
   readiness: ProductionReadinessReport | null
   analysis: AnalyzeResponse | null
+  assistantState: AssistantVisualState
 }
 
 const coreAgents = [
@@ -28,14 +31,14 @@ const apiLabel: Record<ApiConnectionState, string> = {
   error: "UNAVAILABLE",
 }
 
-function AICore({ connection, readiness, analysis }: AICoreProps) {
+function AICore({ connection, readiness, analysis, assistantState }: AICoreProps) {
   const consulted = analysis?.synthesis.agents_consulted.length ?? 0
 
   return (
-    <section className="ai-core" aria-labelledby="core-title">
+    <section className={`ai-core assistant-${assistantState}`} aria-labelledby="core-title">
       <div className="core-topline">
-        <span>MASTER INTELLIGENCE / SYNTHESIS</span>
-        <span className="core-sequence">RESEARCH MODE</span>
+        <span>FRIDAY</span>
+        <span className="core-sequence">RESEARCH INTERFACE</span>
       </div>
 
       <div className="core-stage">
@@ -71,12 +74,17 @@ function AICore({ connection, readiness, analysis }: AICoreProps) {
         <div className="core-orb" aria-hidden="true">
           <div className="orb-grid" />
           <div className="orb-flare" />
+          <div className="orb-waveform"><i /><i /><i /><i /><i /></div>
           <span className="orb-letter" />
         </div>
 
         <div className="core-caption">
-          <h2 id="core-title">FRIDAY</h2>
+          <h2 id="core-title">Good evening. <strong>I'm FRIDAY.</strong></h2>
+          <p className="core-subtitle">Your personal AI trading intelligence assistant.</p>
           <span className="core-role">MASTER · SYNTHESIS · NON-EXECUTING</span>
+          <span className="core-assistant-state" aria-live="polite">
+            <i /> {ASSISTANT_STATE_LABELS[assistantState]}
+          </span>
           <div className="core-metrics">
             <span><strong>9</strong><small>SPECIALISTS</small></span>
             <span><strong>{consulted}</strong><small>CONSULTED</small></span>

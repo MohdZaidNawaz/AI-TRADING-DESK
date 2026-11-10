@@ -2,14 +2,17 @@
 
 import logging
 import math
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 import re
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -32,6 +35,14 @@ from app.models.instruments import (
     InstrumentSourceProvenance,
     canonical_instrument_id,
 )
+from app.models.market_series import (
+    MarketBarState,
+    NormalizedMarketBar,
+    VolumeKind,
+    canonical_market_symbol,
+    canonical_timeframe,
+    timeframe_seconds,
+)
 
 TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 TWELVE_DATA_SOURCE = SourceMetadata(
@@ -49,6 +60,39 @@ _SENSITIVE_FIELD_NAMES = {
     "secret",
     "token",
 }
+
+TWELVE_DATA_HISTORICAL_INTERVALS = MappingProxyType(
+    {
+        "1m": "1min",
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "1h": "1h",
+        "4h": "4h",
+        "1d": "1day",
+        "1w": "1week",
+    }
+)
+TWELVE_DATA_MAX_OUTPUT_SIZE = 5_000
+TWELVE_DATA_HISTORICAL_REQUEST_TIMEZONE = "UTC"
+
+
+@dataclass(frozen=True, slots=True)
+class TwelveDataHistoricalBatch:
+    """Fully validated historical response; safe to ingest atomically as a batch."""
+
+    provider_symbol: str
+    provider_interval: str
+    requested_timezone: str | None
+    source_timezone: str
+    venue: str | None
+    exchange_metadata_available: bool
+    retrieved_at: datetime
+    requested_count: int
+    bars: tuple[NormalizedMarketBar, ...]
+    missing_interval_count: int
+    partial: bool
+    warning_codes: tuple[str, ...]
 
 
 class TwelveDataError(RuntimeError):
@@ -141,6 +185,43 @@ class TwelveDataClient:
                 "timezone": "UTC",
             },
             payload_error="Twelve Data returned malformed market data.",
+        )
+
+    async def fetch_time_series(
+        self,
+        symbol: str,
+        interval: str,
+        *,
+        outputsize: int,
+        start_date: datetime | None = None,
+    ) -> Mapping[str, Any]:
+        """Fetch one bounded historical response without retrying provider failures."""
+        normalized_symbol = _normalize_symbol(symbol)
+        provider_interval = twelve_data_historical_interval(interval)
+        requested_outputsize = _bounded_output_size(outputsize)
+        if start_date is not None:
+            if start_date.tzinfo is None or start_date.utcoffset() is None:
+                raise TwelveDataPayloadError("Historical start date is invalid.")
+            normalized_start_date = start_date.astimezone(UTC).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+        else:
+            normalized_start_date = None
+        return await self._fetch_json(
+            "/time_series",
+            {
+                key: value
+                for key, value in {
+                    "symbol": normalized_symbol,
+                    "interval": provider_interval,
+                    "outputsize": requested_outputsize,
+                    "timezone": TWELVE_DATA_HISTORICAL_REQUEST_TIMEZONE,
+                    "order": "ASC",
+                    "start_date": normalized_start_date,
+                }.items()
+                if value is not None
+            },
+            payload_error="Twelve Data returned malformed historical data.",
         )
 
     async def fetch_forex_pairs(
@@ -339,6 +420,234 @@ class TwelveDataConnector:
 
 
 twelve_data_connector = TwelveDataConnector()
+
+
+class TwelveDataHistoricalConnector:
+    """Validate Twelve Data candles before any result reaches shared evidence."""
+
+    source = TWELVE_DATA_SOURCE
+
+    def normalize(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        expected_symbol: str,
+        timeframe: str,
+        requested_count: int,
+        retrieved_at: datetime,
+        requested_timezone: str | None = None,
+    ) -> TwelveDataHistoricalBatch:
+        if retrieved_at.tzinfo is None or retrieved_at.utcoffset() is None:
+            raise TwelveDataPayloadError("Historical retrieval time is invalid.")
+        retrieved_at = retrieved_at.astimezone(UTC)
+        normalized_timeframe = _historical_internal_timeframe(timeframe)
+        provider_interval = twelve_data_historical_interval(normalized_timeframe)
+        requested_count = _bounded_output_size(requested_count)
+
+        meta = payload.get("meta")
+        values = payload.get("values")
+        if not isinstance(meta, Mapping) or not isinstance(values, list):
+            raise TwelveDataPayloadError("Twelve Data returned malformed historical data.")
+        provider_symbol = _normalize_symbol(
+            _required_text(meta.get("symbol"), "historical symbol")
+        )
+        if canonical_market_symbol(provider_symbol) != canonical_market_symbol(expected_symbol):
+            raise TwelveDataPayloadError("Twelve Data returned an unexpected historical symbol.")
+        response_interval = _required_text(meta.get("interval"), "historical interval")
+        if response_interval.casefold() != provider_interval.casefold():
+            raise TwelveDataPayloadError("Twelve Data returned an unexpected historical interval.")
+        exchange_timezone = _optional_text(meta.get("exchange_timezone"))
+        if exchange_timezone is not None:
+            _timezone_info(exchange_timezone)
+        normalized_requested_timezone = _normalized_requested_timezone(requested_timezone)
+        # Twelve Data applies the requested UTC output timezone to intraday
+        # values. For daily and weekly bars its documented behavior is to
+        # ignore that request and return exchange-local datetimes instead.
+        if normalized_timeframe in {"1d", "1w"}:
+            if exchange_timezone is None:
+                raise TwelveDataPayloadError(
+                    "Twelve Data returned incomplete historical timezone metadata."
+                )
+            source_timezone = exchange_timezone
+        elif normalized_requested_timezone is not None:
+            if exchange_timezone is None and normalized_requested_timezone != "UTC":
+                raise TwelveDataPayloadError(
+                    "Twelve Data returned incomplete historical timezone metadata."
+                )
+            source_timezone = normalized_requested_timezone
+        elif exchange_timezone is not None:
+            source_timezone = exchange_timezone
+        else:
+            raise TwelveDataPayloadError(
+                "Twelve Data returned incomplete historical timezone metadata."
+            )
+        if len(values) > requested_count:
+            raise TwelveDataPayloadError("Twelve Data returned an oversized historical response.")
+
+        venue = _optional_text(meta.get("exchange"))
+        parsed: list[NormalizedMarketBar] = []
+        source_opened_at: list[datetime] = []
+        seen: set[datetime] = set()
+        duration = timedelta(seconds=timeframe_seconds(normalized_timeframe))
+        for raw in values:
+            if not isinstance(raw, Mapping):
+                raise TwelveDataPayloadError("Twelve Data returned malformed historical data.")
+            source_timestamp = _required_text(raw.get("datetime"), "historical datetime")
+            opened_at = _historical_timestamp(source_timestamp, source_timezone)
+            if opened_at in seen:
+                raise TwelveDataPayloadError("Twelve Data returned duplicate historical timestamps.")
+            seen.add(opened_at)
+            source_opened_at.append(opened_at)
+            closed_at = opened_at + duration
+            volume_value = raw.get("volume")
+            volume = (
+                None
+                if volume_value in (None, "")
+                else _required_number(volume_value, "volume")
+            )
+            try:
+                parsed.append(
+                    NormalizedMarketBar(
+                        source=self.source,
+                        symbol=provider_symbol,
+                        asset_class=_infer_asset_class(provider_symbol, meta),
+                        venue=venue,
+                        timeframe=normalized_timeframe,
+                        opened_at=opened_at,
+                        closed_at=closed_at,
+                        open=_required_number(raw.get("open"), "open"),
+                        high=_required_number(raw.get("high"), "high"),
+                        low=_required_number(raw.get("low"), "low"),
+                        close=_required_number(raw.get("close"), "close"),
+                        volume=volume,
+                        volume_kind=(
+                            VolumeKind.UNAVAILABLE if volume is None else VolumeKind.UNKNOWN
+                        ),
+                        state=(
+                            MarketBarState.COMPLETED
+                            if closed_at <= retrieved_at
+                            else MarketBarState.PROVISIONAL
+                        ),
+                        received_at=retrieved_at,
+                        source_timestamp=source_timestamp,
+                    )
+                )
+            except ValueError:
+                raise TwelveDataPayloadError(
+                    "Twelve Data returned invalid historical candle values."
+                ) from None
+
+        _validate_provider_order(source_opened_at)
+        parsed.sort(key=lambda item: item.opened_at)
+        missing_interval_count = _missing_interval_count(parsed)
+        data_warnings: list[str] = []
+        if not parsed:
+            data_warnings.append("HISTORICAL_RESPONSE_EMPTY")
+        if len(parsed) < requested_count:
+            data_warnings.append("HISTORICAL_RESPONSE_SHORT")
+        if missing_interval_count:
+            data_warnings.append("HISTORICAL_INTERVALS_MISSING")
+        if any(bar.state is MarketBarState.PROVISIONAL for bar in parsed):
+            data_warnings.append("HISTORICAL_PROVISIONAL_BAR_PRESENT")
+        exchange_metadata_available = exchange_timezone is not None and venue is not None
+        warning_codes = list(data_warnings)
+        if not exchange_metadata_available:
+            warning_codes.append("HISTORICAL_EXCHANGE_METADATA_UNAVAILABLE")
+        return TwelveDataHistoricalBatch(
+            provider_symbol=provider_symbol,
+            provider_interval=provider_interval,
+            requested_timezone=normalized_requested_timezone,
+            source_timezone=source_timezone,
+            venue=venue.upper() if venue else None,
+            exchange_metadata_available=exchange_metadata_available,
+            retrieved_at=retrieved_at,
+            requested_count=requested_count,
+            bars=tuple(parsed),
+            missing_interval_count=missing_interval_count,
+            partial=bool(data_warnings),
+            warning_codes=tuple(warning_codes),
+        )
+
+
+twelve_data_historical_connector = TwelveDataHistoricalConnector()
+
+
+def twelve_data_historical_interval(timeframe: str) -> str:
+    normalized = _historical_internal_timeframe(timeframe)
+    try:
+        return TWELVE_DATA_HISTORICAL_INTERVALS[normalized]
+    except KeyError:
+        raise TwelveDataPayloadError("Historical interval is not supported.") from None
+
+
+def _historical_internal_timeframe(value: str) -> str:
+    aliases = {"1day": "1d", "1week": "1w"}
+    normalized = aliases.get(value.strip().lower(), value.strip().lower())
+    try:
+        normalized = canonical_timeframe(normalized)
+    except ValueError:
+        raise TwelveDataPayloadError("Historical interval is not supported.") from None
+    if normalized not in TWELVE_DATA_HISTORICAL_INTERVALS:
+        raise TwelveDataPayloadError("Historical interval is not supported.")
+    return normalized
+
+
+def _bounded_output_size(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TwelveDataPayloadError("Historical output size is invalid.")
+    if value < 1 or value > TWELVE_DATA_MAX_OUTPUT_SIZE:
+        raise TwelveDataPayloadError("Historical output size is invalid.")
+    return value
+
+
+def _historical_timestamp(value: str, timezone_name: str) -> datetime:
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        raise TwelveDataPayloadError("Twelve Data returned an invalid historical timestamp.") from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_timezone_info(timezone_name))
+    return parsed.astimezone(UTC)
+
+
+def _normalized_requested_timezone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = _required_text(value, "requested historical timezone")
+    _timezone_info(normalized)
+    return "UTC" if normalized.upper() == "UTC" else normalized
+
+
+def _timezone_info(value: str) -> tzinfo:
+    normalized = value.strip()
+    if normalized.upper() in {"UTC", "GMT"}:
+        return UTC
+    try:
+        return ZoneInfo(normalized)
+    except ZoneInfoNotFoundError:
+        raise TwelveDataPayloadError(
+            "Twelve Data returned an unsupported historical timezone."
+        ) from None
+
+
+def _validate_provider_order(opened_at: list[datetime]) -> None:
+    if len(opened_at) < 2:
+        return
+    ascending = all(left < right for left, right in zip(opened_at, opened_at[1:]))
+    descending = all(left > right for left, right in zip(opened_at, opened_at[1:]))
+    if not ascending and not descending:
+        raise TwelveDataPayloadError("Twelve Data returned out-of-order historical data.")
+
+
+def _missing_interval_count(bars: list[NormalizedMarketBar]) -> int:
+    missing = 0
+    for left, right in zip(bars, bars[1:]):
+        interval = left.timeframe_seconds
+        delta = int((right.opened_at - left.opened_at).total_seconds())
+        if delta > interval:
+            missing += max(0, delta // interval - 1)
+    return missing
 
 
 def _normalize_symbol(value: str) -> str:

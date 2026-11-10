@@ -4,7 +4,7 @@ React, TypeScript, and Vite interface for the local FRIDAY research desk.
 
 ## Run
 
-Start the backend first on http://127.0.0.1:8000, then:
+Start the backend first on http://127.0.0.1:8010, then:
 
 ~~~powershell
 cd frontend
@@ -12,7 +12,7 @@ npm install
 npm run dev
 ~~~
 
-The API base defaults to http://127.0.0.1:8000. For another local address,
+The API base defaults to http://127.0.0.1:8010. For another local address,
 set VITE_API_BASE_URL before starting Vite.
 
 ## What the interface represents

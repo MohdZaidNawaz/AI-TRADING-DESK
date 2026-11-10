@@ -295,7 +295,6 @@ class InstrumentCatalogueStore:
                 (instrument_id, instrument_id),
             ).fetchone()
             return _entry_from_row(connection, row) if row is not None else None
-
     def _initialize(self) -> None:
         connection = self._connect()
         try:
@@ -478,6 +477,43 @@ class InstrumentCatalogueStore:
                 "catalogue foreign key enforcement is unavailable"
             )
         return connection
+
+
+def read_catalogue_snapshot(database_path: Path) -> tuple[InstrumentCatalogueEntry, ...]:
+    """Read a ready v2 catalogue without initializing, migrating, or repairing it."""
+    if not database_path.is_file():
+        return ()
+    try:
+        uri = f"{database_path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            if _schema_signature(connection) != _canonical_schema_signature(_SCHEMA_VERSION):
+                raise InstrumentCatalogueSchemaError(
+                    "read-only catalogue schema is unavailable"
+                )
+            metadata = {
+                row["key"]: row["value"]
+                for row in connection.execute(
+                    "SELECT key, value FROM catalogue_metadata "
+                    "WHERE key IN ('schema_version', 'migration_state')"
+                )
+            }
+            if metadata != {
+                "schema_version": _SCHEMA_VERSION,
+                "migration_state": _MIGRATION_STATE_READY,
+            }:
+                raise InstrumentCatalogueSchemaError(
+                    "read-only catalogue metadata is unavailable"
+                )
+            rows = connection.execute(
+                "SELECT * FROM catalogue_instruments "
+                "ORDER BY category, canonical_symbol, instrument_id"
+            ).fetchall()
+            return tuple(_entry_from_row(connection, row) for row in rows)
+    except sqlite3.Error as exc:
+        raise InstrumentCatalogueSchemaError(
+            "read-only catalogue snapshot is unavailable"
+        ) from exc
 
 
 def _create_schema(

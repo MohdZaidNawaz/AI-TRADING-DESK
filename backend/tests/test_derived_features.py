@@ -33,7 +33,11 @@ from app.models.market_series import (
 )
 from app.models.schemas import AnalyzeRequest
 from app.services.derived_feature_routing import DerivedFeatureRouter
-from app.services.derived_features import DerivedFeatureService, feature_request
+from app.services.derived_features import (
+    DerivedFeatureService,
+    feature_request,
+    macd_feature_request,
+)
 from app.services.trade_proposal_workflow import build_evidence_bundle
 
 
@@ -89,6 +93,26 @@ def _series(*bars: NormalizedMarketBar):
     return store.snapshot(symbol=bars[0].symbol).series[0]
 
 
+def _request_for_type(feature_type: FeatureType) -> DerivedFeatureRequest:
+    if feature_type in {
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+    }:
+        return macd_feature_request(feature_type)
+    if feature_type in {
+        FeatureType.AVERAGE_RANGE,
+        FeatureType.SMA,
+        FeatureType.EMA,
+        FeatureType.RSI,
+        FeatureType.ATR,
+        FeatureType.ROC,
+        FeatureType.ROLLING_STD,
+    }:
+        return feature_request(feature_type, window=2)
+    return feature_request(feature_type)
+
+
 @pytest.mark.parametrize(
     ("feature_request_value", "bars", "expected"),
     [
@@ -141,6 +165,51 @@ def test_exact_feature_formulas(feature_request_value, bars, expected: float) ->
     assert feature.method_version == "1.0.0"
     assert feature.input_first_bar_id == bars[-feature.required_bar_count].bar_id
     assert feature.input_last_bar_id == bars[-1].bar_id
+
+
+def test_ema_rsi_atr_and_macd_use_deterministic_formulas() -> None:
+    ema = DerivedFeatureService().calculate(
+        _series(*(_bar(index, close=float(index + 1)) for index in range(3))),
+        feature_request(FeatureType.EMA, window=3),
+    )
+    rising = _series(*(_bar(index, close=float(index + 1)) for index in range(15)))
+    rsi = DerivedFeatureService().calculate(
+        rising,
+        feature_request(FeatureType.RSI, window=14),
+    )
+    atr = DerivedFeatureService().calculate(
+        _series(
+            *(
+                _bar(index, close=100.0, high=101.0, low=99.0)
+                for index in range(15)
+            )
+        ),
+        feature_request(FeatureType.ATR, window=14),
+    )
+    constant = _series(*(_bar(index, close=100.0) for index in range(34)))
+    macd = tuple(
+        DerivedFeatureService().calculate(constant, macd_feature_request(feature_type))
+        for feature_type in (
+            FeatureType.MACD_LINE,
+            FeatureType.MACD_SIGNAL,
+            FeatureType.MACD_HISTOGRAM,
+        )
+    )
+
+    assert ema.value == pytest.approx(2.25)
+    assert rsi.value == pytest.approx(100.0)
+    assert atr.value == pytest.approx(2.0)
+    assert all(feature.value == pytest.approx(0.0) for feature in macd)
+
+
+def test_flat_rsi_uses_documented_neutral_zero_denominator_result() -> None:
+    feature = DerivedFeatureService().calculate(
+        _series(*(_bar(index, close=100.0) for index in range(15))),
+        feature_request(FeatureType.RSI, window=14),
+    )
+
+    assert feature.status is FeatureStatus.AVAILABLE
+    assert feature.value == 50.0
 
 
 def test_windowed_calculations_use_only_the_latest_exact_completed_window() -> None:
@@ -376,17 +445,7 @@ def test_multiple_series_remain_isolated_by_symbol_venue_timeframe_and_source() 
 
 def test_method_lineage_is_explicit_and_available_values_must_be_finite() -> None:
     series = _series(_bar(0, close=100), _bar(1, close=110), _bar(2, close=99))
-    requests = tuple(
-        feature_request(feature_type, window=2)
-        if feature_type in {
-            FeatureType.AVERAGE_RANGE,
-            FeatureType.SMA,
-            FeatureType.ROC,
-            FeatureType.ROLLING_STD,
-        }
-        else feature_request(feature_type)
-        for feature_type in FeatureType
-    )
+    requests = tuple(_request_for_type(feature_type) for feature_type in FeatureType)
     features = DerivedFeatureService().calculate_snapshot((series,), requests).features
 
     assert {feature.feature_type: feature.method_id for feature in features} == {
@@ -395,6 +454,12 @@ def test_method_lineage_is_explicit_and_available_values_must_be_finite() -> Non
         FeatureType.SIMPLE_RETURN: "friday.simple_close_return",
         FeatureType.LOG_RETURN: "friday.natural_log_close_return",
         FeatureType.SMA: "friday.simple_moving_average",
+        FeatureType.EMA: "friday.exponential_moving_average",
+        FeatureType.RSI: "friday.wilder_relative_strength_index",
+        FeatureType.MACD_LINE: "friday.macd_line",
+        FeatureType.MACD_SIGNAL: "friday.macd_signal",
+        FeatureType.MACD_HISTOGRAM: "friday.macd_histogram",
+        FeatureType.ATR: "friday.wilder_average_true_range",
         FeatureType.ROC: "friday.close_rate_of_change",
         FeatureType.ROLLING_STD: "friday.population_std_simple_returns",
     }
@@ -406,6 +471,9 @@ def test_method_lineage_is_explicit_and_available_values_must_be_finite() -> Non
         in {
             FeatureType.AVERAGE_RANGE,
             FeatureType.SMA,
+            FeatureType.EMA,
+            FeatureType.RSI,
+            FeatureType.ATR,
             FeatureType.ROC,
             FeatureType.ROLLING_STD,
         }
@@ -419,17 +487,7 @@ def test_method_lineage_is_explicit_and_available_values_must_be_finite() -> Non
 
 def test_router_exposes_only_approved_feature_types_to_chartist_and_oracle() -> None:
     series = _series(_bar(0, close=100), _bar(1, close=110), _bar(2, close=99))
-    requests = tuple(
-        feature_request(feature_type, window=2)
-        if feature_type in {
-            FeatureType.AVERAGE_RANGE,
-            FeatureType.SMA,
-            FeatureType.ROC,
-            FeatureType.ROLLING_STD,
-        }
-        else feature_request(feature_type)
-        for feature_type in FeatureType
-    )
+    requests = tuple(_request_for_type(feature_type) for feature_type in FeatureType)
     snapshot = DerivedFeatureService().calculate_snapshot((series,), requests)
     router = DerivedFeatureRouter()
 
@@ -441,7 +499,14 @@ def test_router_exposes_only_approved_feature_types_to_chartist_and_oracle() -> 
                 FeatureType.BAR_RANGE,
                 FeatureType.AVERAGE_RANGE,
                 FeatureType.SMA,
+                FeatureType.EMA,
+                FeatureType.RSI,
+                FeatureType.MACD_LINE,
+                FeatureType.MACD_SIGNAL,
+                FeatureType.MACD_HISTOGRAM,
+                FeatureType.ATR,
                 FeatureType.ROC,
+                FeatureType.ROLLING_STD,
             }
         elif agent_id == "oracle_quant":
             assert assigned_types == {
@@ -449,6 +514,11 @@ def test_router_exposes_only_approved_feature_types_to_chartist_and_oracle() -> 
                 FeatureType.LOG_RETURN,
                 FeatureType.ROC,
                 FeatureType.ROLLING_STD,
+                FeatureType.RSI,
+                FeatureType.MACD_LINE,
+                FeatureType.MACD_SIGNAL,
+                FeatureType.MACD_HISTOGRAM,
+                FeatureType.ATR,
             }
         else:
             assert assigned == ()

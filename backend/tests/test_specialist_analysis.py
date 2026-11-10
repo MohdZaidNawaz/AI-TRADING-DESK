@@ -272,11 +272,27 @@ def test_derived_observations_are_separate_traceable_and_routed_to_two_specialis
     oracle = artifacts["oracle_quant"]
 
     assert {item.feature_type.value for item in chartist.derived_feature_references} == {
-        "bar_range"
+        "atr",
+        "bar_range",
+        "ema",
+        "macd_histogram",
+        "macd_line",
+        "macd_signal",
+        "roc",
+        "rolling_std",
+        "rsi",
+        "sma",
     }
     assert {item.feature_type.value for item in oracle.derived_feature_references} == {
-        "simple_return",
+        "atr",
         "log_return",
+        "macd_histogram",
+        "macd_line",
+        "macd_signal",
+        "roc",
+        "rolling_std",
+        "rsi",
+        "simple_return",
     }
     assert chartist.derived_observations
     assert oracle.derived_observations
@@ -477,7 +493,12 @@ def test_public_analysis_contract_stays_internal_and_phase_four_files_add_no_exe
         "routing",
         "agent_results",
         "synthesis",
+        "coordination",
     }
+    assert response.coordination is not None
+    assert response.coordination.production_authorization_available is False
+    assert response.coordination.submission_allowed is False
+    assert response.coordination.execution_authority is False
 
     backend_root = Path(__file__).resolve().parents[1]
     paths = (

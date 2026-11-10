@@ -75,7 +75,7 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 symbol=canonical_symbol(snapshot.symbol),
             )
         )
-        created_at_values.append(evidence.published_at)
+        created_at_values.append(evidence.provenance.event_timestamp)
 
     for series in snapshot.market_series:
         reference_time = (
@@ -1011,7 +1011,7 @@ def _evaluation_time(snapshot: EvidenceSnapshot, risk_context: RiskContext | Non
     if risk_context is not None:
         return risk_context.as_of
     timestamps = [item.timestamp for item in snapshot.market_evidence]
-    timestamps.extend(item.published_at for item in snapshot.news_evidence)
+    timestamps.extend(item.provenance.event_timestamp for item in snapshot.news_evidence)
     return max(timestamps, default=datetime(1970, 1, 1, tzinfo=UTC))
 
 

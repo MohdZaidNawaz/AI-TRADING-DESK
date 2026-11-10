@@ -12,12 +12,17 @@ from app.models.proposals import (
     TradeProposal,
 )
 from app.models.schemas import AgentAnalysis, Synthesis
+from app.models.derived_features import FeatureStatus
+from app.models.technical_analysis import TrendDirection
 from app.models.trade_thesis import MasterTradeThesis
 from app.models.specialist_analysis import (
     MasterSpecialistSynthesis,
     SpecialistAnalysis,
+    SpecialistConsensus,
+    SpecialistStance,
     summarize_specialist_analyses,
 )
+from app.models.agent_coordination import AgentCoordinationReport, AgentEvidenceLink
 from app.services.master_decision import MasterDecisionService
 
 
@@ -34,24 +39,206 @@ class MasterAgent:
         self,
         context: AnalysisContext,
         completed_results: list[AgentAnalysis],
+        *,
+        specialist_synthesis: MasterSpecialistSynthesis | None = None,
+        coordination: AgentCoordinationReport | None = None,
     ) -> Synthesis:
         consulted = [result.agent_id for result in completed_results]
         agent_names = ", ".join(result.agent_name for result in completed_results)
         result_digest = " ".join(result.summary for result in completed_results)
+        research = context.research_context
+        intelligence = context.news_intelligence
+        intelligence_summary = ""
+        if intelligence is not None:
+            news_count = len(intelligence.relevant_news)
+            event_count = len(intelligence.upcoming_events) + len(intelligence.released_events)
+            intelligence_summary = (
+                f" News/economic evidence: {news_count} relevant article(s), {event_count} "
+                f"calendar event(s), and {len(intelligence.macro_findings)} deterministic "
+                "interpretation(s). "
+                f"Provider status={intelligence.news_retrieval.status.value}; "
+                f"cooldown={intelligence.news_retrieval.cooldown_status.value}; "
+                f"cache={intelligence.news_retrieval.cache_status.value}. "
+                "Verified facts remain distinct from possible implications."
+            )
+            if intelligence.missing_information:
+                intelligence_summary += (
+                    " Missing information: " + " ".join(intelligence.missing_information)
+                )
+            if intelligence.warnings:
+                intelligence_summary += " Warnings: " + " ".join(intelligence.warnings)
+        macro = context.macro_intelligence
+        if macro is not None:
+            usable_facts = sum(
+                len(item.verified_facts) for item in macro.instrument_assessments
+            )
+            calculated_changes = sum(
+                item.status.value == "available" for item in macro.indicator_changes
+            )
+            calculated_differentials = sum(
+                item.status.value == "available" for item in macro.policy_rate_differentials
+            )
+            conflict_count = sum(
+                len(item.conflicting_evidence_ids) for item in macro.instrument_assessments
+            )
+            provider_states = ", ".join(
+                f"{item.provider_id or 'unconfigured'}={item.status.value}"
+                for item in macro.provider_diagnostics
+            )
+            intelligence_summary += (
+                f" Macro evidence: {usable_facts} verified cached fact(s); "
+                f"{calculated_changes} period change(s); "
+                f"{calculated_differentials} policy differential(s); "
+                f"{conflict_count} conflicting evidence reference(s); "
+                f"providers: {provider_states}. Macro facts and calculations remain separate "
+                "from conditional implications, do not establish causation, and do not grant "
+                "execution authority."
+            )
+        liquidity = context.liquidity_intelligence
+        if liquidity is not None:
+            level_count = sum(len(item.liquidity_levels) for item in liquidity.analyses)
+            sweep_count = sum(len(item.sweeps) for item in liquidity.analyses)
+            gap_count = sum(len(item.fair_value_gaps) for item in liquidity.analyses)
+            break_count = sum(len(item.structure_breaks) for item in liquidity.analyses)
+            block_count = sum(len(item.order_block_candidates) for item in liquidity.analyses)
+            intelligence_summary += (
+                f" Liquidity price-action evidence: {level_count} candidate level(s), "
+                f"{sweep_count} sweep event(s), {gap_count} FVG(s), {break_count} "
+                f"BOS/CHoCH event(s), and {block_count} order-block candidate(s); "
+                f"alignment={liquidity.alignment.state.value}. These are deterministic OHLCV "
+                "patterns, not observed institutional orders, intent, positioning, or a trade signal."
+            )
+        risk_strategy = context.risk_strategy_intelligence
+        if risk_strategy is not None:
+            scenario_states = ", ".join(
+                f"{item.direction.value}={item.status.value}/quality-{item.quality.score:.1f}"
+                for item in risk_strategy.scenarios
+            )
+            intelligence_summary += (
+                f" Risk/strategy research: status={risk_strategy.status.value}; "
+                f"volatility={risk_strategy.volatility.regime.value}; scenarios: {scenario_states}. "
+                "Scenario quality is an evidence-completeness score, not a probability, recommendation, "
+                "approval, or execution instruction."
+            )
+        preparation = (
+            f"Research preparation for {context.symbol}"
+            + (f" on {research.timeframe}" if research and research.timeframe else "")
+            + "."
+        )
+
+        technical = context.technical_analysis
+        if technical is not None and technical.analyses:
+            calculated = "; ".join(
+                f"{item.timeframe} trend={item.trend_direction.value}, "
+                f"indicators={sum(feature.status is FeatureStatus.AVAILABLE for feature in item.indicators)}/"
+                f"{len(item.indicators)}, structure={','.join(item.structure_observations) or 'unconfirmed'}"
+                for item in technical.analyses
+            )
+            missing = sum(
+                feature.status is not FeatureStatus.AVAILABLE
+                for item in technical.analyses
+                for feature in item.indicators
+            )
+            directional = {
+                item.trend_direction
+                for item in technical.analyses
+                if item.trend_direction
+                in {TrendDirection.BULLISH, TrendDirection.BEARISH, TrendDirection.MIXED}
+            }
+            conflict = " Conflicting timeframe classifications are present." if len(directional) > 1 else ""
+            final_response = (
+                f"{preparation} Calculated observations: {calculated}. "
+                "Interpretation: these deterministic rules describe trend and mathematical price "
+                f"structure; they are not a trading signal. Missing evidence: {missing} configured "
+                f"indicator value(s) remain unavailable.{conflict} "
+                "Current quote and positioning evidence remain separate and are not inferred."
+                f"{intelligence_summary}"
+            )
+        else:
+            final_response = (
+                f"{preparation} Deterministic research frameworks: {result_digest} "
+                "Validated technical calculations are unavailable because no suitable historical "
+                "series was assigned. Other missing evidence remains unavailable."
+                f"{intelligence_summary}"
+            )
+
+        agreement_agent_ids = list(coordination.agreement_agent_ids) if coordination else []
+        disagreement_agent_ids = (
+            list(coordination.disagreement_agent_ids) if coordination else []
+        )
+        missing_agent_ids = list(coordination.missing_agent_ids) if coordination else []
+        evidence_references = list(
+            {
+                (reference.source_id, reference.event_id): reference
+                for result in completed_results
+                for reference in result.evidence_references
+            }.values()
+        )
+        conditional_scenarios: list[str] = []
+        if risk_strategy is not None:
+            conditional_scenarios.extend(
+                f"{item.direction.value.title()} scenario: {item.status.value}; "
+                f"entry={item.entry_zone.reference_price if item.entry_zone is not None else 'unavailable'}, "
+                f"invalidation={item.stop_loss_candidate if item.stop_loss_candidate is not None else 'unavailable'}, "
+                f"risk/reward={item.risk_reward.ratio if item.risk_reward.ratio is not None else 'unavailable'}. "
+                "Research only; not a trade instruction."
+                for item in risk_strategy.scenarios
+            )
+        if specialist_synthesis is not None:
+            if not evidence_references:
+                evidence_references = [
+                    AgentEvidenceLink(
+                        event_id=item.event_id,
+                        source_id=item.source_id,
+                        domain=item.domain.value,
+                        observed_at=item.timestamp,
+                        symbol=item.symbol,
+                    )
+                    for item in specialist_synthesis.supporting_evidence
+                ]
+            if specialist_synthesis.consensus is SpecialistConsensus.AGREEMENT:
+                stances = {
+                    item.stance
+                    for item in specialist_synthesis.specialist_analyses
+                    if item.stance in {SpecialistStance.BULLISH, SpecialistStance.BEARISH}
+                }
+                if stances == {SpecialistStance.BULLISH}:
+                    conditional_scenarios.append(
+                        "Bullish research scenario is conditional on the cited evidence remaining "
+                        "valid; it is not a trade instruction."
+                    )
+                elif stances == {SpecialistStance.BEARISH}:
+                    conditional_scenarios.append(
+                        "Bearish research scenario is conditional on the cited evidence remaining "
+                        "valid; it is not a trade instruction."
+                    )
+        if disagreement_agent_ids:
+            final_response += (
+                " Specialist disagreement remains unresolved between: "
+                + ", ".join(disagreement_agent_ids)
+                + ". No artificial consensus was applied."
+            )
+        if missing_agent_ids:
+            final_response += (
+                " Missing or unavailable specialists: "
+                + ", ".join(missing_agent_ids)
+                + "."
+            )
 
         return Synthesis(
             status="completed",
             agents_consulted=consulted,
             summary=f"F.R.I.D.A.Y. — The Master routed {context.symbol} to {agent_names}.",
-            final_response=(
-                f"Deterministic mock synthesis for {context.symbol}: {result_digest} "
-                "Treat these outputs as a research checklist only. Confirm all conclusions with verified "
-                "market, news, and portfolio data before making any decision."
-            ),
+            final_response=final_response,
             caveat=(
-                "No live data, AI model, broker, MT5 connection, trading signal, order placement, "
-                "or execution capability was used."
+                "Deterministic calculations only; no AI model, broker, MT5 connection, order "
+                "placement, production authorization, or execution capability was used."
             ),
+            agreement_agent_ids=agreement_agent_ids,
+            disagreement_agent_ids=disagreement_agent_ids,
+            missing_agent_ids=missing_agent_ids,
+            evidence_references=evidence_references,
+            conditional_scenarios=conditional_scenarios,
         )
 
     def synthesize_specialist_analyses(

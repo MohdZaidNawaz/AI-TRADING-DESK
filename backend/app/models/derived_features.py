@@ -24,6 +24,12 @@ class FeatureType(str, Enum):
     SIMPLE_RETURN = "simple_return"
     LOG_RETURN = "log_return"
     SMA = "sma"
+    EMA = "ema"
+    RSI = "rsi"
+    MACD_LINE = "macd_line"
+    MACD_SIGNAL = "macd_signal"
+    MACD_HISTOGRAM = "macd_histogram"
+    ATR = "atr"
     ROC = "roc"
     ROLLING_STD = "rolling_std"
 
@@ -46,6 +52,7 @@ class FeatureQualityFlag(str, Enum):
 class FeatureValueUnit(str, Enum):
     PRICE = "price"
     RATIO = "ratio"
+    INDEX = "index"
 
 
 class FeatureParameter(DerivedFeatureModel):

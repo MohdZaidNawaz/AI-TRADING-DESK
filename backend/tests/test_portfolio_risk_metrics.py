@@ -264,5 +264,5 @@ def test_routing_sentinel_artifacts_master_pilot_and_traceability() -> None:
     assert artifacts["pilot_execution"].operational_state is SpecialistOperationalState.DISABLED_NO_EXECUTION
     assert artifacts["ledger_the_book"].portfolio_risk_metric_observations == ()
     assert any(item.event_id == evidence.portfolio_risk_metric_snapshots[0].metrics_snapshot_id for item in build_evidence_bundle(evidence).references)
-    assert set(run.analysis.model_dump()) == {"analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis"}
+    assert set(run.analysis.model_dump()) == {"analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis", "coordination"}
     assert not any(hasattr(metric, name) for metric in evidence.portfolio_risk_metric_snapshots[0].metrics for name in ("direction", "entry", "stop", "target", "sizing"))

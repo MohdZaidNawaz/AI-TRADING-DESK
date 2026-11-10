@@ -50,7 +50,7 @@ function Header({ connection, readiness }: HeaderProps) {
 
       <div className="header-center" aria-label="Desk capability summary">
         <span><b>9</b> SPECIALISTS</span><em>//</em>
-        <span><b>MOCK</b> MARKETS</span><em>//</em>
+        <span><b>NO</b> LIVE PRICE FEED</span><em>//</em>
         <span><b>DETERMINISTIC</b> ANALYSIS</span><em>//</em>
         <span><b>NO</b> EXECUTION</span>
       </div>

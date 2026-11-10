@@ -7,6 +7,7 @@ from decimal import Decimal
 from enum import Enum
 from hashlib import sha256
 import json
+from typing import Literal
 
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
@@ -63,6 +64,8 @@ class EconomicEventSource(EconomicEventModel):
     display_name: str = Field(min_length=1, max_length=120)
     transport: SourceTransport
     domain: DataDomain
+    origin_id: str | None = Field(default=None, max_length=80)
+    origin_name: str | None = Field(default=None, max_length=120)
 
     @field_validator("source_id", "display_name", mode="before")
     @classmethod
@@ -72,6 +75,13 @@ class EconomicEventSource(EconomicEventModel):
             if not normalized:
                 raise ValueError("source identity values cannot be blank")
             return normalized
+        return value
+
+    @field_validator("origin_id", "origin_name", mode="before")
+    @classmethod
+    def normalize_optional_identity(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
         return value
 
     @model_validator(mode="after")
@@ -96,6 +106,37 @@ class EconomicValue(EconomicEventModel):
         return value
 
 
+class EconomicValueProvenance(EconomicEventModel):
+    """Field-level lineage for official, consensus, and commercial values."""
+
+    retrieval_provider_id: str = Field(min_length=1, max_length=80)
+    retrieval_provider_name: str = Field(min_length=1, max_length=120)
+    original_publisher_id: str | None = Field(default=None, max_length=80)
+    original_publisher_name: str | None = Field(default=None, max_length=120)
+    role: Literal["official", "consensus", "commercial_forecast", "provider_previous"]
+    retrieved_at: datetime
+
+    @field_validator(
+        "retrieval_provider_id",
+        "retrieval_provider_name",
+        "original_publisher_id",
+        "original_publisher_name",
+        mode="before",
+    )
+    @classmethod
+    def normalize_identity(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def normalize_retrieved_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("economic value provenance requires a timezone")
+        return value.astimezone(UTC)
+
+
 class NormalizedEconomicEvent(EconomicEventModel):
     """Connector-to-ingestion boundary for one economic-event lifecycle version.
 
@@ -116,9 +157,13 @@ class NormalizedEconomicEvent(EconomicEventModel):
     release_status: EconomicReleaseStatus
     expected_impact: EconomicImpact = EconomicImpact.UNKNOWN
     previous: EconomicValue | None = None
+    previous_provenance: EconomicValueProvenance | None = None
     revised_previous: EconomicValue | None = None
+    revised_previous_provenance: EconomicValueProvenance | None = None
     forecast: EconomicValue | None = None
+    forecast_provenance: EconomicValueProvenance | None = None
     actual: EconomicValue | None = None
+    actual_provenance: EconomicValueProvenance | None = None
     release_version: int = Field(ge=1)
     revision_of_event_id: str | None = Field(default=None, max_length=160)
     received_at: datetime
@@ -201,6 +246,20 @@ class NormalizedEconomicEvent(EconomicEventModel):
                 raise ValueError("revised events require revision_of_event_id")
         elif self.revision_of_event_id is not None:
             raise ValueError("revision_of_event_id is reserved for revised events")
+        value_provenance = (
+            (self.previous, self.previous_provenance, "previous"),
+            (self.revised_previous, self.revised_previous_provenance, "revised_previous"),
+            (self.forecast, self.forecast_provenance, "forecast"),
+            (self.actual, self.actual_provenance, "actual"),
+        )
+        for value, provenance, label in value_provenance:
+            if provenance is not None and value is None:
+                raise ValueError(f"{label} provenance requires a {label} value")
+        if (
+            self.forecast_provenance is not None
+            and self.forecast_provenance.role not in {"consensus", "commercial_forecast"}
+        ):
+            raise ValueError("forecast provenance must identify consensus or commercial forecast")
         return self
 
     @computed_field(return_type=str)
@@ -213,6 +272,8 @@ class NormalizedEconomicEvent(EconomicEventModel):
                 "display_name": self.source.display_name,
                 "transport": self.source.transport.value,
                 "domain": self.source.domain.value,
+                "origin_id": self.source.origin_id,
+                "origin_name": self.source.origin_name,
             },
             "occurrence_id": self.occurrence_id,
             "event_name": self.event_name,
@@ -226,9 +287,15 @@ class NormalizedEconomicEvent(EconomicEventModel):
             "release_status": self.release_status.value,
             "expected_impact": self.expected_impact.value,
             "previous": _canonical_value(self.previous),
+            "previous_provenance": _canonical_provenance(self.previous_provenance),
             "revised_previous": _canonical_value(self.revised_previous),
+            "revised_previous_provenance": _canonical_provenance(
+                self.revised_previous_provenance
+            ),
             "forecast": _canonical_value(self.forecast),
+            "forecast_provenance": _canonical_provenance(self.forecast_provenance),
             "actual": _canonical_value(self.actual),
+            "actual_provenance": _canonical_provenance(self.actual_provenance),
             "release_version": self.release_version,
             "revision_of_event_id": self.revision_of_event_id,
         }
@@ -257,6 +324,21 @@ def _canonical_value(value: EconomicValue | None) -> dict[str, str] | None:
         "value": normalized,
         "unit": value.unit.value,
         "scale": value.scale.value,
+    }
+
+
+def _canonical_provenance(
+    value: EconomicValueProvenance | None,
+) -> dict[str, str | None] | None:
+    if value is None:
+        return None
+    return {
+        "retrieval_provider_id": value.retrieval_provider_id,
+        "retrieval_provider_name": value.retrieval_provider_name,
+        "original_publisher_id": value.original_publisher_id,
+        "original_publisher_name": value.original_publisher_name,
+        "role": value.role,
+        "retrieved_at": value.retrieved_at.isoformat(),
     }
 
 

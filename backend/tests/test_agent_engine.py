@@ -130,7 +130,9 @@ def test_generic_analysis_routes_to_full_desk() -> None:
     assert len(payload["routing"]["selected_agents"]) == 9
     assert len(payload["agent_results"]) == 9
     assert all(result["status"] == "completed" for result in payload["agent_results"])
-    assert "No live data" in payload["synthesis"]["caveat"]
+    assert "Deterministic calculations only" in payload["synthesis"]["caveat"]
+    assert "no AI model" in payload["synthesis"]["caveat"]
+    assert "technical_analysis" not in payload
 
 
 def test_targeted_query_routes_specialists_and_marks_others_skipped() -> None:
@@ -189,7 +191,23 @@ def test_same_request_has_deterministic_response() -> None:
     first = post_json("/api/analyze", request).json()
     second = post_json("/api/analyze", request).json()
 
-    assert first == second
+    def without_runtime_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
+        comparable = dict(payload)
+        comparable.pop("coordination", None)
+        comparable["agent_results"] = [
+            {
+                key: value
+                for key, value in result.items()
+                if key not in {"started_at", "completed_at"}
+            }
+            for result in comparable["agent_results"]
+        ]
+        return comparable
+
+    assert without_runtime_telemetry(first) == without_runtime_telemetry(second)
+    assert [item["agent_id"] for item in first["coordination"]["executions"]] == [
+        item["agent_id"] for item in second["coordination"]["executions"]
+    ]
 
 
 def test_invalid_analysis_request_is_rejected() -> None:

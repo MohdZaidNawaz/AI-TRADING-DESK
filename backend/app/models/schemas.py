@@ -1,8 +1,23 @@
 import math
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models.research_requests import ResearchRequestContext
+from app.models.agent_coordination import (
+    AgentCoordinationReport,
+    AgentEvidenceLink,
+    AgentExecutionState,
+    AgentOutputKind,
+)
+
+if TYPE_CHECKING:
+    from app.models.liquidity_intelligence import LiquidityIntelligenceReport
+    from app.models.macro_intelligence import MacroIntelligenceReport
+    from app.models.news_intelligence import NewsEconomicIntelligenceReport
+    from app.models.risk_strategy_intelligence import RiskStrategyIntelligenceReport
+    from app.models.technical_analysis import TechnicalAnalysisReport
 
 
 class APIModel(BaseModel):
@@ -122,6 +137,7 @@ class AnalyzeRequest(APIModel):
 class RoutingDecision(APIModel):
     selected_agents: list[str]
     reason: str
+    research_context: ResearchRequestContext | None = None
 
 
 class AgentAnalysis(APIModel):
@@ -132,6 +148,13 @@ class AgentAnalysis(APIModel):
     findings: list[str]
     confidence: float = Field(ge=0.0, le=1.0)
     limitations: list[str]
+    execution_state: AgentExecutionState | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    evidence_references: list[AgentEvidenceLink] = Field(default_factory=list)
+    calculation_methods: list[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
+    output_kinds: list[AgentOutputKind] = Field(default_factory=list)
 
 
 class Synthesis(APIModel):
@@ -140,6 +163,11 @@ class Synthesis(APIModel):
     summary: str
     final_response: str
     caveat: str
+    agreement_agent_ids: list[str] = Field(default_factory=list)
+    disagreement_agent_ids: list[str] = Field(default_factory=list)
+    missing_agent_ids: list[str] = Field(default_factory=list)
+    evidence_references: list[AgentEvidenceLink] = Field(default_factory=list)
+    conditional_scenarios: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(APIModel):
@@ -151,6 +179,27 @@ class AnalyzeResponse(APIModel):
     routing: RoutingDecision
     agent_results: list[AgentAnalysis]
     synthesis: Synthesis
+    coordination: AgentCoordinationReport | None = None
+    technical_analysis: "TechnicalAnalysisReport | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    news_intelligence: "NewsEconomicIntelligenceReport | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    macro_intelligence: "MacroIntelligenceReport | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    liquidity_intelligence: "LiquidityIntelligenceReport | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    risk_strategy_intelligence: "RiskStrategyIntelligenceReport | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class WebhookAcceptedResponse(APIModel):
