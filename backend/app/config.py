@@ -7,6 +7,15 @@ from dotenv import dotenv_values
 
 TWELVE_DATA_API_KEY_ENV = "TWELVE_DATA_API_KEY"
 ALPHA_VANTAGE_API_KEY_ENV = "ALPHA_VANTAGE_API_KEY"
+FRED_API_KEY_ENV = "FRED_API_KEY"
+BLS_API_KEY_ENV = "BLS_API_KEY"
+BEA_API_USER_ID_ENV = "BEA_API_USER_ID"
+TRADING_ECONOMICS_API_KEY_ENV = "TRADING_ECONOMICS_API_KEY"
+TRADING_ECONOMICS_COMMERCIAL_AUTHORIZED_ENV = "TRADING_ECONOMICS_COMMERCIAL_AUTHORIZED"
+TRADING_ECONOMICS_REDISTRIBUTION_AUTHORIZED_ENV = (
+    "TRADING_ECONOMICS_REDISTRIBUTION_AUTHORIZED"
+)
+MACRO_ENABLED_PROVIDERS_ENV = "FRIDAY_MACRO_ENABLED_PROVIDERS"
 MT5_LOGIN_ENV = "MT5_LOGIN"
 MT5_PASSWORD_ENV = "MT5_PASSWORD"
 MT5_SERVER_ENV = "MT5_SERVER"
@@ -58,6 +67,57 @@ def get_alpha_vantage_api_key(
     except OSError:
         return None
     return _non_blank(file_value)
+
+
+def get_fred_api_key(*, env_file: Path | None = None) -> str | None:
+    return _get_optional_secret(FRED_API_KEY_ENV, env_file=env_file)
+
+
+def get_bls_api_key(*, env_file: Path | None = None) -> str | None:
+    return _get_optional_secret(BLS_API_KEY_ENV, env_file=env_file)
+
+
+def get_bea_api_user_id(*, env_file: Path | None = None) -> str | None:
+    return _get_optional_secret(BEA_API_USER_ID_ENV, env_file=env_file)
+
+
+def get_trading_economics_api_key(*, env_file: Path | None = None) -> str | None:
+    return _get_optional_secret(TRADING_ECONOMICS_API_KEY_ENV, env_file=env_file)
+
+
+def get_macro_enabled_providers(*, env_file: Path | None = None) -> frozenset[str]:
+    raw = _get_optional_secret(MACRO_ENABLED_PROVIDERS_ENV, env_file=env_file)
+    if raw is None:
+        return frozenset()
+    return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def get_trading_economics_authorizations(
+    *, env_file: Path | None = None
+) -> tuple[bool, bool]:
+    commercial = _get_optional_secret(
+        TRADING_ECONOMICS_COMMERCIAL_AUTHORIZED_ENV,
+        env_file=env_file,
+    )
+    redistribution = _get_optional_secret(
+        TRADING_ECONOMICS_REDISTRIBUTION_AUTHORIZED_ENV,
+        env_file=env_file,
+    )
+    return _strict_enabled(commercial), _strict_enabled(redistribution)
+
+
+def _get_optional_secret(name: str, *, env_file: Path | None = None) -> str | None:
+    process_value = _non_blank(os.getenv(name))
+    if process_value is not None:
+        return process_value
+    file_path = env_file or BACKEND_ENV_FILE
+    if not file_path.is_file():
+        return None
+    return _non_blank(dotenv_values(file_path).get(name))
+
+
+def _strict_enabled(value: str | None) -> bool:
+    return value is not None and value.strip().casefold() == "true"
 
 
 def get_mt5_settings(

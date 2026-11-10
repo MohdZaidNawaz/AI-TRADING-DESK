@@ -21,6 +21,113 @@ from app.models.shared_authority import (
 
 
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+HISTORICAL_V1_CHECKSUM = "05087daba15f6689cf92d668a9820bf8533d2f3d7fa77dfc3d31db5050f407e6"
+HISTORICAL_V1_SCHEMA = """
+CREATE TABLE shared_authority_schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE shared_authority_schema_migrations (
+    version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+    checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+);
+CREATE TABLE shared_authority_cutover_state (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    state TEXT NOT NULL CHECK (state = 'bootstrap_non_authoritative'),
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE shared_authority_entities (
+    entity_id TEXT PRIMARY KEY,
+    entity_kind TEXT NOT NULL CHECK (entity_kind IN (
+        'schema_bootstrap', 'sentinel_approval', 'demo_authorization',
+        'execution_reservation'
+    )),
+    status TEXT NOT NULL,
+    lifecycle_version INTEGER NOT NULL CHECK (lifecycle_version >= 1),
+    semantic_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE shared_sentinel_approvals (
+    entity_id TEXT PRIMARY KEY REFERENCES shared_authority_entities(entity_id) ON DELETE RESTRICT,
+    approval_id TEXT NOT NULL UNIQUE, decision_id TEXT NOT NULL UNIQUE,
+    proposal_id TEXT NOT NULL, proposal_fingerprint TEXT NOT NULL,
+    analysis_id TEXT NOT NULL, evidence_fingerprint TEXT NOT NULL,
+    policy_id TEXT NOT NULL, policy_fingerprint TEXT NOT NULL,
+    assessment_id TEXT NOT NULL, assessment_fingerprint TEXT NOT NULL,
+    account_id TEXT, expires_at TEXT NOT NULL
+);
+CREATE TABLE shared_demo_authorizations (
+    entity_id TEXT PRIMARY KEY REFERENCES shared_authority_entities(entity_id) ON DELETE RESTRICT,
+    authorization_id TEXT NOT NULL UNIQUE,
+    approval_entity_id TEXT NOT NULL REFERENCES shared_sentinel_approvals(entity_id) ON DELETE RESTRICT,
+    execution_intent_id TEXT NOT NULL, execution_intent_fingerprint TEXT NOT NULL,
+    proposal_fingerprint TEXT NOT NULL, evidence_fingerprint TEXT NOT NULL,
+    policy_id TEXT NOT NULL, policy_fingerprint TEXT NOT NULL,
+    account_id TEXT NOT NULL, account_reference TEXT NOT NULL,
+    broker_server TEXT NOT NULL, canonical_symbol TEXT NOT NULL,
+    broker_symbol TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE shared_execution_reservations (
+    entity_id TEXT PRIMARY KEY REFERENCES shared_authority_entities(entity_id) ON DELETE RESTRICT,
+    reservation_id TEXT NOT NULL UNIQUE, execution_identity TEXT NOT NULL UNIQUE,
+    approval_entity_id TEXT NOT NULL REFERENCES shared_sentinel_approvals(entity_id) ON DELETE RESTRICT,
+    authorization_entity_id TEXT NOT NULL REFERENCES shared_demo_authorizations(entity_id) ON DELETE RESTRICT,
+    safety_evidence_fingerprint TEXT NOT NULL, proposal_fingerprint TEXT NOT NULL,
+    evidence_fingerprint TEXT NOT NULL, execution_intent_fingerprint TEXT NOT NULL,
+    account_id TEXT NOT NULL, account_reference TEXT NOT NULL,
+    broker_server TEXT NOT NULL, canonical_symbol TEXT NOT NULL,
+    broker_symbol TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE shared_authority_lifecycle_events (
+    event_id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL REFERENCES shared_authority_entities(entity_id) ON DELETE RESTRICT,
+    lifecycle_version INTEGER NOT NULL CHECK (lifecycle_version >= 1),
+    from_status TEXT, to_status TEXT NOT NULL, event_state TEXT NOT NULL,
+    reason_code TEXT NOT NULL, occurred_at TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    UNIQUE(entity_id, lifecycle_version)
+);
+CREATE TABLE shared_authority_outbox (
+    outbox_id TEXT PRIMARY KEY,
+    lifecycle_event_id TEXT NOT NULL UNIQUE REFERENCES shared_authority_lifecycle_events(event_id) ON DELETE RESTRICT,
+    entity_id TEXT NOT NULL REFERENCES shared_authority_entities(entity_id) ON DELETE RESTRICT,
+    lifecycle_version INTEGER NOT NULL CHECK (lifecycle_version >= 1),
+    event_state TEXT NOT NULL, reason_code TEXT NOT NULL,
+    occurred_at TEXT NOT NULL, fingerprint TEXT NOT NULL, delivered_at TEXT
+);
+CREATE INDEX shared_authority_lifecycle_entity_version_index
+    ON shared_authority_lifecycle_events (entity_id, lifecycle_version);
+CREATE INDEX shared_authority_outbox_pending_index
+    ON shared_authority_outbox (delivered_at, lifecycle_version, outbox_id);
+"""
+
+
+def _historical_v1_database(
+    path,
+    *,
+    schema: str = HISTORICAL_V1_SCHEMA,
+    checksum: str = HISTORICAL_V1_CHECKSUM,
+    migration_name: str = "shared_authority_bootstrap",
+    migration_state: str = "READY",
+) -> None:
+    connection = sqlite3.connect(path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.executescript(schema)
+        connection.execute(
+            "INSERT INTO shared_authority_schema_metadata (key, value) VALUES "
+            "('schema_version', '1'), ('migration_state', ?)",
+            (migration_state,),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_schema_migrations "
+            "(version, name, checksum, applied_at) VALUES (1, ?, ?, ?)",
+            (migration_name, checksum, NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_cutover_state (singleton_id, state, updated_at) "
+            "VALUES (1, 'bootstrap_non_authoritative', ?)",
+            (NOW.isoformat(),),
+        )
+    finally:
+        connection.close()
 
 
 def _event(*, offset: int = 0, state: str = "bootstrap_validated") -> SharedAuthorityBootstrapEvent:
@@ -114,6 +221,161 @@ def test_valid_v1_bootstrap_migrates_atomically_to_sentinel_approval_ownership(t
         assert verified.execute(
             "SELECT name FROM shared_authority_schema_migrations WHERE version = 2"
         ).fetchone() == ("sentinel_approval_ownership",)
+
+
+def test_exact_historical_v1_migrates_and_preserves_lifecycle_and_outbox(tmp_path) -> None:
+    path = tmp_path / "historical-v1.sqlite3"
+    _historical_v1_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO shared_authority_entities "
+            "(entity_id, entity_kind, status, lifecycle_version, semantic_fingerprint, created_at, updated_at) "
+            "VALUES (?, 'schema_bootstrap', 'bootstrap', 1, ?, ?, ?)",
+            ("historical-bootstrap", "a" * 64, NOW.isoformat(), NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_lifecycle_events "
+            "(event_id, entity_id, lifecycle_version, from_status, to_status, event_state, "
+            "reason_code, occurred_at, fingerprint) VALUES (?, ?, 1, 'bootstrap', 'bootstrap', ?, ?, ?, ?)",
+            (
+                "historical-event",
+                "historical-bootstrap",
+                "bootstrap_validated",
+                "SCHEMA_BOOTSTRAP_VALIDATED",
+                NOW.isoformat(),
+                "b" * 64,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO shared_authority_outbox "
+            "(outbox_id, lifecycle_event_id, entity_id, lifecycle_version, event_state, "
+            "reason_code, occurred_at, fingerprint, delivered_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, NULL)",
+            (
+                "historical-outbox",
+                "historical-event",
+                "historical-bootstrap",
+                "bootstrap_validated",
+                "SCHEMA_BOOTSTRAP_VALIDATED",
+                NOW.isoformat(),
+                "c" * 64,
+            ),
+        )
+
+    migrated = SharedAuthorityStore(path)
+    assert migrated.diagnostics().schema_version == "2"
+    assert migrated.mode is SharedAuthorityMode.SENTINEL_APPROVAL_OWNER
+    with sqlite3.connect(path) as verified:
+        verified.execute("PRAGMA foreign_keys = ON")
+        assert verified.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert verified.execute("PRAGMA foreign_key_check").fetchone() is None
+        assert verified.execute(
+            "SELECT checksum FROM shared_authority_schema_migrations WHERE version = 1"
+        ).fetchone() == (HISTORICAL_V1_CHECKSUM,)
+        assert verified.execute(
+            "SELECT name FROM shared_authority_schema_migrations WHERE version = 2"
+        ).fetchone() == ("sentinel_approval_ownership",)
+        assert verified.execute(
+            "SELECT event_id FROM shared_authority_lifecycle_events WHERE event_id = 'historical-event'"
+        ).fetchone() == ("historical-event",)
+        assert verified.execute(
+            "SELECT outbox_id FROM shared_authority_outbox WHERE outbox_id = 'historical-outbox'"
+        ).fetchone() == ("historical-outbox",)
+
+    reopened = SharedAuthorityStore(path)
+    assert reopened.diagnostics() == migrated.diagnostics()
+
+
+def test_historical_v1_migration_commit_failure_rolls_back_exactly(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "historical-v1-failed.sqlite3"
+    _historical_v1_database(path)
+
+    def fail_commit(_connection) -> None:
+        raise sqlite3.OperationalError("injected historical migration commit failure")
+
+    monkeypatch.setattr(SharedAuthorityStore, "_commit", staticmethod(fail_commit))
+    with pytest.raises(SharedAuthorityUnavailable):
+        SharedAuthorityStore(path)
+
+    with sqlite3.connect(path) as verified:
+        assert dict(verified.execute(
+            "SELECT key, value FROM shared_authority_schema_metadata"
+        ).fetchall()) == {"schema_version": "1", "migration_state": "READY"}
+        assert verified.execute(
+            "SELECT name, checksum FROM shared_authority_schema_migrations ORDER BY version"
+        ).fetchall() == [("shared_authority_bootstrap", HISTORICAL_V1_CHECKSUM)]
+        assert verified.execute(
+            "SELECT state FROM shared_authority_cutover_state WHERE singleton_id = 1"
+        ).fetchone() == ("bootstrap_non_authoritative",)
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    (
+        ({"checksum": "0" * 64}, "migration history"),
+        ({"migration_name": "unexpected_bootstrap"}, "migration history"),
+        ({"migration_state": "MIGRATING"}, "migration is incomplete"),
+        (
+            {
+                "schema": HISTORICAL_V1_SCHEMA.replace(
+                    "state = 'bootstrap_non_authoritative'",
+                    "state IN ('bootstrap_non_authoritative')",
+                )
+            },
+            "schema structure is incompatible",
+        ),
+    ),
+)
+def test_unknown_or_mismatched_historical_v1_variants_fail_closed(
+    tmp_path, changes: dict[str, str], match: str
+) -> None:
+    path = tmp_path / "invalid-historical-v1.sqlite3"
+    _historical_v1_database(path, **changes)
+    with pytest.raises(SharedAuthorityUnavailable, match=match):
+        SharedAuthorityStore(path)
+
+
+def test_historical_v1_foreign_key_violation_fails_closed(tmp_path) -> None:
+    path = tmp_path / "historical-v1-invalid-foreign-key.sqlite3"
+    _historical_v1_database(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "INSERT INTO shared_authority_lifecycle_events "
+            "(event_id, entity_id, lifecycle_version, from_status, to_status, event_state, "
+            "reason_code, occurred_at, fingerprint) VALUES "
+            "('orphan', 'missing', 1, NULL, 'bootstrap', 'invalid', 'INVALID', ?, ?)",
+            (NOW.isoformat(), "d" * 64),
+        )
+
+    with pytest.raises(SharedAuthorityUnavailable, match="foreign-key integrity"):
+        SharedAuthorityStore(path)
+
+
+def test_historical_v1_failed_integrity_check_fails_closed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.execution.shared_authority_store as module
+
+    path = tmp_path / "historical-v1-invalid-integrity.sqlite3"
+    _historical_v1_database(path)
+    real_connect = sqlite3.connect
+
+    class IntegrityFailureConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):  # type: ignore[no-untyped-def]
+            if sql.strip().upper() == "PRAGMA INTEGRITY_CHECK":
+                return super().execute("SELECT 'injected integrity failure'")
+            return super().execute(sql, parameters)
+
+    def connect_with_integrity_failure(database, *args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["factory"] = IntegrityFailureConnection
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(module.sqlite3, "connect", connect_with_integrity_failure)
+    with pytest.raises(SharedAuthorityUnavailable, match="integrity check failed"):
+        SharedAuthorityStore(path)
 
 
 def test_v1_to_v2_migration_commit_failure_leaves_v1_unmodified(

@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -41,7 +42,8 @@ _PROVIDER_DIAGNOSTIC_FIELDS = ("Error Message", "message", "Note", "Information"
 _PROVIDER_DIAGNOSTIC_MAX_LENGTH = 500
 _PROVIDER_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SENSITIVE_PARAMETER_PATTERN = re.compile(
-    r"\b(api_?key|token|secret)\s*[:=]\s*[^\s&,;]+",
+    r"\b(api_?key|token|secret|authorization|password|credential)"
+    r"\s*[:=]\s*(?:bearer\s+)?[^\s&,;]+",
     re.IGNORECASE,
 )
 _SENSITIVE_FIELD_NAMES = {
@@ -51,15 +53,68 @@ _SENSITIVE_FIELD_NAMES = {
     "secret",
     "token",
 }
+_SAFE_REASON_CODE_PATTERN = re.compile(r"^[A-Z0-9_]{1,80}$")
+_AUTHENTICATION_DIAGNOSTIC_MARKERS = (
+    "invalid api key",
+    "api key is invalid",
+    "invalid credential",
+    "authentication failed",
+    "not authorized",
+    "unauthorized",
+)
+_INVALID_REQUEST_DIAGNOSTIC_MARKERS = (
+    "invalid api call",
+    "invalid request",
+    "invalid parameter",
+    "invalid news filter",
+    "news filters are invalid",
+    "missing required",
+)
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 
 class AlphaVantageError(RuntimeError):
     """Base error for Alpha Vantage news integration failures."""
 
+    default_category = "provider_error"
+    default_failure_stage = "unknown"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: "AlphaVantageErrorCategory | None" = None,
+        http_status_code: int | None = None,
+        provider_reason_code: str | None = None,
+        failure_stage: str | None = None,
+        request_sent: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category or AlphaVantageErrorCategory(self.default_category)
+        self.http_status_code = http_status_code
+        self.http_status_class = (
+            f"{http_status_code // 100}xx" if http_status_code is not None else None
+        )
+        self.provider_reason_code = _bounded_reason_code(provider_reason_code)
+        self.failure_stage = failure_stage or self.default_failure_stage
+        self.request_sent = request_sent
+
+
+class AlphaVantageErrorCategory(StrEnum):
+    NETWORK = "network"
+    AUTHENTICATION = "authentication"
+    INVALID_REQUEST = "invalid_request"
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    SERVER_ERROR = "server_error"
+    MALFORMED_RESPONSE = "malformed_response"
+    PROVIDER_ERROR = "provider_error"
+
 
 class AlphaVantageConfigurationError(AlphaVantageError):
     """Raised when Alpha Vantage is not configured safely."""
+
+    default_failure_stage = "configuration"
 
 
 class AlphaVantageProviderError(AlphaVantageError):
@@ -69,9 +124,44 @@ class AlphaVantageProviderError(AlphaVantageError):
 class AlphaVantageRateLimitError(AlphaVantageProviderError):
     """Raised when Alpha Vantage reports a request limit."""
 
+    default_category = "rate_limit"
+
+
+class AlphaVantageTimeoutError(AlphaVantageProviderError):
+    """Raised when the provider request exceeds its configured timeout."""
+
+    default_category = "timeout"
+
+
+class AlphaVantageNetworkError(AlphaVantageProviderError):
+    """Raised when DNS, connection, or transport failure prevents a response."""
+
+    default_category = "network"
+
+
+class AlphaVantageAuthenticationError(AlphaVantageProviderError):
+    """Raised when the provider rejects authentication."""
+
+    default_category = "authentication"
+
+
+class AlphaVantageInvalidRequestError(AlphaVantageProviderError):
+    """Raised when the provider rejects request parameters or semantics."""
+
+    default_category = "invalid_request"
+
+
+class AlphaVantageServerError(AlphaVantageProviderError):
+    """Raised for provider HTTP 5xx failures."""
+
+    default_category = "server_error"
+
 
 class AlphaVantagePayloadError(AlphaVantageError):
     """Raised when Alpha Vantage output cannot be normalized."""
+
+    default_category = "malformed_response"
+    default_failure_stage = "article_normalization"
 
 
 class _ApiKeyQueryTransport(httpx.AsyncBaseTransport):
@@ -175,42 +265,108 @@ class AlphaVantageNewsClient:
                 ),
             ) as client:
                 response = await client.get("/query", params=params)
-        except httpx.RequestError:
-            raise AlphaVantageProviderError(
-                "Alpha Vantage news request failed."
+        except httpx.TimeoutException as error:
+            raise AlphaVantageTimeoutError(
+                "Alpha Vantage news request timed out.",
+                provider_reason_code="REQUEST_TIMEOUT",
+                failure_stage="request",
+                request_sent=_request_sent_state(error),
+            ) from None
+        except httpx.RequestError as error:
+            raise AlphaVantageNetworkError(
+                "Alpha Vantage news network request failed.",
+                provider_reason_code=(
+                    "CONNECTION_FAILED"
+                    if isinstance(error, httpx.ConnectError)
+                    else "NETWORK_FAILURE"
+                ),
+                failure_stage="request",
+                request_sent=_request_sent_state(error),
             ) from None
 
         if response.status_code == 429:
             raise AlphaVantageRateLimitError(
-                "Alpha Vantage news request limit reached."
+                "Alpha Vantage news request limit reached.",
+                http_status_code=response.status_code,
+                provider_reason_code="HTTP_RATE_LIMIT",
+                failure_stage="http_response",
+                request_sent=True,
+            )
+        if response.status_code in {401, 403}:
+            raise AlphaVantageAuthenticationError(
+                "Alpha Vantage news authentication was rejected.",
+                http_status_code=response.status_code,
+                provider_reason_code="HTTP_AUTHENTICATION_REJECTED",
+                failure_stage="http_response",
+                request_sent=True,
+            )
+        if response.status_code in {400, 404, 405, 409, 422}:
+            raise AlphaVantageInvalidRequestError(
+                "Alpha Vantage rejected the news request.",
+                http_status_code=response.status_code,
+                provider_reason_code="HTTP_INVALID_REQUEST",
+                failure_stage="http_response",
+                request_sent=True,
+            )
+        if 500 <= response.status_code <= 599:
+            raise AlphaVantageServerError(
+                "Alpha Vantage news service failed.",
+                http_status_code=response.status_code,
+                provider_reason_code="HTTP_SERVER_ERROR",
+                failure_stage="http_response",
+                request_sent=True,
             )
         if not response.is_success:
             raise AlphaVantageProviderError(
-                "Alpha Vantage news request failed."
+                "Alpha Vantage news request failed.",
+                http_status_code=response.status_code,
+                provider_reason_code="HTTP_PROVIDER_ERROR",
+                failure_stage="http_response",
+                request_sent=True,
             )
 
         try:
             payload = response.json()
         except ValueError:
             raise AlphaVantagePayloadError(
-                "Alpha Vantage returned malformed news data."
+                "Alpha Vantage returned malformed news data.",
+                http_status_code=response.status_code,
+                provider_reason_code="INVALID_JSON",
+                failure_stage="response_decode",
+                request_sent=True,
             ) from None
 
         if not isinstance(payload, Mapping):
             raise AlphaVantagePayloadError(
-                "Alpha Vantage returned malformed news data."
+                "Alpha Vantage returned malformed news data.",
+                http_status_code=response.status_code,
+                provider_reason_code="INVALID_RESPONSE_ENVELOPE",
+                failure_stage="response_validation",
+                request_sent=True,
             )
 
-        _raise_for_provider_message(payload, forbidden_value=self._api_key)
+        _raise_for_provider_message(
+            payload,
+            forbidden_value=self._api_key,
+            http_status_code=response.status_code,
+        )
         sanitized_payload = _sanitize_value(payload, forbidden_value=self._api_key)
         feed = sanitized_payload.get("feed")
         if not isinstance(feed, list):
             raise AlphaVantagePayloadError(
-                "Alpha Vantage returned malformed news data."
+                "Alpha Vantage returned malformed news data.",
+                http_status_code=response.status_code,
+                provider_reason_code="MISSING_NEWS_FEED",
+                failure_stage="response_validation",
+                request_sent=True,
             )
         if not all(isinstance(article, Mapping) for article in feed):
             raise AlphaVantagePayloadError(
-                "Alpha Vantage returned malformed news data."
+                "Alpha Vantage returned malformed news data.",
+                http_status_code=response.status_code,
+                provider_reason_code="INVALID_NEWS_FEED",
+                failure_stage="response_validation",
+                request_sent=True,
             )
         return tuple(dict(article) for article in feed)
 
@@ -231,6 +387,9 @@ class AlphaVantageNewsConnector:
         )
 
         overall_sentiment = _normalize_overall_sentiment(article)
+        published_at = _normalize_published_timestamp(
+            article.get("time_published")
+        )
         try:
             return NormalizedNewsResearchEvent(
                 event_id=_event_id_from_url(publisher_url),
@@ -239,9 +398,8 @@ class AlphaVantageNewsConnector:
                 provider=_required_text(article.get("source"), "source"),
                 title=_required_text(article.get("title"), "title"),
                 url=publisher_url,
-                timestamp=_normalize_published_timestamp(
-                    article.get("time_published")
-                ),
+                timestamp=published_at,
+                published_at=published_at,
                 symbols=[item["symbol"] for item in symbol_sentiment],
                 topics=[item["topic"] for item in topic_relevance],
                 authors=_normalize_authors(article.get("authors")),
@@ -335,6 +493,7 @@ def _raise_for_provider_message(
     payload: Mapping[str, Any],
     *,
     forbidden_value: str,
+    http_status_code: int,
 ) -> None:
     provider_messages = [
         payload[field]
@@ -360,13 +519,52 @@ def _raise_for_provider_message(
             _provider_error_message(
                 "Alpha Vantage news request limit reached.",
                 diagnostic,
-            )
+            ),
+            http_status_code=http_status_code,
+            provider_reason_code="PROVIDER_RATE_LIMIT",
+            failure_stage="provider_message",
+            request_sent=True,
         )
-    raise AlphaVantageProviderError(
+    category, reason_code, error_type = _classify_provider_diagnostic(
+        provider_messages
+    )
+    raise error_type(
         _provider_error_message(
             "Alpha Vantage news request failed.",
             diagnostic,
+        ),
+        category=category,
+        http_status_code=http_status_code,
+        provider_reason_code=reason_code,
+        failure_stage="provider_message",
+        request_sent=True,
+    )
+
+
+def _classify_provider_diagnostic(
+    values: Sequence[Any],
+) -> tuple[
+    AlphaVantageErrorCategory,
+    str,
+    type[AlphaVantageProviderError],
+]:
+    normalized = " ".join(value.lower() for value in values if isinstance(value, str))
+    if any(marker in normalized for marker in _AUTHENTICATION_DIAGNOSTIC_MARKERS):
+        return (
+            AlphaVantageErrorCategory.AUTHENTICATION,
+            "PROVIDER_AUTHENTICATION_REJECTED",
+            AlphaVantageAuthenticationError,
         )
+    if any(marker in normalized for marker in _INVALID_REQUEST_DIAGNOSTIC_MARKERS):
+        return (
+            AlphaVantageErrorCategory.INVALID_REQUEST,
+            "PROVIDER_INVALID_REQUEST",
+            AlphaVantageInvalidRequestError,
+        )
+    return (
+        AlphaVantageErrorCategory.PROVIDER_ERROR,
+        "PROVIDER_MESSAGE_UNCLASSIFIED",
+        AlphaVantageProviderError,
     )
 
 
@@ -408,6 +606,23 @@ def _provider_error_message(fallback: str, diagnostic: str | None) -> str:
     if diagnostic is None:
         return fallback
     return f"{fallback} Provider diagnostic: {diagnostic}"
+
+
+def _bounded_reason_code(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if not _SAFE_REASON_CODE_PATTERN.fullmatch(normalized):
+        return "UNCLASSIFIED_PROVIDER_FAILURE"
+    return normalized
+
+
+def _request_sent_state(error: httpx.RequestError) -> bool | None:
+    if isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return False
+    if isinstance(error, (httpx.ReadError, httpx.ReadTimeout)):
+        return True
+    return None
 
 
 def _required_text(value: Any, field_name: str) -> str:

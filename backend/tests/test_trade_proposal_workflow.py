@@ -585,7 +585,14 @@ def test_internal_workflow_is_deterministic_and_public_analyze_shape_is_unchange
     second = core.run_trade_proposal_workflow(request)
     public_response = core.analyze(request)
 
-    assert first == second
+    first_payload = first.model_dump()
+    second_payload = second.model_dump()
+    for payload in (first_payload, second_payload):
+        payload["analysis"].pop("coordination", None)
+        for result in payload["analysis"]["agent_results"]:
+            result.pop("started_at", None)
+            result.pop("completed_at", None)
+    assert first_payload == second_payload
     assert first.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
     assert "proposal" not in public_response.model_dump()
     assert public_response.mode == "deterministic_mock"

@@ -9,6 +9,7 @@ from hmac import compare_digest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from pydantic import ValidationError
 
 from app.models.dependency_acceptance import (
     DependencyAcceptanceContext,
@@ -56,7 +57,7 @@ class OfflineIndependentEvidenceVerifier:
     def __init__(self, configuration: EvidenceTrustConfiguration | None = None) -> None:
         try:
             self._configuration = _canonical_configuration(configuration)
-        except Exception:
+        except (ValueError, ValidationError):
             self._configuration = None
         self._policy = build_evidence_verification_policy()
 
@@ -77,7 +78,7 @@ class OfflineIndependentEvidenceVerifier:
             )
         try:
             canonical_request = _canonical_request(request)
-        except Exception:
+        except (ValueError, ValidationError):
             return self._report(
                 request_fingerprint="0" * 64,
                 now=now,

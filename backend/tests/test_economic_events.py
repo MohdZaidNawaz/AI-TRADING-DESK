@@ -734,7 +734,7 @@ def test_specialist_artifacts_preserve_typed_values_lineage_and_safe_stances() -
     assert artifacts["pilot_execution"].economic_observations == ()
 
 
-def test_economic_events_do_not_satisfy_market_evidence_or_change_public_api_schema() -> None:
+def test_economic_events_do_not_satisfy_market_evidence_or_execution_requirements() -> None:
     store = EvidenceStore()
     store.ingest_economic_event(_scheduled())
     core = FridayCore(
@@ -758,7 +758,14 @@ def test_economic_events_do_not_satisfy_market_evidence_or_change_public_api_sch
         "routing",
         "agent_results",
         "synthesis",
+        "coordination",
+        "news_intelligence",
     }
+    assert response.news_intelligence is not None
+    assert response.news_intelligence.calendar_provider_status.value == "evidence_available"
+    assert response.news_intelligence.production_authorization_available is False
+    assert response.news_intelligence.submission_allowed is False
+    assert response.news_intelligence.execution_authority is False
     assert workflow.sentinel_decision.decision is SentinelDecisionStatus.INSUFFICIENT_DATA
     assert "market_evidence" in workflow.sentinel_decision.missing_requirements
     assert workflow.proposal.parameters.direction is None

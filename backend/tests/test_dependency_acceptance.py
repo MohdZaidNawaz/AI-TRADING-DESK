@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import app.services.dependency_acceptance as dependency_acceptance_service
 from app.models.dependency_acceptance import (
     ApprovalDecision,
     BrokerEvidenceField,
@@ -68,6 +69,25 @@ def _context(**changes) -> DependencyAcceptanceContext:
     }
     values.update(changes)
     return DependencyAcceptanceContext(**values)
+
+
+def test_unexpected_canonicalization_failure_is_not_hidden(monkeypatch) -> None:
+    evidence = _evidence(ExternalDependencyId.INDEPENDENT_TRUST_ROOT)
+
+    def unexpected_failure(_item):
+        raise RuntimeError("injected canonicalization fault")
+
+    monkeypatch.setattr(
+        dependency_acceptance_service,
+        "_canonical_evidence",
+        unexpected_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="injected canonicalization fault"):
+        OfflineDependencyAcceptanceEvaluator().evaluate(
+            context=_context(),
+            evidence=(evidence,),
+        )
 
 
 def _evidence(dependency_id: ExternalDependencyId, **changes) -> ExternalDependencyEvidenceEnvelope:

@@ -15,6 +15,7 @@ import pytest
 import app.services.independent_evidence_verification as verification_service
 from app.models.dependency_acceptance import (
     DependencyAcceptanceContext,
+    DependencyMaturity,
     EvidenceProvenance,
     EvidenceRevocationState,
     EvidenceVerificationResult,
@@ -41,7 +42,10 @@ from app.models.independent_evidence_verification import (
     canonical_dependency_evidence_payload,
 )
 from app.models.independent_trust_verification import ConfiguredEd25519TrustAnchor
-from app.services.dependency_acceptance import PHASE21_POLICY_VERSION
+from app.services.dependency_acceptance import (
+    PHASE21_POLICY_VERSION,
+    OfflineDependencyAcceptanceEvaluator,
+)
 from app.services.independent_evidence_verification import (
     OfflineIndependentEvidenceVerifier,
 )
@@ -218,6 +222,200 @@ def _assert_non_authorizing(report) -> None:
     assert report.submission_allowed is False
     assert report.execution_authority is False
     assert report.authorizes_execution is False
+
+
+def _assert_acceptance_non_authorizing(report) -> None:
+    assert report.production_authorization_available is False
+    assert report.submission_allowed is False
+    assert report.execution_authority is False
+    assert all(item.independently_verified is False for item in report.assessments)
+    assert all(item.operationally_accepted is False for item in report.assessments)
+    assert all(item.authorizes_execution is False for item in report.assessments)
+
+
+def test_unexpected_configuration_canonicalization_failure_is_not_hidden(
+    monkeypatch,
+) -> None:
+    _, public = _key_material()
+
+    def unexpected_failure(_configuration):
+        raise RuntimeError("injected configuration fault")
+
+    monkeypatch.setattr(
+        verification_service,
+        "_canonical_configuration",
+        unexpected_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="injected configuration fault"):
+        OfflineIndependentEvidenceVerifier(_configuration(public))
+
+
+def test_unexpected_request_canonicalization_failure_is_not_hidden(monkeypatch) -> None:
+    private, public = _key_material()
+    configuration = _configuration(public)
+    verifier = OfflineIndependentEvidenceVerifier(configuration)
+
+    def unexpected_failure(_request):
+        raise RuntimeError("injected request fault")
+
+    monkeypatch.setattr(
+        verification_service,
+        "_canonical_request",
+        unexpected_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="injected request fault"):
+        verifier.verify(
+            request=_request(_signed(private, configuration)),
+            evaluated_at=NOW,
+        )
+
+
+def test_phase21_and_phase22_share_canonical_evidence_and_remain_deterministic() -> None:
+    private, public = _key_material()
+    context = _context()
+    evidence = _evidence()
+    acceptance = OfflineDependencyAcceptanceEvaluator()
+    first_acceptance = acceptance.evaluate(context=context, evidence=(evidence,))
+    second_acceptance = acceptance.evaluate(context=context, evidence=(evidence,))
+
+    configuration = _configuration(public)
+    request = _request(_signed(private, configuration, evidence=evidence), context=context)
+    verifier = OfflineIndependentEvidenceVerifier(configuration)
+    first_verification = verifier.verify(request=request, evaluated_at=NOW)
+    second_verification = verifier.verify(request=request, evaluated_at=NOW)
+
+    assessment = next(
+        item
+        for item in first_acceptance.assessments
+        if item.dependency_id is evidence.dependency_id
+    )
+    assert first_acceptance == second_acceptance
+    assert first_verification == second_verification
+    assert assessment.maturity is DependencyMaturity.SYNTHETIC_TESTED
+    assert assessment.dependency_id is request.signed_evidence.evidence.dependency_id
+    assert request.signed_evidence.evidence.evidence_type == evidence.evidence_type
+    assert assessment.evidence_fingerprints == (evidence.envelope_fingerprint,)
+    assert first_verification.evidence_fingerprint == evidence.envelope_fingerprint
+    assert first_verification.binding_status is BindingVerificationStatus.VALID
+    assert first_verification.signature_status is SignatureVerificationStatus.VALID
+    _assert_acceptance_non_authorizing(first_acceptance)
+    _assert_non_authorizing(first_verification)
+
+
+def test_phase21_and_phase22_both_reject_malformed_nested_evidence() -> None:
+    private, public = _key_material()
+    context = _context()
+    evidence = _evidence()
+    bad_payload = evidence.payload.model_copy(update={"lineage_fingerprint": 123})
+    malformed = evidence.model_copy(
+        update={
+            "dependency_id": ExternalDependencyId.HUMAN_PRODUCTION_APPROVAL,
+            "payload": bad_payload,
+        }
+    )
+
+    evaluator = OfflineDependencyAcceptanceEvaluator()
+    acceptance = evaluator.evaluate(
+        context=context,
+        evidence=(evidence, malformed),
+    )
+    repeated_acceptance = evaluator.evaluate(
+        context=context,
+        evidence=(evidence, malformed),
+    )
+    configuration = _configuration(public)
+    signed = _signed(private, configuration, evidence=evidence).model_copy(
+        update={"evidence": malformed}
+    )
+    verifier = OfflineIndependentEvidenceVerifier(configuration)
+    request = _request(signed, context=context)
+    verification = verifier.verify(
+        request=request,
+        evaluated_at=NOW,
+    )
+    repeated_verification = verifier.verify(
+        request=request,
+        evaluated_at=NOW,
+    )
+
+    assert acceptance == repeated_acceptance
+    assert verification == repeated_verification
+    assert all(item.maturity is DependencyMaturity.INVALID for item in acceptance.assessments)
+    assert acceptance.blocker_codes == ("DEPENDENCY_EVIDENCE_MALFORMED",)
+    assert all(not item.evidence_fingerprints for item in acceptance.assessments)
+    assert verification.disposition is EvidenceVerificationDisposition.STRUCTURALLY_INVALID
+    assert verification.request_fingerprint == "0" * 64
+    assert EvidenceVerificationReason.EVIDENCE_STRUCTURE_INVALID in verification.reason_codes
+    _assert_acceptance_non_authorizing(acceptance)
+    _assert_non_authorizing(verification)
+
+
+def test_phase21_and_phase22_share_exact_freshness_cutoff() -> None:
+    private, public = _key_material()
+    issued_at = NOW - timedelta(seconds=86_400)
+    evidence = _evidence(
+        issued_at=issued_at,
+        verified_at=issued_at,
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    context = _context()
+    acceptance = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=context,
+        evidence=(evidence,),
+    )
+    configuration = _configuration(public)
+    verification = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence), context=context),
+        evaluated_at=NOW,
+    )
+
+    assessment = next(
+        item
+        for item in acceptance.assessments
+        if item.dependency_id is evidence.dependency_id
+    )
+    assert assessment.maturity is DependencyMaturity.SYNTHETIC_TESTED
+    assert "DEPENDENCY_EVIDENCE_STALE" not in assessment.reason_codes
+    assert verification.freshness_status is FreshnessVerificationStatus.FRESH
+    assert EvidenceVerificationReason.EVIDENCE_STALE not in verification.reason_codes
+    _assert_acceptance_non_authorizing(acceptance)
+    _assert_non_authorizing(verification)
+
+
+def test_phase21_and_phase22_preserve_intentional_binding_lifecycle_precedence() -> None:
+    private, public = _key_material()
+    evidence = _evidence(
+        subject_id="other.release",
+        revocation_state=EvidenceRevocationState.REVOKED,
+    )
+    context = _context()
+    acceptance = OfflineDependencyAcceptanceEvaluator().evaluate(
+        context=context,
+        evidence=(evidence,),
+    )
+    configuration = _configuration(public)
+    verification = OfflineIndependentEvidenceVerifier(configuration).verify(
+        request=_request(_signed(private, configuration, evidence=evidence), context=context),
+        evaluated_at=NOW,
+    )
+
+    assessment = next(
+        item
+        for item in acceptance.assessments
+        if item.dependency_id is evidence.dependency_id
+    )
+    assert assessment.maturity is DependencyMaturity.REVOKED
+    assert "DEPENDENCY_SUBJECT_MISMATCH" in assessment.reason_codes
+    assert "DEPENDENCY_IDENTITY_REVOKED" in assessment.reason_codes
+    assert verification.disposition is EvidenceVerificationDisposition.BINDING_INVALID
+    assert verification.binding_status is BindingVerificationStatus.INVALID
+    assert verification.lifecycle_status is LifecycleVerificationStatus.REVOKED
+    assert EvidenceVerificationReason.SUBJECT_BINDING_MISMATCH in verification.reason_codes
+    assert EvidenceVerificationReason.EVIDENCE_REVOKED in verification.reason_codes
+    _assert_acceptance_non_authorizing(acceptance)
+    _assert_non_authorizing(verification)
 
 
 def test_valid_synthetic_signature_is_verified_but_never_authoritative() -> None:

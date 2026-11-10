@@ -127,6 +127,7 @@ class NormalizedMarketBar(MarketSeriesModel):
     volume_kind: VolumeKind = VolumeKind.UNKNOWN
     state: MarketBarState
     received_at: datetime
+    source_timestamp: str | None = Field(default=None, min_length=1, max_length=80)
     revision: int | None = Field(default=None, ge=0)
 
     @field_validator("source", mode="before")
@@ -160,6 +161,16 @@ class NormalizedMarketBar(MarketSeriesModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("market-bar timestamps must include a timezone")
         return value.astimezone(UTC)
+
+    @field_validator("source_timestamp", mode="before")
+    @classmethod
+    def normalize_source_timestamp(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                raise ValueError("source_timestamp cannot be blank")
+            return normalized
+        return value
 
     @model_validator(mode="after")
     def validate_bar(self) -> "NormalizedMarketBar":

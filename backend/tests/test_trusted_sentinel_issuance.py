@@ -177,6 +177,7 @@ def test_fabricated_decision_has_no_public_issuance_path_and_is_not_registered(t
     assert "decision" not in inspect.signature(
         TrustedSentinelIssuanceService.evaluate_and_issue
     ).parameters
+    assert not hasattr(registry, "_record_approved_decision")
     with pytest.raises(ApprovalClaimError, match="unavailable"):
         registry.verify(proposal=proposal, decision=fabricated, now=risk_context.as_of)
 

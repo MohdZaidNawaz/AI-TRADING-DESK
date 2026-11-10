@@ -143,10 +143,16 @@ class NormalizedNewsResearchEvent(APIModel):
     title: str = Field(min_length=1, max_length=500)
     url: AnyHttpUrl
     timestamp: datetime
+    published_at: datetime | None = None
+    seen_at: datetime | None = None
     symbols: list[str] = Field(default_factory=list, max_length=50)
     topics: list[str] = Field(default_factory=list, max_length=50)
     authors: list[str] = Field(default_factory=list, max_length=50)
     publisher_domain: str | None = Field(default=None, max_length=253)
+    language: str | None = Field(default=None, max_length=80)
+    source_country: str | None = Field(default=None, max_length=120)
+    search_query: str | None = Field(default=None, max_length=500)
+    search_category: str | None = Field(default=None, max_length=120)
     category: str | None = Field(default=None, max_length=120)
     image_url: AnyHttpUrl | None = None
     overall_sentiment: OverallSentiment | None = None
@@ -163,6 +169,10 @@ class NormalizedNewsResearchEvent(APIModel):
         "provider",
         "title",
         "publisher_domain",
+        "language",
+        "source_country",
+        "search_query",
+        "search_category",
         "category",
         "summary",
         "content",
@@ -215,9 +225,11 @@ class NormalizedNewsResearchEvent(APIModel):
             unique_values.setdefault(value.symbol, value)
         return list(unique_values.values())
 
-    @field_validator("timestamp", "received_at")
+    @field_validator("timestamp", "published_at", "seen_at", "received_at")
     @classmethod
-    def normalize_datetime(cls, value: datetime) -> datetime:
+    def normalize_datetime(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None:
             raise ValueError("timestamp values must include a timezone")
         return value.astimezone(UTC)
@@ -226,6 +238,4 @@ class NormalizedNewsResearchEvent(APIModel):
     def validate_news_contract(self) -> "NormalizedNewsResearchEvent":
         if self.source.domain is not DataDomain.FINANCIAL_NEWS:
             raise ValueError("news/research sources must use the financial_news domain")
-        if self.summary is None and self.content is None:
-            raise ValueError("a summary or content value is required")
         return self

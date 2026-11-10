@@ -25,6 +25,10 @@ from app.models.specialist_analysis import (
     SpecialistStance,
 )
 from app.models.schemas import AgentAnalysis
+from app.models.technical_analysis import (
+    TechnicalCalculationStatus,
+    TrendDirection,
+)
 
 
 def _market_context_facts(
@@ -52,8 +56,8 @@ def _news_context_facts(
     return tuple(
         SpecialistFactObservation(
             statement=(
-                f'Observed normalized news context "{evidence.title[:500]}" '
-                f"published at {evidence.published_at.isoformat()}."
+                f'Observed normalized news context "{evidence.title[:500]}" at '
+                f"{evidence.provenance.event_timestamp.isoformat()}."
             ),
             evidence_references=(agent.news_reference(evidence, symbol=context.symbol),),
         )
@@ -517,15 +521,75 @@ class AtlasMacroAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        macro_report = context.macro_intelligence
+        if macro_report is not None and macro_report.instrument_assessments:
+            assessment = macro_report.instrument_assessments[0]
+            calculated = [
+                f"{item.indicator_id}: {item.direction.value} "
+                f"({item.previous_period_end} to {item.current_period_end})."
+                for item in macro_report.indicator_changes
+                if item.status.value == "available" and item.direction is not None
+            ]
+            return self.result(
+                summary=(
+                    f"Reviewed {len(assessment.verified_facts)} validated cached macro fact(s), "
+                    f"{len(calculated)} period change(s), and "
+                    f"{len(assessment.conflicting_evidence_ids)} conflict reference(s) for "
+                    f"{context.symbol}; no provider request was made."
+                ),
+                findings=[
+                    *assessment.verified_facts[:8],
+                    *calculated[:6],
+                    *assessment.conditional_implications[:4],
+                    *self.evidence_findings(context),
+                ],
+                limitations=[
+                    *assessment.missing_inputs,
+                    *assessment.warnings,
+                    *assessment.limitations,
+                    *macro_report.warnings,
+                    "Observed macro facts do not establish price causation or direction.",
+                ],
+                confidence=assessment.confidence,
+            )
+        intelligence = context.news_intelligence
+        if intelligence is not None and intelligence.macro_findings:
+            findings = [
+                f"Verified: {item.verified_fact} Interpretation: {item.interpretation} "
+                f"Possible Gold implication: {item.possible_gold_implication}"
+                for item in intelligence.macro_findings[:6]
+            ]
+            return self.result(
+                summary=(
+                    f"Interpreted {len(intelligence.macro_findings)} evidence-linked macro finding(s) "
+                    f"for {context.symbol}; provider status={intelligence.news_retrieval.status.value}, "
+                    f"cache={intelligence.news_retrieval.cache_status.value}."
+                ),
+                findings=[*findings, *self.evidence_findings(context)],
+                limitations=[
+                    *intelligence.missing_information,
+                    *intelligence.warnings,
+                    "Interpretations are deterministic and do not establish price causation or direction.",
+                ],
+                confidence=0.66,
+            )
         return self.result(
-            summary=f"Prepared a mock macro framework for {context.symbol}.",
+            summary=(
+                f"No evidence-linked macro finding is available for {context.symbol}; "
+                f"provider status={intelligence.news_retrieval.status.value}, "
+                f"cache={intelligence.news_retrieval.cache_status.value}."
+                if intelligence is not None
+                else f"Prepared a mock macro framework for {context.symbol}."
+            ),
             findings=[
                 "Review rate, currency, liquidity, and risk-regime sensitivity.",
                 "Confirm whether the requested horizon is tactical or structural before weighting macro factors.",
                 *self.evidence_findings(context),
             ],
             limitations=[
-                "No live economic releases, central-bank data, rates, or cross-asset prices were used."
+                "No live economic releases, central-bank data, rates, or cross-asset prices were used.",
+                *(intelligence.missing_information if intelligence is not None else ()),
+                *(intelligence.warnings if intelligence is not None else ()),
             ],
             confidence=0.58,
         )
@@ -573,10 +637,80 @@ class CapitolSmartMoneyAgent(BaseAgent):
     name = "Capitol Smart Money"
     expertise = "Institutional positioning, capital flows, and participation context"
     routing_keywords = frozenset(
-        {"smart money", "institutional", "positioning", "flow", "capital", "commitment", "cot"}
+        {
+            "smart money",
+            "institutional",
+            "positioning",
+            "flow",
+            "capital",
+            "commitment",
+            "cot",
+            "liquidity",
+            "order block",
+            "fair value gap",
+            "fvg",
+            "bos",
+            "choch",
+            "market structure",
+            "strategy",
+            "scenario",
+            "entry",
+            "target",
+        }
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        liquidity = context.liquidity_intelligence
+        strategy = context.risk_strategy_intelligence
+        if liquidity is not None and liquidity.analyses:
+            levels = sum(len(item.liquidity_levels) for item in liquidity.analyses)
+            sweeps = sum(len(item.sweeps) for item in liquidity.analyses)
+            gaps = sum(len(item.fair_value_gaps) for item in liquidity.analyses)
+            breaks = sum(len(item.structure_breaks) for item in liquidity.analyses)
+            blocks = sum(len(item.order_block_candidates) for item in liquidity.analyses)
+            return self.result(
+                summary=(
+                    f"Calculated deterministic price-action liquidity intelligence for "
+                    f"{context.symbol} across {len(liquidity.analyses)} validated timeframe(s)."
+                ),
+                findings=[
+                    (
+                        f"{item.timeframe}: structure={item.structure_trend.value}; "
+                        f"levels={len(item.liquidity_levels)}, sweeps={len(item.sweeps)}, "
+                        f"FVGs={len(item.fair_value_gaps)}, breaks={len(item.structure_breaks)}, "
+                        f"order-block candidates={len(item.order_block_candidates)}; "
+                        f"freshness={item.freshness}; provider={item.provider_id}."
+                    )
+                    for item in liquidity.analyses
+                ]
+                + [
+                    f"Aggregate candidates: {levels} liquidity level(s), {sweeps} sweep(s), "
+                    f"{gaps} FVG(s), {breaks} BOS/CHoCH event(s), and {blocks} order-block candidate(s).",
+                    f"Multi-timeframe alignment: {liquidity.alignment.state.value}.",
+                    *(
+                        f"{item.direction.value} scenario={item.status.value}; "
+                        f"quality={item.quality.score:.1f}/100 ({item.quality.sufficiency.value}); "
+                        f"risk/reward={item.risk_reward.ratio if item.risk_reward.ratio is not None else 'unavailable'}."
+                        for item in (() if strategy is None else strategy.scenarios)
+                    ),
+                    *self.evidence_findings(context),
+                ],
+                limitations=[
+                    *(
+                        limitation
+                        for item in liquidity.analyses
+                        for limitation in item.limitations
+                    ),
+                    "Price-action candidates do not prove resting institutional orders, intent, or positioning.",
+                    "No automatic trade signal or execution instruction was produced.",
+                    *(() if strategy is None else strategy.limitations),
+                ],
+                confidence=(
+                    0.65
+                    if all(item.freshness == "fresh" for item in liquidity.analyses)
+                    else 0.4
+                ),
+            )
         has_positioning = bool(context.evidence.positioning_series)
         return self.result(
             summary=f"Prepared a mock institutional-participation framework for {context.symbol}.",
@@ -614,7 +748,11 @@ class CapitolSmartMoneyAgent(BaseAgent):
             stance=SpecialistStance.INSUFFICIENT_DATA,
             thesis=(
                 (
-                    "Reported positioning observations are retained as factual context only and do "
+                    "Deterministic OHLCV-derived structure and liquidity candidates are retained as "
+                    "price-action calculations only; they do not establish institutional orders, "
+                    "intent, or a directional conclusion."
+                    if context.liquidity_intelligence is not None
+                    else "Reported positioning observations are retained as factual context only and do "
                     "not establish institutional intent, net exposure, or a directional conclusion."
                     if context.evidence.positioning_series
                     else "No normalized positioning, participation, holdings, or capital-flow evidence is "
@@ -625,7 +763,10 @@ class CapitolSmartMoneyAgent(BaseAgent):
             interpretations=(
                 SpecialistInterpretation(
                     statement=(
-                        "Reported positioning values must not be converted into institutional intent, "
+                        "OHLCV-derived liquidity candidates must not be converted into observed order flow, "
+                        "institutional intent, probability, trade direction, or trade parameters."
+                        if context.liquidity_intelligence is not None
+                        else "Reported positioning values must not be converted into institutional intent, "
                         "net exposure, probability, trade direction, or trade parameters."
                         if context.evidence.positioning_series
                         else "Market and news context alone must not be treated as evidence of institutional "
@@ -662,15 +803,50 @@ class ScoutReconAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        intelligence = context.news_intelligence
+        if intelligence is not None and intelligence.relevant_news:
+            newly_retrieved = sum(
+                item.evidence_origin.value == "newly_retrieved"
+                for item in intelligence.relevant_news
+            )
+            cached = len(intelligence.relevant_news) - newly_retrieved
+            return self.result(
+                summary=(
+                    f"Reviewed {len(intelligence.relevant_news)} validated relevant news item(s) "
+                    f"for {context.symbol} ({newly_retrieved} newly retrieved, {cached} cached); "
+                    f"provider status={intelligence.news_retrieval.status.value}."
+                ),
+                findings=[
+                    f'{item.provider_name}: "{item.headline}" '
+                    f"({item.event_at.isoformat()}, {item.freshness.value}, "
+                    f"{item.evidence_origin.value}); "
+                    f"evidence={item.evidence_id}."
+                    for item in intelligence.relevant_news
+                ] + self.evidence_findings(context),
+                limitations=[
+                    *intelligence.missing_information,
+                    *intelligence.warnings,
+                    "Headline relevance does not prove that an article caused a price move.",
+                ],
+                confidence=0.68,
+            )
         return self.result(
-            summary=f"Outlined a mock reconnaissance sweep for {context.symbol}.",
+            summary=(
+                f"No validated relevant news item is available for {context.symbol}; "
+                f"provider status={intelligence.news_retrieval.status.value}, "
+                f"cache={intelligence.news_retrieval.cache_status.value}."
+                if intelligence is not None
+                else f"Outlined a mock reconnaissance sweep for {context.symbol}."
+            ),
             findings=[
                 "Check relative activity, cross-market confirmation, event context, and unusual behavior.",
                 "Escalate anomalies only after confirming them across independent, time-aligned data sources.",
                 *self.evidence_findings(context),
             ],
             limitations=[
-                "No scanner, news feed, social feed, order flow, watchlist, or market-wide data was accessed."
+                "No scanner, news feed, social feed, order flow, watchlist, or market-wide data was accessed.",
+                *(intelligence.missing_information if intelligence is not None else ()),
+                *(intelligence.warnings if intelligence is not None else ()),
             ],
             confidence=0.48,
         )
@@ -840,26 +1016,60 @@ class ChartistTechnicianAgent(BaseAgent):
     )
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
-        limitations = (
-            [
-                "Deterministic derived features remain factual observations; no technical signal, level, stance, or direction was inferred."
-            ]
-            if context.derived_features
-            else [
-                "Historical bars remain descriptive; no indicator, level, signal, or directional methodology was applied."
-            ]
-            if context.evidence.market_series
-            else ["No chart, candle, volume, indicator, or live price data was analyzed."]
+        report = context.technical_analysis
+        analyses = report.analyses if report is not None else ()
+        if not analyses:
+            return self.result(
+                summary=f"Technical analysis is unavailable for {context.symbol}.",
+                findings=[*self.evidence_findings(context)],
+                limitations=[
+                    "No validated historical OHLCV series was available for deterministic calculation."
+                ],
+                confidence=0.0,
+            )
+        findings: list[str] = []
+        limitations: list[str] = []
+        for analysis in analyses:
+            available = sum(
+                feature.status is FeatureStatus.AVAILABLE
+                for feature in analysis.indicators
+            )
+            findings.append(
+                f"{analysis.timeframe}: trend={analysis.trend_direction.value}; "
+                f"indicators={available}/{len(analysis.indicators)} available; "
+                f"completed candles={analysis.completed_candle_count}; "
+                f"provisional excluded={analysis.provisional_candle_count}."
+            )
+            if analysis.structure_observations:
+                findings.append(
+                    f"{analysis.timeframe} structure: "
+                    + ", ".join(analysis.structure_observations)
+                    + "."
+                )
+            if analysis.support_candidates:
+                findings.append(
+                    f"{analysis.timeframe} mathematical support candidates: "
+                    + ", ".join(f"{level.price:g}" for level in analysis.support_candidates)
+                    + "."
+                )
+            if analysis.resistance_candidates:
+                findings.append(
+                    f"{analysis.timeframe} mathematical resistance candidates: "
+                    + ", ".join(f"{level.price:g}" for level in analysis.resistance_candidates)
+                    + "."
+                )
+            limitations.extend(analysis.limitations)
+        limitations.append(
+            "Calculated levels are mathematical swing candidates, not institutional significance or trade instructions."
         )
+        confidence = 0.72 if all(
+            analysis.status is TechnicalCalculationStatus.AVAILABLE for analysis in analyses
+        ) else 0.48
         return self.result(
-            summary=f"Built a mock technical review plan for {context.symbol}.",
-            findings=[
-                "Establish timeframe, trend structure, volatility regime, and nearby invalidation levels.",
-                "Require alignment between structure and momentum before treating a setup as actionable research.",
-                *self.evidence_findings(context),
-            ],
-            limitations=limitations,
-            confidence=0.55,
+            summary=f"Calculated deterministic technical observations for {context.symbol}.",
+            findings=[*findings, *self.evidence_findings(context)],
+            limitations=list(dict.fromkeys(limitations)),
+            confidence=confidence,
         )
 
     def structured_analysis(
@@ -873,24 +1083,37 @@ class ChartistTechnicianAgent(BaseAgent):
     ) -> SpecialistAnalysis:
         facts = _technical_facts(self, context) + _technical_series_facts(self, context)
         corporate_actions = _corporate_action_observations(self, context)
+        report = context.technical_analysis
+        trends = {
+            analysis.trend_direction
+            for analysis in (report.analyses if report is not None else ())
+        }
+        if trends == {TrendDirection.BULLISH}:
+            stance = SpecialistStance.BULLISH
+        elif trends == {TrendDirection.BEARISH}:
+            stance = SpecialistStance.BEARISH
+        elif not trends or trends == {TrendDirection.INSUFFICIENT_DATA}:
+            stance = SpecialistStance.INSUFFICIENT_DATA
+        elif TrendDirection.INSUFFICIENT_DATA in trends:
+            stance = SpecialistStance.CONFLICTED
+        else:
+            stance = SpecialistStance.NEUTRAL
+        thesis = (
+            "; ".join(
+                f"{analysis.timeframe} deterministic trend={analysis.trend_direction.value}"
+                for analysis in report.analyses
+            )
+            if report is not None and report.analyses
+            else "No validated historical series was available for technical calculation."
+        )
         return self._structured_result(
             context,
             parent_analysis_id=parent_analysis_id,
             evidence_fingerprint=evidence_fingerprint,
             created_at=created_at,
             result=result,
-            stance=SpecialistStance.INSUFFICIENT_DATA,
-            thesis=(
-                (
-                    "Assigned market observations and validated bars do not by themselves establish "
-                    "trend, momentum, levels, or a directional technical conclusion."
-                )
-                if context.evidence.market_series
-                else (
-                    "Assigned market observations do not provide a validated historical sample for trend, "
-                    "momentum, support, resistance, or a directional technical conclusion."
-                )
-            ),
+            stance=stance,
+            thesis=thesis,
             fact_observations=facts,
             derived_observations=_derived_feature_observations(self, context),
             corporate_action_observations=corporate_actions,
@@ -898,8 +1121,8 @@ class ChartistTechnicianAgent(BaseAgent):
                 SpecialistInterpretation(
                     statement=(
                         (
-                            "Observed OHLC, volume, timeframe, and continuity values are recorded "
-                            "without deriving unsupported technical signals."
+                            "Deterministic indicator and structure calculations are separated from "
+                            "their analytical interpretation and retain their source lineage."
                         )
                         if context.evidence.market_series
                         else (
@@ -919,7 +1142,7 @@ class ChartistTechnicianAgent(BaseAgent):
                 ),
             ),
             invalidating_conditions=(
-                "Technical conclusions require a validated time-series and an explicit methodology.",
+                "Technical observations are invalidated if their source series or deterministic calculation lineage changes.",
             ),
         )
 
@@ -1013,15 +1236,70 @@ class SentinelRiskOfficerAgent(BaseAgent):
     routing_keywords = frozenset({"risk", "exposure", "drawdown", "stop", "position", "loss", "invalid"})
 
     def analyze(self, context: AnalysisContext) -> AgentAnalysis:
+        risk_strategy = context.risk_strategy_intelligence
+        intelligence = context.news_intelligence
+        if risk_strategy is not None:
+            scenario_findings = [
+                (
+                    f"{item.direction.value}: status={item.status.value}, "
+                    f"stop={item.stop_loss_candidate if item.stop_loss_candidate is not None else 'unavailable'}, "
+                    f"risk/reward={item.risk_reward.ratio if item.risk_reward.ratio is not None else 'unavailable'}, "
+                    f"sizing={item.position_sizing.status.value}, quality={item.quality.score:.1f}/100."
+                )
+                for item in risk_strategy.scenarios
+            ]
+            return self.result(
+                summary=(
+                    f"Completed deterministic non-authorizing risk research for {context.symbol}; "
+                    f"report status={risk_strategy.status.value}, volatility={risk_strategy.volatility.regime.value}."
+                ),
+                findings=[
+                    *scenario_findings,
+                    *(
+                        f"Verified event risk: {item.event_name} at {item.scheduled_at.isoformat()}."
+                        for item in (() if intelligence is None else intelligence.event_risks)
+                    ),
+                    *self.evidence_findings(context),
+                ],
+                limitations=[
+                    *risk_strategy.missing_inputs,
+                    *risk_strategy.warnings,
+                    *risk_strategy.limitations,
+                    "Position sizing remains unavailable unless verified account and contract inputs are explicitly supplied.",
+                ],
+                confidence=(0.72 if risk_strategy.status.value in {"available", "partial"} else 0.45),
+            )
+        if intelligence is not None and intelligence.event_risks:
+            return self.result(
+                summary=f"Identified {len(intelligence.event_risks)} verified upcoming event-risk item(s) for {context.symbol}.",
+                findings=[
+                    f"{item.event_name} at {item.scheduled_at.isoformat()} ({item.impact.value} impact): {item.risk_statement}"
+                    for item in intelligence.event_risks
+                ] + self.evidence_findings(context),
+                limitations=[
+                    "Event risk is informational and creates no authorization, position sizing, or execution authority.",
+                    *intelligence.missing_information,
+                    *intelligence.warnings,
+                ],
+                confidence=0.7,
+            )
         return self.result(
-            summary=f"Applied a mock research-risk review to {context.symbol}.",
+            summary=(
+                f"Applied a non-authorizing research-risk review to {context.symbol}; "
+                f"news provider status={intelligence.news_retrieval.status.value}, "
+                f"cache={intelligence.news_retrieval.cache_status.value}."
+                if intelligence is not None
+                else f"Applied a mock research-risk review to {context.symbol}."
+            ),
             findings=[
                 "Define invalidation conditions and maximum acceptable research uncertainty before any decision.",
                 "Do not infer position sizing or execution parameters without verified prices and portfolio context.",
                 *self.evidence_findings(context),
             ],
             limitations=[
-                "No approval gate, account, portfolio, position, broker, order, or execution data is available."
+                "No approval gate, account, portfolio, position, broker, order, or execution data is available.",
+                *(intelligence.missing_information if intelligence is not None else ()),
+                *(intelligence.warnings if intelligence is not None else ()),
             ],
             confidence=0.7,
         )

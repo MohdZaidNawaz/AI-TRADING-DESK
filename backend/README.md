@@ -1193,6 +1193,15 @@ transaction, mismatched proposal/evidence/policy/assessment lineage, expiry,
 or terminal lifecycle state fails closed. Legacy process-local approvals are
 not adopted: an approval must be reissued by trusted Sentinel evaluation.
 
+The v1-to-v2 migration also recognizes the one exact Phase 13C-1 bootstrap
+schema and checksum recorded before the v2 cutover code changed the cutover
+constraint from equality to a semantically equivalent single-value `IN`
+expression. Compatibility requires the historical checksum, migration name,
+metadata, cutover state, complete original structure, and clean SQLite
+integrity/foreign-key checks. Unknown or merely similar v1 variants remain
+blocked. Migration is atomic and retains the historical v1 checksum as
+provenance rather than rewriting it in place.
+
 This is a controlled application architecture, not a cryptographic security
 boundary against arbitrary hostile Python code in the same process. The public
 issuance service does not accept caller-created `SentinelDecision` objects;

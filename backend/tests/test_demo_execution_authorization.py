@@ -30,7 +30,7 @@ from app.models.trusted_execution_evidence import (
 from app.services.demo_execution_authorization import DemoExecutionAuthorizationService
 from app.services.demo_execution_readiness import ControlledDemoReadinessGate
 from app.services.sentinel_risk_evidence import SentinelPortfolioRiskEvidenceVerifier
-from app.services.trade_proposal_workflow import ApprovalRegistry, proposal_fingerprint
+from app.services.trade_proposal_workflow import proposal_fingerprint
 from app.services.trusted_execution_evidence import TrustedExecutionEvidenceService
 from tests.test_demo_execution_readiness import ACCOUNT, NOW, _context, _pair, _policy
 from tests.test_sentinel_policy_authority import _test_policy_record, _test_policy_verifier
@@ -92,22 +92,7 @@ def _sentinel_risk(policy):
 
 
 def _inputs(tmp_path, **changes: object):
-    proposal, decision, _old_registry, intent = _pair()
-    proposal = proposal.model_copy(update={"expires_at": NOW + timedelta(minutes=5)})
-    registry = ApprovalRegistry()
-    decision = registry._record_approved_decision(
-        proposal,
-        decision.model_copy(
-            update={
-                "approval_id": None,
-                "proposal_fingerprint": proposal_fingerprint(proposal),
-                "analysis_id": proposal.analysis_id,
-                "evidence_fingerprint": proposal.evidence_fingerprint,
-                "account_id": ACCOUNT.account_id,
-                "expires_at": NOW + timedelta(minutes=4),
-            }
-        ),
-    )
+    proposal, decision, registry, intent = _pair()
     intent = intent.model_copy(
         update={
             "proposal_id": proposal.proposal_id,

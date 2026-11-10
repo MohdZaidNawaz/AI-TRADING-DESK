@@ -1,0 +1,71 @@
+# Local editor and workspace state
+/.vscode/
+.idea/
+
+# Local environment and secret configuration
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Pytest caches and disposable validation artifacts
+.pytest_cache/
+pytest-cache-files-*/
+**/.pytest-agent-*/
+**/.test-temp-*/
+**/.phase*-temp/
+**/.phase*-validation-*/
+**/.codex-phase*-temp/
+
+# Local runtime state
+/runtime/
+/backend/runtime/
+
+# Local databases and SQLite sidecar files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Private keys, certificates, and signing containers
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.csr
+*.jks
+
+# Frontend dependencies, builds, caches, and coverage
+node_modules/
+dist/
+dist-ssr/
+build/
+.vite/
+coverage/
+
+# Generated logs and temporary output
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

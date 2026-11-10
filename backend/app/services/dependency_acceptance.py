@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import timedelta
 
+from pydantic import ValidationError
+
 from app.models.dependency_acceptance import (
     ApprovalDecision,
     BrokerEvidenceField,
@@ -210,7 +212,7 @@ class OfflineDependencyAcceptanceEvaluator:
         for item in evidence:
             try:
                 canonical_evidence.append(_canonical_evidence(item))
-            except Exception:
+            except (ValueError, ValidationError):
                 return _malformed_evidence_report(self._registry, canonical_context)
 
         grouped: dict[ExternalDependencyId, list[ExternalDependencyEvidenceEnvelope]] = defaultdict(list)
@@ -256,7 +258,7 @@ class OfflineDependencyAcceptanceEvaluator:
 
         try:
             item = _canonical_evidence(items[0])
-        except Exception:
+        except (ValueError, ValidationError):
             return _assessment(entry, DependencyMaturity.INVALID, ("DEPENDENCY_EVIDENCE_MALFORMED",), now)
         fingerprint = item.envelope_fingerprint
         codes: list[str] = []
@@ -701,7 +703,7 @@ def _safe_fingerprints(items: list[ExternalDependencyEvidenceEnvelope]) -> tuple
     for item in items:
         try:
             fingerprints.append(_canonical_evidence(item).envelope_fingerprint)
-        except Exception:
+        except (ValueError, ValidationError):
             continue
     return tuple(sorted(fingerprints))
 

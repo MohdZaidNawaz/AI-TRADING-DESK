@@ -15,7 +15,14 @@ _CHARTIST_FEATURES = frozenset(
         FeatureType.BAR_RANGE,
         FeatureType.AVERAGE_RANGE,
         FeatureType.SMA,
+        FeatureType.EMA,
+        FeatureType.RSI,
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+        FeatureType.ATR,
         FeatureType.ROC,
+        FeatureType.ROLLING_STD,
     }
 )
 _ORACLE_FEATURES = frozenset(
@@ -23,6 +30,11 @@ _ORACLE_FEATURES = frozenset(
         FeatureType.SIMPLE_RETURN,
         FeatureType.LOG_RETURN,
         FeatureType.ROLLING_STD,
+        FeatureType.RSI,
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+        FeatureType.ATR,
         FeatureType.ROC,
     }
 )

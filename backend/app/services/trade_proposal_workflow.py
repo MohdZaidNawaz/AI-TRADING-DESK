@@ -75,7 +75,7 @@ def build_evidence_bundle(snapshot: EvidenceSnapshot) -> EvidenceBundle:
                 symbol=canonical_symbol(snapshot.symbol),
             )
         )
-        created_at_values.append(evidence.published_at)
+        created_at_values.append(evidence.provenance.event_timestamp)
 
     for series in snapshot.market_series:
         reference_time = (
@@ -379,36 +379,6 @@ class ApprovalRegistry:
         if self._candidate_authority_protocol is not None:
             return "CANDIDATE_PROTOCOL_DISCONNECTED"
         return "SHARED_DURABLE_SENTINEL_APPROVAL_OWNER"
-
-    def _record_approved_decision(
-        self,
-        proposal: TradeProposal,
-        decision: SentinelDecision,
-    ) -> SentinelDecision:
-        """Store one Sentinel-issued approval or return the existing decision.
-
-        Compatibility seam for legacy internal callers.
-
-        The normal application path is the trusted issuance service. This
-        underscore-prefixed hook exists only for legacy internal test helpers;
-        it is not a public issuance API and never participates in app
-        composition. It derives a distinct compatibility decision identity so
-        a test helper cannot overwrite a real trusted decision with the same
-        caller-supplied ``decision_id``.
-        """
-        if decision.decision is not SentinelDecisionStatus.APPROVED:
-            return decision
-        compatibility_decision = decision.model_copy(
-            update={
-                "decision_id": _fingerprint(
-                    {
-                        "compatibility_registration": True,
-                        "decision": decision.model_dump(mode="json"),
-                    }
-                )
-            }
-        )
-        return self._persist_trusted_evaluation(proposal, compatibility_decision)
 
     def _persist_trusted_evaluation(
         self,
@@ -1041,7 +1011,7 @@ def _evaluation_time(snapshot: EvidenceSnapshot, risk_context: RiskContext | Non
     if risk_context is not None:
         return risk_context.as_of
     timestamps = [item.timestamp for item in snapshot.market_evidence]
-    timestamps.extend(item.published_at for item in snapshot.news_evidence)
+    timestamps.extend(item.provenance.event_timestamp for item in snapshot.news_evidence)
     return max(timestamps, default=datetime(1970, 1, 1, tzinfo=UTC))
 
 

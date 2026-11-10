@@ -349,7 +349,7 @@ def test_one_snapshot_artifact_master_traceability_and_safety_boundaries() -> No
     assert "market_evidence" in workflow.sentinel_decision.missing_requirements
     response = core.analyze(AnalyzeRequest(symbol="ACME", query="Review fundamental earnings"))
     assert set(response.model_dump()) == {
-        "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis"
+            "analysis_id", "mode", "symbol", "query", "selected_agents", "routing", "agent_results", "synthesis", "coordination"
     }
 
 

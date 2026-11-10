@@ -69,10 +69,7 @@ class DerivedFeatureService:
 
         if status is None:
             try:
-                status, value, calculation_limitation = _calculate_value(
-                    request.feature_type,
-                    prepared.bars,
-                )
+                status, value, calculation_limitation = _calculate_value(request, prepared.bars)
             except (ArithmeticError, ValueError):
                 status = FeatureStatus.REJECTED_INPUT
                 value = None
@@ -166,6 +163,24 @@ def feature_request(
     return DerivedFeatureRequest(feature_type=feature_type, parameters=parameters)
 
 
+def macd_feature_request(feature_type: FeatureType) -> DerivedFeatureRequest:
+    """Build one canonical 12/26/9 MACD component request."""
+    if feature_type not in {
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+    }:
+        raise ValueError("MACD request requires a MACD feature type")
+    return DerivedFeatureRequest(
+        feature_type=feature_type,
+        parameters=(
+            FeatureParameter(name="fast", value=12),
+            FeatureParameter(name="slow", value=26),
+            FeatureParameter(name="signal", value=9),
+        ),
+    )
+
+
 def _feature_specification(request: DerivedFeatureRequest) -> _FeatureSpecification:
     no_window = {
         FeatureType.BAR_RANGE: ("friday.bar_range", FeatureValueUnit.PRICE, 1),
@@ -175,6 +190,9 @@ def _feature_specification(request: DerivedFeatureRequest) -> _FeatureSpecificat
     windowed = {
         FeatureType.AVERAGE_RANGE: ("friday.average_range_arithmetic_mean", FeatureValueUnit.PRICE),
         FeatureType.SMA: ("friday.simple_moving_average", FeatureValueUnit.PRICE),
+        FeatureType.EMA: ("friday.exponential_moving_average", FeatureValueUnit.PRICE),
+        FeatureType.RSI: ("friday.wilder_relative_strength_index", FeatureValueUnit.INDEX),
+        FeatureType.ATR: ("friday.wilder_average_true_range", FeatureValueUnit.PRICE),
         FeatureType.ROC: ("friday.close_rate_of_change", FeatureValueUnit.RATIO),
         FeatureType.ROLLING_STD: ("friday.population_std_simple_returns", FeatureValueUnit.RATIO),
     }
@@ -184,6 +202,34 @@ def _feature_specification(request: DerivedFeatureRequest) -> _FeatureSpecificat
             raise ValueError(f"{request.feature_type.value} does not accept parameters")
         method_id, unit, required = no_window[request.feature_type]
         return _FeatureSpecification(method_id, unit, required)
+
+    macd_types = {
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+    }
+    if request.feature_type in macd_types:
+        parameters = {item.name: item.value for item in request.parameters}
+        if set(parameters) != {"fast", "slow", "signal"} or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in parameters.values()
+        ):
+            raise ValueError("MACD requires positive integer fast, slow, and signal parameters")
+        fast = int(parameters["fast"])
+        slow = int(parameters["slow"])
+        signal = int(parameters["signal"])
+        if fast >= slow:
+            raise ValueError("MACD fast period must be less than its slow period")
+        method = {
+            FeatureType.MACD_LINE: "friday.macd_line",
+            FeatureType.MACD_SIGNAL: "friday.macd_signal",
+            FeatureType.MACD_HISTOGRAM: "friday.macd_histogram",
+        }[request.feature_type]
+        return _FeatureSpecification(
+            method,
+            FeatureValueUnit.PRICE,
+            slow + signal - 1,
+        )
 
     if request.feature_type not in windowed:  # pragma: no cover - enum exhaustiveness guard
         raise ValueError(f"unsupported derived feature: {request.feature_type.value}")
@@ -195,6 +241,8 @@ def _feature_specification(request: DerivedFeatureRequest) -> _FeatureSpecificat
 
     method_id, unit = windowed[request.feature_type]
     required = window + 1 if request.feature_type in {
+        FeatureType.RSI,
+        FeatureType.ATR,
         FeatureType.ROC,
         FeatureType.ROLLING_STD,
     } else window
@@ -266,9 +314,10 @@ def _prepare_window(
 
 
 def _calculate_value(
-    feature_type: FeatureType,
+    request: DerivedFeatureRequest,
     bars: tuple[MarketBarEvidence, ...],
 ) -> tuple[FeatureStatus, float | None, str | None]:
+    feature_type = request.feature_type
     if feature_type is FeatureType.BAR_RANGE:
         return FeatureStatus.AVAILABLE, bars[-1].high - bars[-1].low, None
     if feature_type is FeatureType.AVERAGE_RANGE:
@@ -276,6 +325,49 @@ def _calculate_value(
         return FeatureStatus.AVAILABLE, value, None
     if feature_type is FeatureType.SMA:
         return FeatureStatus.AVAILABLE, math.fsum(bar.close for bar in bars) / len(bars), None
+    if feature_type is FeatureType.EMA:
+        return FeatureStatus.AVAILABLE, _ema(tuple(bar.close for bar in bars), len(bars)), None
+    if feature_type is FeatureType.RSI:
+        changes = tuple(
+            current.close - previous.close
+            for previous, current in zip(bars, bars[1:], strict=False)
+        )
+        average_gain = math.fsum(max(change, 0.0) for change in changes) / len(changes)
+        average_loss = math.fsum(max(-change, 0.0) for change in changes) / len(changes)
+        if average_gain == 0 and average_loss == 0:
+            return FeatureStatus.AVAILABLE, 50.0, "RSI is neutral because every close was unchanged."
+        if average_loss == 0:
+            return FeatureStatus.AVAILABLE, 100.0, None
+        relative_strength = average_gain / average_loss
+        return FeatureStatus.AVAILABLE, 100.0 - (100.0 / (1.0 + relative_strength)), None
+    if feature_type is FeatureType.ATR:
+        true_ranges = tuple(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+            for previous, current in zip(bars, bars[1:], strict=False)
+        )
+        return FeatureStatus.AVAILABLE, math.fsum(true_ranges) / len(true_ranges), None
+    if feature_type in {
+        FeatureType.MACD_LINE,
+        FeatureType.MACD_SIGNAL,
+        FeatureType.MACD_HISTOGRAM,
+    }:
+        parameters = {item.name: int(item.value) for item in request.parameters}
+        closes = tuple(bar.close for bar in bars)
+        fast_values = _ema_series(closes, parameters["fast"])
+        slow_values = _ema_series(closes, parameters["slow"])
+        macd_values = tuple(fast - slow for fast, slow in zip(fast_values, slow_values))
+        signal_values = _ema_series(macd_values, parameters["signal"])
+        if feature_type is FeatureType.MACD_LINE:
+            value = macd_values[-1]
+        elif feature_type is FeatureType.MACD_SIGNAL:
+            value = signal_values[-1]
+        else:
+            value = macd_values[-1] - signal_values[-1]
+        return FeatureStatus.AVAILABLE, value, None
     if feature_type is FeatureType.SIMPLE_RETURN:
         return _ratio_change(bars[-2].close, bars[-1].close)
     if feature_type is FeatureType.LOG_RETURN:
@@ -312,6 +404,20 @@ def _ratio_change(base: float, current: float) -> tuple[FeatureStatus, float | N
     return FeatureStatus.AVAILABLE, current / base - 1.0, None
 
 
+def _ema(values: tuple[float, ...], period: int) -> float:
+    return _ema_series(values, period)[-1]
+
+
+def _ema_series(values: tuple[float, ...], period: int) -> tuple[float, ...]:
+    if not values:
+        raise ValueError("EMA requires at least one value")
+    alpha = 2.0 / (period + 1.0)
+    output = [values[0]]
+    for value in values[1:]:
+        output.append((value * alpha) + (output[-1] * (1.0 - alpha)))
+    return tuple(output)
+
+
 def _valid_bar(bar: MarketBarEvidence) -> bool:
     values = (bar.open, bar.high, bar.low, bar.close)
     return (
@@ -345,7 +451,7 @@ def _is_flat_input(
     feature_type: FeatureType,
     bars: tuple[MarketBarEvidence, ...],
 ) -> bool:
-    if feature_type in {FeatureType.BAR_RANGE, FeatureType.AVERAGE_RANGE}:
+    if feature_type in {FeatureType.BAR_RANGE, FeatureType.AVERAGE_RANGE, FeatureType.ATR}:
         return all(bar.high == bar.low for bar in bars)
     return len(bars) > 1 and all(bar.close == bars[0].close for bar in bars[1:])
 

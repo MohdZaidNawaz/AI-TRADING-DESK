@@ -50,6 +50,12 @@ from app.models.specialist_analysis import (
     create_specialist_analysis,
 )
 from app.models.schemas import AgentAnalysis
+from app.models.research_requests import ResearchRequestContext
+from app.models.technical_analysis import TechnicalAnalysisReport
+from app.models.news_intelligence import NewsEconomicIntelligenceReport
+from app.models.macro_intelligence import MacroIntelligenceReport
+from app.models.liquidity_intelligence import LiquidityIntelligenceReport
+from app.models.risk_strategy_intelligence import RiskStrategyIntelligenceReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +85,12 @@ class AnalysisContext:
     evidence: AgentEvidence = field(default_factory=AgentEvidence)
     derived_features: tuple[DerivedMarketFeature, ...] = ()
     lifecycle: AnalysisLifecycle = field(default_factory=AnalysisLifecycle)
+    research_context: ResearchRequestContext | None = None
+    technical_analysis: TechnicalAnalysisReport | None = None
+    news_intelligence: NewsEconomicIntelligenceReport | None = None
+    macro_intelligence: MacroIntelligenceReport | None = None
+    liquidity_intelligence: LiquidityIntelligenceReport | None = None
+    risk_strategy_intelligence: RiskStrategyIntelligenceReport | None = None
 
 
 class BaseAgent(ABC):
