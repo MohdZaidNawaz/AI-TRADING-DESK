@@ -503,3 +503,46 @@ def test_analyze_api_accepts_manual_override_and_returns_sanitized_metadata() ->
     }
     assert "route-private-key" not in response.text
     assert response.json()["mode"] == "deterministic_mock"
+
+
+def test_auto_selection_retries_previously_unavailable_provider_on_next_analysis() -> None:
+    calls = 0
+
+    def recovering_openai(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps(_narrative())}
+                        ],
+                    }
+                ]
+            },
+        )
+
+    registry = LLMProviderRegistry(
+        environment=_environment(OPENAI_API_KEY="configured-key"),
+        transports={"openai": httpx.MockTransport(recovering_openai)},
+    )
+    service = ChiefStrategistLLMService(registry)
+    request, deterministic = _deterministic()
+
+    first = _run(service.enhance(request, deterministic))
+    assert first.llm_synthesis.status == "deterministic_fallback"
+    assert first.llm_synthesis.fallback_reason == "provider_unavailable"
+    assert first.llm_synthesis.provider == "openai"
+    assert registry.catalogue().providers[0].health == "unavailable"
+
+    # A later analysis must retry the configured provider without a process restart.
+    second = _run(service.enhance(request, deterministic))
+    assert calls == 2
+    assert second.llm_synthesis.status == "llm_synthesis"
+    assert second.llm_synthesis.provider == "openai"
+    assert registry.catalogue().providers[0].health == "healthy"
