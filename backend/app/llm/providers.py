@@ -194,8 +194,10 @@ class GeminiProvider(_HTTPProvider):
                 {"role": "user", "parts": [{"text": request.user_prompt}]}
             ],
             "generationConfig": {
+                # Use JSON mode without relying on provider-side schema
+                # enforcement. The complete Pydantic contract and evidence
+                # safety checks are enforced locally after parsing.
                 "responseMimeType": "application/json",
-                "responseJsonSchema": request.json_schema,
                 "maxOutputTokens": request.max_output_tokens,
             },
         }
