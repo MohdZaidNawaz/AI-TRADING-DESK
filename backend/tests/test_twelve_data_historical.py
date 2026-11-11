@@ -135,6 +135,26 @@ def test_client_encodes_incremental_start_in_documented_utc_format() -> None:
     )
 
 
+def test_client_encodes_bounded_end_and_exact_exchange_mapping() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["start_date"] == "2026-11-01T00:00:00"
+        assert request.url.params["end_date"] == "2026-11-03T12:00:00"
+        assert request.url.params["exchange"] == "COMMODITY"
+        return httpx.Response(200, json=_payload())
+
+    client = TwelveDataClient("test-key", transport=httpx.MockTransport(handler))
+    _run(
+        client.fetch_time_series(
+            "XAU/USD",
+            "15m",
+            outputsize=3,
+            start_date=datetime(2026, 11, 1, tzinfo=UTC),
+            end_date=NOW,
+            exchange="COMMODITY",
+        )
+    )
+
+
 def test_client_timeout_is_bounded_and_sanitized() -> None:
     key = secrets.token_urlsafe(32)
 

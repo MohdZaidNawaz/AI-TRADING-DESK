@@ -540,6 +540,12 @@ def _comparison_expressions(query: str) -> tuple[str, ...]:
 
 
 def _from_catalogue(expression: str, entry: InstrumentCatalogueEntry) -> ResolvedResearchInstrument:
+    primary_mapping = next(
+        mapping
+        for mapping in entry.provider_mappings
+        if mapping.source_id == entry.source_id
+        and mapping.provider_symbol == entry.provider_symbol
+    )
     return ResolvedResearchInstrument(
         expression=expression,
         status=InstrumentResolutionStatus.RESOLVED,
@@ -547,6 +553,13 @@ def _from_catalogue(expression: str, entry: InstrumentCatalogueEntry) -> Resolve
         instrument_id=entry.instrument_id,
         canonical_instrument_id=entry.canonical_instrument_id,
         canonical_symbol=entry.canonical_symbol,
+        provider_source_id=entry.source_id,
+        provider_symbol=entry.provider_symbol,
+        provider_exchange_id=(
+            None
+            if primary_mapping.provider_exchange_id in {"GLOBAL", "UNKNOWN", "NONE"}
+            else primary_mapping.provider_exchange_id
+        ),
         category=entry.category,
         display_name=entry.display_name,
         base_currency=entry.base_currency,

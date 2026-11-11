@@ -441,6 +441,14 @@
 .backtest-controls select { min-width: 0; height: 40px; border: 1px solid rgba(83, 188, 216, 0.18); background: rgba(1, 8, 13, 0.9); color: #d9edf4; padding: 0 11px; font: 500 10px/1 Consolas, monospace; color-scheme: dark; }
 .backtest-controls button { height: 40px; border: 1px solid rgba(38, 218, 255, 0.42); background: rgba(14, 174, 214, 0.12); color: #63e7ff; padding: 0 18px; font: 700 8px/1 Consolas, monospace; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; }
 .backtest-controls button:disabled { cursor: wait; opacity: 0.55; }
+.backtest-controls .dataset-selector { grid-column: span 2; }
+.backtest-controls .dataset-ingest-button { border-color: rgba(136, 114, 255, 0.42); background: rgba(83, 61, 170, 0.12); color: #b9aaff; }
+.dataset-status { margin-top: 12px; border-left: 2px solid #42d8ef; padding: 10px 12px; background: rgba(10, 85, 105, 0.12); color: #8bdfee; font: 500 9px/1.6 Consolas, monospace; }
+.dataset-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid rgba(67, 174, 203, 0.16); background: rgba(1, 9, 15, 0.62); }
+.dataset-summary span { color: #5e7585; font: 500 7px/1.5 Consolas, monospace; text-transform: uppercase; }
+.dataset-summary b { display: block; color: #b6d6e0; font-size: 9px; }
+.dataset-summary small { grid-column: 1 / -1; color: #688491; font: 500 8px/1.5 Consolas, monospace; }
+.dataset-summary.dataset-partial { border-color: rgba(238, 174, 78, 0.28); }
 .backtest-error { margin-top: 12px; border-left: 2px solid #ef5f7a; padding: 10px 12px; background: rgba(119, 19, 43, 0.12); color: #ff8da1; font-size: 9px; }
 .backtest-results { display: grid; gap: 14px; margin-top: 18px; }
 .backtest-meta, .backtest-metrics, .backtest-window-grid { display: grid; gap: 8px; }
@@ -520,6 +528,7 @@
   .executive-summary-grid { grid-template-columns: minmax(0, 1fr); }
   .backtest-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .backtest-controls button { grid-column: 1 / -1; }
+  .dataset-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .backtest-meta, .backtest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -548,6 +557,8 @@
   .analysis-command-console .voice-toggle-button { width: 34px; min-width: 34px; padding: 0; }
   .analysis-command-console .voice-toggle-button span { display: none; }
   .backtest-controls, .backtest-meta, .backtest-metrics { grid-template-columns: minmax(0, 1fr); }
+  .backtest-controls .dataset-selector { grid-column: auto; }
+  .dataset-summary { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 480px) {

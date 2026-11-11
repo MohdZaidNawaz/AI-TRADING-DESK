@@ -111,6 +111,8 @@ class BacktestParameters(BacktestModel):
 class BacktestRequest(BacktestModel):
     symbol: str = Field(min_length=1, max_length=40)
     timeframe: str = Field(min_length=2, max_length=20)
+    dataset_id: str | None = Field(default=None, pattern=r"^historical-[0-9a-f]{32}$")
+    dataset_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source_id: str | None = Field(default=None, min_length=1, max_length=80)
     start_at: datetime | None = None
     end_at: datetime | None = None
@@ -146,6 +148,8 @@ class BacktestRequest(BacktestModel):
             supplied = self.sizing_context.instrument.symbol.replace("/", "").upper()
             if requested.replace("-", "") != supplied.replace("-", ""):
                 raise ValueError("sizing context instrument must match the requested symbol")
+        if self.dataset_fingerprint is not None and self.dataset_id is None:
+            raise ValueError("dataset_fingerprint requires dataset_id")
         return self
 
 
