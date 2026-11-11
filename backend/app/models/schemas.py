@@ -4,13 +4,18 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.research_requests import ResearchRequestContext
 from app.models.agent_coordination import (
     AgentCoordinationReport,
     AgentEvidenceLink,
     AgentExecutionState,
     AgentOutputKind,
 )
+from app.models.llm_synthesis import (
+    LLMSynthesisMetadata,
+    LLMProviderMode,
+    LLMProviderName,
+)
+from app.models.research_requests import ResearchRequestContext
 
 if TYPE_CHECKING:
     from app.models.liquidity_intelligence import LiquidityIntelligenceReport
@@ -117,6 +122,14 @@ class MarketListResponse(APIModel):
 class AnalyzeRequest(APIModel):
     symbol: str | None = Field(default=None, max_length=20, pattern=r"^[A-Z0-9._/-]+$")
     query: str = Field(min_length=3, max_length=500)
+    llm_provider_mode: LLMProviderMode | None = None
+    llm_provider: LLMProviderName | None = None
+    llm_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
 
     @field_validator("symbol", mode="before")
     @classmethod
@@ -132,6 +145,14 @@ class AnalyzeRequest(APIModel):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @model_validator(mode="after")
+    def coherent_llm_override(self) -> "AnalyzeRequest":
+        if self.llm_provider_mode != "manual" and (
+            self.llm_provider is not None or self.llm_model is not None
+        ):
+            raise ValueError("provider and model overrides require manual mode")
+        return self
 
 
 class RoutingDecision(APIModel):
@@ -179,6 +200,10 @@ class AnalyzeResponse(APIModel):
     routing: RoutingDecision
     agent_results: list[AgentAnalysis]
     synthesis: Synthesis
+    llm_synthesis: LLMSynthesisMetadata | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     coordination: AgentCoordinationReport | None = None
     technical_analysis: "TechnicalAnalysisReport | None" = Field(
         default=None,
