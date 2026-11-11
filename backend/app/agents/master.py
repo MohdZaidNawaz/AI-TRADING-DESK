@@ -120,6 +120,17 @@ class MasterAgent:
                 "Scenario quality is an evidence-completeness score, not a probability, recommendation, "
                 "approval, or execution instruction."
             )
+        backtest = context.backtest_validation
+        if backtest is not None:
+            total_return = backtest.metrics.gross.total_return
+            intelligence_summary += (
+                f" Historical validation: status={backtest.status.value}; "
+                f"strategy={backtest.strategy_id}; trades={backtest.metrics.total_trades}; "
+                f"basis=gross/{backtest.cost_basis}; cost-evidence={backtest.cost_assessment.status.value}; "
+                f"gross-total-return={total_return.value if total_return.value is not None else 'undefined'} "
+                f"({total_return.status.value}). This is bounded historical evidence, not live market "
+                "evidence, a forecast, a profitability claim, or execution authority."
+            )
         preparation = (
             f"Research preparation for {context.symbol}"
             + (f" on {research.timeframe}" if research and research.timeframe else "")

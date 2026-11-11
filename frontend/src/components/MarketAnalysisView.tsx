@@ -1,6 +1,10 @@
+import { useState } from "react"
+import type { FormEvent } from "react"
 import type {
   AnalyzeResponse,
   AgentAnalysis,
+  BacktestMetric,
+  BacktestResponse,
   EconomicCalendarItem,
   NewsEconomicIntelligenceReport,
   MacroIntelligenceReport,
@@ -9,6 +13,7 @@ import type {
   TechnicalIndicator,
   TechnicalTimeframeAnalysis,
 } from "../services/api"
+import { runHistoricalBacktest } from "../services/api"
 import CommandBar from "./CommandBar"
 import type { AssistantVisualState } from "./assistantState"
 
@@ -137,6 +142,120 @@ function indicatorValue(indicator: TechnicalIndicator) {
   if (indicator.status !== "available" || indicator.value === null) return indicator.status.replaceAll("_", " ")
   if (indicator.value_unit === "ratio") return `${(indicator.value * 100).toFixed(3)}%`
   return indicator.value.toLocaleString(undefined, { maximumFractionDigits: 5 })
+}
+
+function formatBacktestMetric(metric: BacktestMetric) {
+  if (metric.status !== "available" || metric.value === null) return metric.status.replaceAll("_", " ")
+  if (metric.unit.includes("percent")) return `${metric.value.toFixed(2)}%`
+  if (metric.unit === "seconds") return `${(metric.value / 3600).toFixed(1)}h`
+  return metric.value.toFixed(3)
+}
+
+function BacktestCurve({ response }: { response: BacktestResponse }) {
+  const points = response.report.equity_curve
+  if (!points.length) return <p className="backtest-no-chart">No completed trades; an equity curve cannot be calculated.</p>
+  const values = points.map((point) => point.cumulative_return_pct)
+  const minimum = Math.min(0, ...values)
+  const maximum = Math.max(0, ...values)
+  const span = maximum - minimum || 1
+  const path = points.map((point, index) => {
+    const x = points.length === 1 ? 50 : (index / (points.length - 1)) * 100
+    const y = 90 - ((point.cumulative_return_pct - minimum) / span) * 80
+    return `${x},${y}`
+  }).join(" ")
+  return (
+    <svg className="backtest-equity-curve" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Actual cumulative trade return curve">
+      <line x1="0" x2="100" y1={90 - ((0 - minimum) / span) * 80} y2={90 - ((0 - minimum) / span) * 80} />
+      {points.length > 1 ? <polyline points={path} /> : <circle cx="50" cy={path.split(",")[1]} r="2" />}
+    </svg>
+  )
+}
+
+function HistoricalValidationPanel({ analysis }: { analysis: AnalyzeResponse | null }) {
+  const suggestedSymbol = analysis?.routing.research_context?.primary_instrument.canonical_symbol ?? ""
+  const suggestedTimeframe = analysis?.routing.research_context?.timeframe ?? "15m"
+  const [symbol, setSymbol] = useState("")
+  const [timeframe, setTimeframe] = useState("15m")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [response, setResponse] = useState<BacktestResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const requestedSymbol = symbol.trim() || suggestedSymbol
+    if (!requestedSymbol) {
+      setError("Select or enter an instrument before running historical validation.")
+      return
+    }
+    setRunning(true)
+    setError(null)
+    try {
+      const result = await runHistoricalBacktest({
+        symbol: requestedSymbol,
+        timeframe: timeframe || suggestedTimeframe,
+        ...(startDate ? { start_at: new Date(`${startDate}T00:00:00Z`).toISOString() } : {}),
+        ...(endDate ? { end_at: new Date(`${endDate}T23:59:59Z`).toISOString() } : {}),
+      })
+      setResponse(result)
+    } catch (requestError) {
+      setResponse(null)
+      setError(requestError instanceof Error ? requestError.message : "Historical validation failed.")
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const report = response?.report
+  return (
+    <section className="historical-validation-panel" aria-labelledby="historical-validation-title">
+      <div className="phase2-panel-heading">
+        <div><span>08 / HISTORICAL EVIDENCE</span><h2 id="historical-validation-title">Strategy Validation</h2></div>
+        <b>{running ? "EVALUATING" : report?.status.replaceAll("_", " ") ?? "NOT RUN"}</b>
+      </div>
+      <p className="backtest-intro">Evaluate the documented trend-confirmed Phase 5.6 scenario against cached validated candles. This does not fetch data, predict returns, or authorize execution.</p>
+      <form className="backtest-controls" onSubmit={submit}>
+        <label><span>Instrument</span><input value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder={suggestedSymbol || "e.g. XAU/USD"} /></label>
+        <label><span>Timeframe</span><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>{["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"].map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label><span>Start (optional)</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+        <label><span>End (optional)</span><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+        <button type="submit" disabled={running}>{running ? "Running validation..." : "Run historical validation"}</button>
+      </form>
+      {error && <div className="backtest-error" role="alert">{error}</div>}
+      {report && (
+        <div className="backtest-results">
+          <div className="backtest-meta">
+            <span><b>{report.symbol}</b> instrument</span>
+            <span><b>{report.timeframe}</b> timeframe</span>
+            <span><b>{report.data_quality.completed_bar_count}</b> completed candles</span>
+            <span><b>{report.cost_assessment.status.replaceAll("_", " ")}</b> cost evidence</span>
+          </div>
+          <div className="backtest-metrics">
+            <article><span>Total trades</span><b>{report.metrics.total_trades}</b></article>
+            <article><span>Gross win rate</span><b>{formatBacktestMetric(report.metrics.gross.win_rate)}</b></article>
+            <article><span>Gross total return</span><b>{formatBacktestMetric(report.metrics.gross.total_return)}</b></article>
+            <article><span>Gross max drawdown</span><b>{formatBacktestMetric(report.metrics.gross.maximum_drawdown)}</b></article>
+            <article><span>Net total return</span><b>{report.metrics.net ? formatBacktestMetric(report.metrics.net.total_return) : "unavailable"}</b></article>
+            <article><span>Net max drawdown</span><b>{report.metrics.net ? formatBacktestMetric(report.metrics.net.maximum_drawdown) : "unavailable"}</b></article>
+          </div>
+          <div className="backtest-chart-wrap"><header><span>ACTUAL GROSS CUMULATIVE TRADE RETURN</span><small>gross returns</small></header><BacktestCurve response={response} /></div>
+          <div className="backtest-window-grid">
+            {report.validation_windows.map((window) => (
+              <article key={window.window_id}><span>{window.kind.replaceAll("_", " ")}</span><b>{window.metrics.total_trades} completed trades</b><small>{window.observation_count} observations · gross return {formatBacktestMetric(window.metrics.gross.total_return)} · {window.incomplete_trade_count} incomplete</small></article>
+            ))}
+          </div>
+          <div className="backtest-trade-history">
+            <header><span>TRADE HISTORY</span><b>{report.trades.length}</b></header>
+            {report.trades.length ? (
+              <div className="backtest-table-scroll"><table><thead><tr><th>Signal</th><th>Side</th><th>Entry</th><th>Exit</th><th>Reason</th><th>Gross</th><th>Net</th></tr></thead><tbody>{report.trades.map((trade) => <tr key={trade.trade_id}><td>{new Date(trade.signal_at).toLocaleString()}</td><td>{trade.direction}</td><td>{trade.entry_price}</td><td>{trade.exit_price}</td><td>{trade.exit_reason.replaceAll("_", " ")}</td><td>{trade.gross_return_pct.toFixed(2)}%</td><td>{trade.net_return_pct === null ? "unavailable" : `${trade.net_return_pct.toFixed(2)}%`}</td></tr>)}</tbody></table></div>
+            ) : <p>No completed trades exist for this bounded sample and rule set.</p>}
+          </div>
+          {(report.warnings.length > 0 || report.limitations.length > 0) && <details className="backtest-limitations"><summary>Data quality, assumptions and limitations</summary>{report.warnings.map((item) => <p key={item}>Warning: {item}</p>)}{report.limitations.map((item) => <p key={item}>{item}</p>)}</details>}
+        </div>
+      )}
+    </section>
+  )
 }
 
 function TechnicalTimeframePanel({ item }: { item: TechnicalTimeframeAnalysis }) {
@@ -596,9 +715,11 @@ function MarketAnalysisView({
         {reportSections.map((section) => <AnalysisSection key={section.id} section={section} analysis={analysis} />)}
       </div>
 
+      <HistoricalValidationPanel analysis={analysis} />
+
       <section className="strategist-conclusion" aria-labelledby="strategist-conclusion-title">
         <div>
-          <span>08 / FINAL SYNTHESIS</span>
+          <span>09 / FINAL SYNTHESIS</span>
           <h2 id="strategist-conclusion-title">Chief Market Strategist Conclusion</h2>
         </div>
         {analysis ? (

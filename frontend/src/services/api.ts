@@ -700,6 +700,153 @@ export type ResearchRequestContext = {
   execution_authority: false
 }
 
+export type BacktestMetric = {
+  status: "available" | "undefined" | "insufficient_sample"
+  value: number | null
+  unit: string
+  reason: string | null
+}
+
+export type BacktestPerformanceMetrics = {
+  total_trades: number
+  winning_trades: number
+  losing_trades: number
+  breakeven_trades: number
+  win_rate: BacktestMetric
+  gross_profit: BacktestMetric
+  gross_loss: BacktestMetric
+  profit_factor: BacktestMetric
+  average_win: BacktestMetric
+  average_loss: BacktestMetric
+  expectancy: BacktestMetric
+  maximum_drawdown: BacktestMetric
+  total_return: BacktestMetric
+  average_holding_duration: BacktestMetric
+  consecutive_wins: number
+  consecutive_losses: number
+  realized_risk_reward: BacktestMetric
+  sharpe_ratio: BacktestMetric
+  basis: "gross_returns"
+  gross: BacktestReturnSeriesMetrics
+  net: BacktestReturnSeriesMetrics | null
+}
+
+export type BacktestReturnSeriesMetrics = {
+  basis: "gross_returns" | "net_returns"
+  winning_trades: number
+  losing_trades: number
+  breakeven_trades: number
+  win_rate: BacktestMetric
+  profit: BacktestMetric
+  loss: BacktestMetric
+  profit_factor: BacktestMetric
+  average_win: BacktestMetric
+  average_loss: BacktestMetric
+  expectancy: BacktestMetric
+  maximum_drawdown: BacktestMetric
+  total_return: BacktestMetric
+  consecutive_wins: number
+  consecutive_losses: number
+  sharpe_ratio: BacktestMetric
+}
+
+export type BacktestTrade = {
+  trade_id: string
+  direction: "long" | "short"
+  signal_at: string
+  entered_at: string
+  exited_at: string
+  entry_price: number
+  exit_price: number
+  stop_loss: number
+  take_profit: number
+  exit_reason: string
+  holding_bars: number
+  holding_seconds: number
+  gross_return_pct: number
+  net_return_pct: number | null
+  gross_monetary_pnl: number | null
+  net_monetary_pnl: number | null
+  position_size: number | null
+  size_unit: "lots" | "contracts" | "units" | null
+  costs_applied: boolean
+}
+
+export type BacktestReport = {
+  status: "available" | "partial" | "insufficient_data" | "unavailable"
+  strategy_id: "trend_confirmed_scenario_v1"
+  symbol: string
+  timeframe: string
+  evaluated_at: string
+  data_quality: {
+    validated_bar_count: number
+    completed_bar_count: number
+    provisional_bar_count: number
+    duplicate_timestamp_count: number
+    missing_interval_count: number
+    is_ordered: boolean
+    coverage_start: string | null
+    coverage_end: string | null
+  }
+  provenance: {
+    series_id: string
+    series_fingerprint: string
+    source_id: string
+    source_name: string
+    retrieved_at: string
+    timeframe: string
+    venue: string | null
+  } | null
+  parameters: {
+    strategy_id: "trend_confirmed_scenario_v1"
+    development_fraction: number
+    maximum_holding_bars: number
+    walk_forward_window_bars: number | null
+    walk_forward_step_bars: number | null
+    collision_policy: "stop_first_conservative"
+    entry_validity_bars: 1
+    allow_overlapping_positions: false
+  }
+  cost_basis: "verified_net" | "gross_only"
+  cost_assessment: {
+    status: "unavailable" | "incomplete" | "verified" | "invalid"
+    source_id: string | null
+    verified_at: string | null
+    spread_price: number | null
+    slippage_price_per_side: number | null
+    commission_per_size_round_trip: number | null
+    missing_components: string[]
+    assumptions: string[]
+  }
+  trades: BacktestTrade[]
+  incomplete_trade_count: number
+  metrics: BacktestPerformanceMetrics
+  equity_curve: Array<{ timestamp: string; cumulative_return_pct: number; drawdown_pct: number }>
+  net_equity_curve: Array<{ timestamp: string; cumulative_return_pct: number; drawdown_pct: number }>
+  validation_windows: Array<{
+    window_id: string
+    kind: "development" | "out_of_sample" | "walk_forward"
+    start_at: string
+    end_at: string
+    observation_count: number
+    incomplete_trade_count: number
+    metrics: BacktestPerformanceMetrics
+    warnings: string[]
+  }>
+  warnings: string[]
+  limitations: string[]
+  production_authorization_available: false
+  submission_allowed: false
+  execution_authority: false
+}
+
+export type BacktestResponse = {
+  report: BacktestReport
+  quantitative_specialist: AgentAnalysis
+  risk_specialist: AgentAnalysis
+  master_synthesis: AnalyzeResponse["synthesis"]
+}
+
 async function requestJson<T>(
   path: string,
   init: RequestInit,
@@ -754,6 +901,26 @@ export const analyzeDeskQuery = (query: string, signal?: AbortSignal) =>
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query }),
+    },
+    signal,
+  )
+
+export const runHistoricalBacktest = (
+  request: {
+    symbol: string
+    timeframe: string
+    start_at?: string
+    end_at?: string
+    source_id?: string
+  },
+  signal?: AbortSignal,
+) =>
+  requestJson<BacktestResponse>(
+    "/api/backtests",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
     },
     signal,
   )
