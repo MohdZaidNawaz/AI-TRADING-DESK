@@ -1,7 +1,12 @@
 import asyncio
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.llm.registry import LLMSelectionError
+from app.llm.strategist import (
+    ChiefStrategistLLMService,
+    get_chief_strategist_llm_service,
+)
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse
 from app.services.friday_core import get_friday_core
 from app.services.twelve_data_historical import (
@@ -26,13 +31,21 @@ async def analyze(
     news_service: GdeltNewsIntelligenceRetrievalService = Depends(
         get_news_intelligence_retrieval_service
     ),
+    llm_service: ChiefStrategistLLMService = Depends(
+        get_chief_strategist_llm_service
+    ),
 ) -> AnalyzeResponse:
+    try:
+        llm_service.validate_selection(request)
+    except LLMSelectionError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
     historical_retrieval, news_retrieval = await asyncio.gather(
         historical_service.prepare(request),
         news_service.prepare(request),
     )
-    return friday_core.analyze(
+    deterministic = friday_core.analyze(
         request,
         historical_retrieval=historical_retrieval,
         news_retrieval=news_retrieval,
     )
+    return await llm_service.enhance(request, deterministic)
