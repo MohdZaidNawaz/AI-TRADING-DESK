@@ -153,11 +153,10 @@ class LLMProviderRegistry:
     def _auto_order(self) -> tuple[LLMProviderName, ...]:
         default = self.settings.default_provider
         ordered = (default,) + tuple(name for name in _ORDER if name != default)
-        return tuple(
-            name
-            for name in ordered
-            if name in self._providers and self._health[name] != "unavailable"
-        )
+        # Runtime health is diagnostic, not a permanent circuit breaker.
+        # A transient failure must not remove a configured provider from future
+        # analyses; each new request gets a chance to recover.
+        return tuple(name for name in ordered if name in self._providers)
 
 
 def _choice(value: str | None, allowed: tuple[str, ...], default: str) -> str:
