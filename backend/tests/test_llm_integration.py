@@ -121,6 +121,8 @@ def test_provider_specific_structured_output_shapes() -> None:
     assert bodies["openai"]["text"]["format"]["strict"] is True
     assert bodies["anthropic"]["output_config"]["format"]["type"] == "json_schema"
     assert bodies["gemini"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert bodies["gemini"]["generationConfig"]["maxOutputTokens"] == request.max_output_tokens
+    assert "responseJsonSchema" not in bodies["gemini"]["generationConfig"]
 
 
 def _environment(**updates: str) -> dict[str, str | None]:
