@@ -18,7 +18,12 @@ from app.llm.contracts import (
     LLMProviderError,
     LLMProviderRequest,
 )
-from app.llm.providers import AnthropicProvider, GeminiProvider, OpenAIProvider
+from app.llm.providers import (
+    AnthropicProvider,
+    GeminiProvider,
+    GroqProvider,
+    OpenAIProvider,
+)
 from app.llm.registry import (
     LLMProviderRegistry,
     LLMSelectionError,
@@ -80,6 +85,14 @@ def _narrative(*, evidence_ids: list[str] | None = None) -> dict[str, object]:
             GeminiProvider,
             {"candidates": [{"content": {"parts": [{"text": json.dumps(_narrative())}]}}]},
             "x-goog-api-key",
+        ),
+        (
+            GroqProvider,
+            {
+                "choices": [{"message": {"content": json.dumps(_narrative())}}],
+                "model": "configured-model",
+            },
+            "authorization",
         ),
     ],
 )
@@ -146,12 +159,205 @@ def test_provider_specific_structured_output_shapes() -> None:
     _run(OpenAIProvider(api_key="x", model="m", timeout_seconds=3, transport=response("openai", {"output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}]})).generate(request))
     _run(AnthropicProvider(api_key="x", model="m", timeout_seconds=3, transport=response("anthropic", {"content": [{"type": "text", "text": "{}"}]})).generate(request))
     _run(GeminiProvider(api_key="x", model="m", timeout_seconds=3, transport=response("gemini", {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})).generate(request))
+    _run(GroqProvider(api_key="x", model="qwen/qwen3.8-27b", timeout_seconds=3, transport=response("groq", {"choices": [{"message": {"content": "{}"}}]})).generate(request))
 
     assert bodies["openai"]["text"]["format"]["strict"] is True
     assert bodies["anthropic"]["output_config"]["format"]["type"] == "json_schema"
     assert bodies["gemini"]["generationConfig"]["responseMimeType"] == "application/json"
     assert bodies["gemini"]["generationConfig"]["maxOutputTokens"] == request.max_output_tokens
     assert "responseJsonSchema" not in bodies["gemini"]["generationConfig"]
+    assert bodies["groq"]["response_format"] == {"type": "json_object"}
+    assert bodies["groq"]["max_completion_tokens"] == request.max_output_tokens
+
+
+def test_groq_uses_strict_schema_only_when_the_schema_is_compatible() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "model": "qwen/qwen3.8-27b",
+                "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+            },
+        )
+
+    provider = GroqProvider(
+        api_key="secret",
+        model="qwen/qwen3.8-27b",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+    )
+    compatible = LLMProviderRequest(
+        system_prompt="Return JSON.",
+        user_prompt="evidence",
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+        max_output_tokens=300,
+    )
+    result = _run(provider.generate(compatible))
+    _run(provider.generate(_provider_request()))
+
+    assert bodies[0]["response_format"]["type"] == "json_schema"
+    assert bodies[0]["response_format"]["json_schema"]["strict"] is True
+    assert bodies[1]["response_format"] == {"type": "json_object"}
+    assert result.input_tokens == 12
+    assert result.output_tokens == 4
+    assert result.reported_model == "qwen/qwen3.8-27b"
+
+
+def test_groq_rejects_unsupported_strict_schema_keywords_and_unsafe_model_metadata() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "{}"}}],
+                "model": "qwen/qwen3.8-27b\r\nX-Injected: value",
+            },
+        )
+
+    provider = GroqProvider(
+        api_key="credential-value",
+        model="qwen/qwen3.8-27b",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+    )
+    request = LLMProviderRequest(
+        system_prompt="Return JSON.",
+        user_prompt="evidence",
+        json_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string", "pattern": "^safe$"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+        max_output_tokens=300,
+    )
+    result = _run(provider.generate(request))
+
+    assert bodies[0]["response_format"] == {"type": "json_object"}
+    assert result.reported_model is None
+
+
+def test_groq_default_model_and_manual_override_are_configurable() -> None:
+    default_registry = LLMProviderRegistry(
+        environment=_environment(GROQ_API_KEY="secret")
+    )
+    default_entry = next(
+        item for item in default_registry.catalogue().providers if item.provider == "groq"
+    )
+    assert default_registry.settings.default_provider == "openai"
+    assert default_entry.model == "qwen/qwen3.8-27b"
+
+    override_registry = LLMProviderRegistry(
+        environment=_environment(
+            GROQ_API_KEY="secret",
+            GROQ_MODEL="qwen/approved-override",
+            FRIDAY_LLM_DEFAULT_PROVIDER="groq",
+        )
+    )
+    override_registry.validate_manual("groq", "qwen/approved-override")
+    with pytest.raises(LLMSelectionError, match="configured catalogue"):
+        override_registry.validate_manual("groq", "qwen/qwen3.8-27b")
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "expected_calls"),
+    [
+        (400, LLMFailureCategory.INVALID_REQUEST, 1),
+        (401, LLMFailureCategory.AUTHENTICATION, 1),
+        (403, LLMFailureCategory.AUTHENTICATION, 1),
+        (429, LLMFailureCategory.RATE_LIMIT, 2),
+        (503, LLMFailureCategory.PROVIDER_UNAVAILABLE, 2),
+    ],
+)
+def test_groq_errors_are_sanitized_and_use_existing_retry_policy(
+    status: int,
+    category: LLMFailureCategory,
+    expected_calls: int,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            status,
+            headers={"Retry-After": "0"},
+            json={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "api_key=secret https://private.invalid details",
+                }
+            },
+        )
+
+    provider = GroqProvider(
+        api_key="secret",
+        model="qwen/qwen3.8-27b",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        retry_base_seconds=0,
+    )
+    with pytest.raises(LLMProviderError) as captured:
+        _run(provider.generate(_provider_request()))
+
+    error = captured.value
+    assert calls == expected_calls
+    assert error.category == category
+    assert error.http_status_code == status
+    assert error.provider_error_code == "invalid_request_error"
+    assert error.provider_error_message is not None
+    assert "secret" not in error.provider_error_message
+    assert "https://" not in error.provider_error_message
+
+
+@pytest.mark.parametrize(
+    ("outcome", "category", "expected_calls"),
+    [
+        (httpx.ReadTimeout("private timeout"), LLMFailureCategory.TIMEOUT, 2),
+        (httpx.ConnectError("private connection"), LLMFailureCategory.TRANSPORT_ERROR, 2),
+        (httpx.Response(200, content=b"not-json"), LLMFailureCategory.MALFORMED_RESPONSE, 1),
+    ],
+)
+def test_groq_transport_and_malformed_failures_remain_bounded(
+    outcome: Exception | httpx.Response,
+    category: LLMFailureCategory,
+    expected_calls: int,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if isinstance(outcome, Exception):
+            if isinstance(outcome, httpx.RequestError):
+                outcome.request = request
+            raise outcome
+        return outcome
+
+    provider = GroqProvider(
+        api_key="credential-value",
+        model="qwen/qwen3.8-27b",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        retry_base_seconds=0,
+    )
+    with pytest.raises(LLMProviderError) as captured:
+        _run(provider.generate(_provider_request()))
+
+    assert calls == expected_calls
+    assert captured.value.category == category
+    assert "private" not in str(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -232,6 +438,8 @@ def _environment(**updates: str) -> dict[str, str | None]:
         "ANTHROPIC_MODEL": None,
         "GEMINI_API_KEY": None,
         "GEMINI_MODEL": None,
+        "GROQ_API_KEY": None,
+        "GROQ_MODEL": None,
         "FRIDAY_LLM_PROVIDER_MODE": "auto",
         "FRIDAY_LLM_DEFAULT_PROVIDER": "openai",
         "FRIDAY_LLM_MANUAL_FALLBACK_ENABLED": "false",
@@ -253,7 +461,7 @@ def _environment(**updates: str) -> dict[str, str | None]:
                     "input_per_million": 0,
                     "output_per_million": 0,
                 }
-                for provider in ("openai", "anthropic", "gemini")
+                for provider in ("openai", "anthropic", "gemini", "groq")
             }
         ),
     }
@@ -701,7 +909,7 @@ def test_catalogue_is_sanitized_and_configuration_only() -> None:
     payload = registry.catalogue().model_dump_json()
     assert "never-return-this" not in payload
     assert "safe-label" in payload
-    assert len(registry.catalogue().providers) == 3
+    assert len(registry.catalogue().providers) == 4
     openai = registry.catalogue().providers[0]
     assert openai.available is False
     assert openai.health == "unknown"

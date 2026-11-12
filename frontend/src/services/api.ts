@@ -26,7 +26,7 @@ export type AgentListResponse = {
 }
 
 export type LLMProviderPricingStatus = {
-  provider: "openai" | "anthropic" | "gemini"
+  provider: "openai" | "anthropic" | "gemini" | "groq"
   model: string | null
   configured: boolean
   pricing_status: "known" | "unknown"
@@ -56,7 +56,7 @@ export type LLMBudgetStatus = {
 
 export type LLMUsageRecord = {
   request_id: string
-  provider: "openai" | "anthropic" | "gemini"
+  provider: "openai" | "anthropic" | "gemini" | "groq"
   model: string
   estimated_input_tokens: number
   estimated_output_tokens: number

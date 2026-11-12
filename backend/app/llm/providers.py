@@ -29,6 +29,21 @@ _SENSITIVE_PARAMETER_PATTERN = re.compile(
 )
 _QUOTED_VALUE_PATTERN = re.compile(r"([\"'`])[^\"'`]{1,160}\1")
 _TOKEN_LIKE_PATTERN = re.compile(r"\b[A-Za-z0-9_-]{24,}\b")
+_SAFE_REPORTED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}")
+_STRICT_SCHEMA_KEYS = frozenset(
+    {
+        "$defs",
+        "$ref",
+        "additionalProperties",
+        "anyOf",
+        "description",
+        "enum",
+        "items",
+        "properties",
+        "required",
+        "type",
+    }
+)
 
 
 class _HTTPProvider:
@@ -131,6 +146,7 @@ class _HTTPProvider:
             json_text=json_text,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            reported_model=self._reported_model(payload),
         )
 
     def _retry_delay(self, error: LLMProviderError, attempt: int) -> float | None:
@@ -158,6 +174,10 @@ class _HTTPProvider:
     def _usage(self, payload: object) -> tuple[int | None, int | None]:
         del payload
         return None, None
+
+    def _reported_model(self, payload: object) -> str | None:
+        del payload
+        return None
 
 
 class OpenAIProvider(_HTTPProvider):
@@ -304,6 +324,138 @@ class GeminiProvider(_HTTPProvider):
         return _token_count(usage.get("promptTokenCount")), _token_count(
             usage.get("candidatesTokenCount")
         )
+
+
+class GroqProvider(_HTTPProvider):
+    """Groq Chat Completions adapter with local evidence validation downstream."""
+
+    name: LLMProviderName = "groq"
+
+    def _url(self) -> str:
+        return "https://api.groq.com/openai/v1/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _payload(self, request: LLMProviderRequest) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user", "content": request.user_prompt},
+            ],
+            "max_completion_tokens": request.max_output_tokens,
+            "response_format": _groq_response_format(
+                model=self.model,
+                schema=request.json_schema,
+            ),
+        }
+
+    def _extract(self, payload: object) -> str:
+        if not isinstance(payload, dict):
+            raise TypeError
+        text = payload["choices"][0]["message"]["content"]
+        if not isinstance(text, str) or not text:
+            raise ValueError
+        return text
+
+    def _usage(self, payload: object) -> tuple[int | None, int | None]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("usage"), dict):
+            return None, None
+        usage = payload["usage"]
+        return _token_count(usage.get("prompt_tokens")), _token_count(
+            usage.get("completion_tokens")
+        )
+
+    def _reported_model(self, payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        model = payload.get("model")
+        if not isinstance(model, str):
+            return None
+        normalized = model.strip()
+        return normalized if _SAFE_REPORTED_MODEL.fullmatch(normalized) else None
+
+
+def _groq_response_format(*, model: str, schema: dict[str, object]) -> dict[str, Any]:
+    if model.strip().casefold() == "qwen/qwen3.8-27b" and _strict_schema_compatible(schema):
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "friday_chief_strategist",
+                "strict": True,
+                "schema": schema,
+            },
+        }
+    return {"type": "json_object"}
+
+
+def _strict_schema_compatible(value: object) -> bool:
+    """Conservatively recognize Groq strict-schema-compatible structures."""
+
+    if not isinstance(value, dict) or not set(value).issubset(_STRICT_SCHEMA_KEYS):
+        return False
+    schema_type = value.get("type")
+    if schema_type is not None and schema_type not in (
+        "array",
+        "boolean",
+        "integer",
+        "null",
+        "number",
+        "object",
+        "string",
+    ):
+        return False
+    if value.get("type") == "object":
+        properties = value.get("properties")
+        required = value.get("required")
+        if not isinstance(properties, dict) or value.get("additionalProperties") is not False:
+            return False
+        if (
+            not isinstance(required, list)
+            or any(not isinstance(item, str) for item in required)
+            or set(required) != set(properties)
+            or not all(
+                isinstance(name, str) and _strict_schema_compatible(child)
+                for name, child in properties.items()
+            )
+        ):
+            return False
+    if "items" in value and not _strict_schema_compatible(value["items"]):
+        return False
+    if "anyOf" in value:
+        variants = value["anyOf"]
+        if not isinstance(variants, list) or not variants or not all(
+            _strict_schema_compatible(item) for item in variants
+        ):
+            return False
+    if "$defs" in value:
+        definitions = value["$defs"]
+        if not isinstance(definitions, dict) or not all(
+            isinstance(name, str) and _strict_schema_compatible(child)
+            for name, child in definitions.items()
+        ):
+            return False
+    if "$ref" in value and (
+        not isinstance(value["$ref"], str)
+        or not value["$ref"].startswith("#/$defs/")
+    ):
+        return False
+    if "enum" in value and (
+        not isinstance(value["enum"], list)
+        or not value["enum"]
+        or any(
+            not isinstance(item, (str, int, float, bool, type(None)))
+            for item in value["enum"]
+        )
+    ):
+        return False
+    if "description" in value and not isinstance(value["description"], str):
+        return False
+    return True
 
 
 def _is_gemini_3_model(model: str) -> bool:

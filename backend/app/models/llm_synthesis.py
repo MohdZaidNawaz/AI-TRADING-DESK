@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-LLMProviderName = Literal["openai", "anthropic", "gemini"]
+LLMProviderName = Literal["openai", "anthropic", "gemini", "groq"]
 LLMProviderMode = Literal["auto", "manual"]
 LLMFallbackReason = Literal[
     "not_configured",

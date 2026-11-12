@@ -43,6 +43,8 @@ def _environment(path: Path, **updates: str) -> dict[str, str | None]:
         "ANTHROPIC_MODEL": None,
         "GEMINI_API_KEY": None,
         "GEMINI_MODEL": None,
+        "GROQ_API_KEY": None,
+        "GROQ_MODEL": None,
         "FRIDAY_LLM_PROVIDER_MODE": "auto",
         "FRIDAY_LLM_DEFAULT_PROVIDER": "openai",
         "FRIDAY_LLM_MANUAL_FALLBACK_ENABLED": "false",
@@ -258,6 +260,51 @@ def test_auto_selection_stays_on_configured_free_tier(tmp_path: Path) -> None:
     )
     candidates = registry.candidates(mode="auto", provider=None, model=None)
     assert tuple(candidate.name for candidate in candidates) == ("gemini",)
+
+
+def test_groq_requires_explicit_free_tier_or_authorized_pricing(tmp_path: Path) -> None:
+    unknown = LLMProviderRegistry(
+        environment=_environment(
+            tmp_path / "unknown.sqlite3",
+            GROQ_API_KEY="configured",
+            FRIDAY_LLM_DEFAULT_PROVIDER="groq",
+        )
+    )
+    assert unknown.candidates(mode="auto", provider=None, model=None) == ()
+    groq_status = next(
+        item for item in unknown.pricing_status() if item.provider == "groq"
+    )
+    assert groq_status.configured is True
+    assert groq_status.pricing_status == "unknown"
+    assert groq_status.eligible is False
+    assert groq_status.free_tier_quota_status == "not_applicable"
+
+    free_pricing = json.dumps(
+        {
+            "groq": {
+                "tier": "free",
+                "currency": "INR",
+                "input_per_million": 0,
+                "output_per_million": 0,
+            }
+        }
+    )
+    free_environment = _environment(
+        tmp_path / "free.sqlite3",
+        GROQ_API_KEY="configured",
+        FRIDAY_LLM_PROVIDER_PRICING_JSON=free_pricing,
+    )
+    free_environment["FRIDAY_LLM_DEFAULT_PROVIDER"] = None
+    free = LLMProviderRegistry(environment=free_environment)
+    assert free.settings.default_provider == "groq"
+    assert tuple(
+        item.name for item in free.candidates(mode="auto", provider=None, model=None)
+    ) == ("groq",)
+    free_status = next(
+        item for item in free.pricing_status() if item.provider == "groq"
+    )
+    assert free_status.free_tier_quota_status == "unverified"
+    assert free_status.paid_authorization_required is False
 
 
 def test_auto_selection_uses_cheapest_paid_only_when_explicitly_authorized(

@@ -2,9 +2,10 @@
 
 ## Implemented boundary
 
-FRIDAY can optionally use OpenAI Responses, Anthropic Messages, or Google Gemini
-GenerateContent for one evidence-bound Chief Market Strategist narrative after the
-nine deterministic specialists have completed. The LLM layer is explanatory only.
+FRIDAY can optionally use OpenAI Responses, Anthropic Messages, Google Gemini
+GenerateContent, or Groq Chat Completions for one evidence-bound Chief Market
+Strategist narrative after the nine deterministic specialists have completed. The
+LLM layer is explanatory only.
 It cannot change deterministic calculations, the Master Trade Thesis, proposals,
 risk sizing, Sentinel decisions, approvals, submission, or execution.
 
@@ -20,8 +21,9 @@ Set provider credentials only in the backend process environment:
 - `OPENAI_API_KEY` and optional `OPENAI_MODEL`
 - `ANTHROPIC_API_KEY` and optional `ANTHROPIC_MODEL`
 - `GEMINI_API_KEY` and optional `GEMINI_MODEL` (default `gemini-3.8-flash`)
+- `GROQ_API_KEY` and optional `GROQ_MODEL` (default `qwen/qwen3.8-27b`)
 - `FRIDAY_LLM_PROVIDER_MODE=auto|manual`
-- `FRIDAY_LLM_DEFAULT_PROVIDER=openai|anthropic|gemini`
+- `FRIDAY_LLM_DEFAULT_PROVIDER=openai|anthropic|gemini|groq` (default `groq`)
 - `FRIDAY_LLM_MANUAL_FALLBACK_ENABLED=true|false` (default `false`)
 - `FRIDAY_LLM_TIMEOUT_SECONDS` (bounded to 1–60 seconds)
 - `FRIDAY_LLM_MAX_ATTEMPTS` (default `2`, bounded to 1–3)
@@ -42,6 +44,10 @@ Set provider credentials only in the backend process environment:
 Unknown or malformed pricing is ineligible and never becomes zero-cost. A provider
 may be labelled `free` only by explicit configuration with zero input and output
 rates. Paid dispatch requires the separate paid-provider authorization flag.
+Groq account entitlement and free-tier quota are not inferred from a configured
+key; they remain `unverified` unless an operator explicitly configures a zero-cost
+free tier. Otherwise Groq needs explicit pricing and the separately controlled paid
+authorization, which remains disabled by default.
 
 The provider catalogue at `GET /api/llm/providers` returns configuration and
 health labels only. `available` becomes true only after a successful call; an
@@ -79,6 +85,16 @@ Gemini 3 requests use `thinkingLevel=low` to reduce narrative-synthesis latency.
 Older Gemini model overrides do not receive that field. JSON mode, output-token
 bounds, local Pydantic validation, and evidence-reference validation remain
 required for every Gemini response.
+
+Groq uses the OpenAI-compatible `/openai/v1/chat/completions` endpoint. As of the
+Phase 6B.8 review, Groq had deprecated `qwen/qwen3-32b`; the configured default is
+its current Qwen successor `qwen/qwen3.8-27b`, which Groq labels as a preview model.
+The model ID remains overrideable with `GROQ_MODEL` so catalogue changes never
+require a silent substitution. Qwen 3.8 supports JSON Schema mode, but strict mode
+is sent only when the supplied schema satisfies Groq's strict subset. Other schemas
+and model overrides use JSON Object mode followed by the same mandatory local
+Pydantic, evidence-reference, output-bound, and injection-safety validation. No
+mocked test establishes live availability or account quota.
 
 Provider health is process-local and passive: FRIDAY performs no separate health
 probe. An unknown configured provider is eligible for its first request; successful

@@ -98,7 +98,7 @@ def parse_provider_pricing(
     if not isinstance(raw, dict):
         return {}
     parsed: dict[LLMProviderName, ProviderPricing] = {}
-    for name in ("openai", "anthropic", "gemini"):
+    for name in ("openai", "anthropic", "gemini", "groq"):
         item = raw.get(name)
         if not isinstance(item, dict):
             continue

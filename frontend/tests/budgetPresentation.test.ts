@@ -12,8 +12,8 @@ import type { LLMProviderPricingStatus, LLMUsageRecord } from "../src/services/a
 function record(overrides: Partial<LLMUsageRecord> = {}): LLMUsageRecord {
   return {
     request_id: "00000000-0000-0000-0000-000000000001",
-    provider: "gemini",
-    model: "gemini-test",
+    provider: "groq",
+    model: "qwen/qwen3.8-27b",
     estimated_input_tokens: 100,
     estimated_output_tokens: 50,
     input_tokens: 80,
@@ -55,8 +55,8 @@ test("missing provider token telemetry is identified as estimate-only", () => {
 
 test("provider readiness labels preserve unknown quota and paid authorization states", () => {
   const free: LLMProviderPricingStatus = {
-    provider: "gemini",
-    model: "model",
+    provider: "groq",
+    model: "qwen/qwen3.8-27b",
     configured: true,
     pricing_status: "known",
     tier: "free",

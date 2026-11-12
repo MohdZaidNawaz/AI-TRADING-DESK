@@ -53,6 +53,7 @@ class LLMProviderResult:
     json_text: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+    reported_model: str | None = None
 
 
 class LLMProvider(Protocol):

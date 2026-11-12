@@ -13,6 +13,8 @@ from app.config import (
     ANTHROPIC_MODEL_ENV,
     GEMINI_API_KEY_ENV,
     GEMINI_MODEL_ENV,
+    GROQ_API_KEY_ENV,
+    GROQ_MODEL_ENV,
     LLM_DEFAULT_PROVIDER_ENV,
     LLM_BUDGET_DB_PATH_ENV,
     LLM_INR_PER_USD_ENV,
@@ -37,7 +39,12 @@ from app.llm.budget import (
     budget_policy_from_environment,
     parse_provider_pricing,
 )
-from app.llm.providers import AnthropicProvider, GeminiProvider, OpenAIProvider
+from app.llm.providers import (
+    AnthropicProvider,
+    GeminiProvider,
+    GroqProvider,
+    OpenAIProvider,
+)
 from app.models.llm_synthesis import (
     LLMFallbackReason,
     LLMProviderCatalogue,
@@ -47,11 +54,12 @@ from app.models.llm_synthesis import (
     LLMProviderName,
 )
 
-_ORDER: tuple[LLMProviderName, ...] = ("openai", "anthropic", "gemini")
+_ORDER: tuple[LLMProviderName, ...] = ("openai", "anthropic", "gemini", "groq")
 _DEFAULT_MODELS: dict[LLMProviderName, str] = {
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-4-5-20250929",
     "gemini": "gemini-3.8-flash",
+    "groq": "qwen/qwen3.8-27b",
 }
 
 
@@ -82,7 +90,7 @@ class LLMProviderRegistry:
         env = environment if environment is not None else get_llm_environment()
         mode = _choice(env.get(LLM_PROVIDER_MODE_ENV), ("auto", "manual"), "auto")
         default = _choice(
-            env.get(LLM_DEFAULT_PROVIDER_ENV), _ORDER, "openai"
+            env.get(LLM_DEFAULT_PROVIDER_ENV), _ORDER, "groq"
         )
         self.settings = LLMSettings(
             mode=mode,  # type: ignore[arg-type]
@@ -109,6 +117,7 @@ class LLMProviderRegistry:
             ("openai", OPENAI_API_KEY_ENV, OPENAI_MODEL_ENV, OpenAIProvider),
             ("anthropic", ANTHROPIC_API_KEY_ENV, ANTHROPIC_MODEL_ENV, AnthropicProvider),
             ("gemini", GEMINI_API_KEY_ENV, GEMINI_MODEL_ENV, GeminiProvider),
+            ("groq", GROQ_API_KEY_ENV, GROQ_MODEL_ENV, GroqProvider),
         )
         self._providers: dict[LLMProviderName, LLMProvider] = {}
         self._health: dict[LLMProviderName, Literal[
