@@ -9,8 +9,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.llm.contracts import LLMFailureCategory, LLMProviderError, LLMProviderRequest
+from app.llm.budget import BudgetAuthorization, LLMBudgetError
 from app.llm.registry import LLMProviderRegistry, get_llm_provider_registry
-from app.models.llm_synthesis import ChiefStrategistNarrative, LLMSynthesisMetadata
+from app.models.llm_synthesis import (
+    ChiefStrategistNarrative,
+    LLMFallbackReason,
+    LLMSynthesisMetadata,
+)
 from app.models.schemas import AnalyzeRequest, AnalyzeResponse, Synthesis
 
 _MAX_CONTEXT_CHARS = 40_000
@@ -54,7 +59,7 @@ class ChiefStrategistLLMService:
                     "llm_synthesis": LLMSynthesisMetadata(
                         mode=mode,
                         status="deterministic_fallback",
-                        fallback_reason="not_configured",
+                        fallback_reason=self._registry.empty_selection_reason(),
                     )
                 }
             )
@@ -76,33 +81,106 @@ class ChiefStrategistLLMService:
                     )
                 }
             )
-        last_failure: str = "provider_unavailable"
+        last_failure: LLMFallbackReason = "provider_unavailable"
         last_provider: str | None = None
         last_model: str | None = None
+        last_provider_error: LLMProviderError | None = None
         started = monotonic()
         for candidate in candidates:
             last_provider = candidate.name
             last_model = candidate.model
             try:
+                authorization = self._registry.authorize(
+                    candidate.name,
+                    candidate.model,
+                    input_tokens=_estimated_input_tokens(provider_request),
+                    output_tokens=provider_request.max_output_tokens,
+                )
+            except LLMBudgetError:
+                return _fallback(
+                    deterministic,
+                    mode,
+                    "budget_ledger_unavailable",
+                    started,
+                    candidate.name,
+                    candidate.model,
+                )
+            if not authorization.allowed:
+                last_failure = authorization.reason  # type: ignore[assignment]
+                if mode == "manual":
+                    return _fallback(
+                        deterministic,
+                        mode,
+                        last_failure,
+                        started,
+                        candidate.name,
+                        candidate.model,
+                    )
+                continue
+            try:
                 result = await candidate.generate(provider_request)
+            except LLMProviderError as error:
+                if not _release_budget(self._registry, authorization):
+                    return _fallback(
+                        deterministic,
+                        mode,
+                        "budget_ledger_unavailable",
+                        started,
+                        candidate.name,
+                        candidate.model,
+                    )
+                last_failure = _fallback_category(error.category)
+                last_provider_error = error
+                self._registry.mark_failed(candidate.name, last_failure)
+                if error.retryable:
+                    continue
+                return _fallback(
+                    deterministic,
+                    mode,
+                    last_failure,
+                    started,
+                    candidate.name,
+                    candidate.model,
+                    provider_error=error,
+                )
+            pricing = self._registry.pricing(candidate.name)
+            if pricing is None:
+                return _fallback(
+                    deterministic,
+                    mode,
+                    "pricing_unavailable",
+                    started,
+                    candidate.name,
+                    candidate.model,
+                )
+            try:
+                self._registry.budget_ledger.complete(
+                    authorization,
+                    pricing=pricing,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                )
+            except LLMBudgetError:
+                return _fallback(
+                    deterministic,
+                    mode,
+                    "budget_ledger_unavailable",
+                    started,
+                    candidate.name,
+                    candidate.model,
+                )
+            try:
                 narrative = ChiefStrategistNarrative.model_validate_json(result.json_text)
                 _validate_narrative(narrative, evidence_ids)
-            except LLMProviderError as error:
-                last_failure = _fallback_category(error.category)
-                if error.retryable:
-                    self._registry.mark_unavailable(candidate.name)
-                    continue
-                self._registry.mark_unavailable(candidate.name)
-                return _fallback(
-                    deterministic, mode, last_failure, started, candidate.name, candidate.model
-                )
             except (ValidationError, ValueError, json.JSONDecodeError) as error:
+                reason: LLMFallbackReason
                 if isinstance(error, ValidationError) or isinstance(error, json.JSONDecodeError):
                     reason = "schema_validation"
                 elif str(error) == "unknown evidence reference":
                     reason = "evidence_validation"
                 else:
                     reason = "unsafe_output"
+                self._registry.mark_failed(candidate.name, reason)
                 return _fallback(
                     deterministic, mode, reason, started, candidate.name, candidate.model
                 )
@@ -117,7 +195,13 @@ class ChiefStrategistLLMService:
                 latency_ms=_latency_ms(started),
             )
         return _fallback(
-            deterministic, mode, last_failure, started, last_provider, last_model
+            deterministic,
+            mode,
+            last_failure,
+            started,
+            last_provider,
+            last_model,
+            provider_error=last_provider_error,
         )
 
 
@@ -273,10 +357,12 @@ def _apply_narrative(
 def _fallback(
     response: AnalyzeResponse,
     mode: str,
-    reason: str,
+    reason: LLMFallbackReason,
     started: float,
     provider: str | None,
     model: str | None,
+    *,
+    provider_error: LLMProviderError | None = None,
 ) -> AnalyzeResponse:
     return response.model_copy(
         update={
@@ -285,20 +371,32 @@ def _fallback(
                 status="deterministic_fallback",
                 provider=provider,  # type: ignore[arg-type]
                 model=model,
-                fallback_reason=reason,  # type: ignore[arg-type]
+                fallback_reason=reason,
+                http_status_code=(
+                    provider_error.http_status_code if provider_error else None
+                ),
+                provider_error_code=(
+                    provider_error.provider_error_code if provider_error else None
+                ),
+                provider_error_message=(
+                    provider_error.provider_error_message if provider_error else None
+                ),
+                retry_after_seconds=(
+                    provider_error.retry_after_seconds if provider_error else None
+                ),
                 latency_ms=_latency_ms(started),
             )
         }
     )
 
 
-def _fallback_category(category: LLMFailureCategory) -> str:
-    mapping = {
-        LLMFailureCategory.AUTHENTICATION: "provider_unavailable",
+def _fallback_category(category: LLMFailureCategory) -> LLMFallbackReason:
+    mapping: dict[LLMFailureCategory, LLMFallbackReason] = {
+        LLMFailureCategory.AUTHENTICATION: "authentication",
         LLMFailureCategory.PROVIDER_UNAVAILABLE: "provider_unavailable",
         LLMFailureCategory.RESPONSE_TOO_LARGE: "malformed_response",
     }
-    return mapping.get(category, category.value)
+    return mapping.get(category, category.value)  # type: ignore[return-value]
 
 
 def _evidence_allowlist(response: AnalyzeResponse) -> frozenset[str]:
@@ -315,6 +413,27 @@ def _bound(value: str | None) -> str | None:
 
 def _latency_ms(started: float) -> int:
     return min(int((monotonic() - started) * 1000), 300_000)
+
+
+def _estimated_input_tokens(request: LLMProviderRequest) -> int:
+    """Conservative provider-neutral upper bound: one UTF-8 byte per token."""
+    schema = json.dumps(request.json_schema, sort_keys=True, separators=(",", ":"))
+    return max(
+        1,
+        len(request.system_prompt.encode("utf-8"))
+        + len(request.user_prompt.encode("utf-8"))
+        + len(schema.encode("utf-8")),
+    )
+
+
+def _release_budget(
+    registry: LLMProviderRegistry, authorization: BudgetAuthorization
+) -> bool:
+    try:
+        registry.budget_ledger.release(authorization)
+    except LLMBudgetError:
+        return False
+    return True
 
 
 @lru_cache(maxsize=1)

@@ -25,6 +25,49 @@ export type AgentListResponse = {
   agents: Agent[]
 }
 
+export type LLMProviderPricingStatus = {
+  provider: "openai" | "anthropic" | "gemini"
+  model: string | null
+  configured: boolean
+  pricing_status: "known" | "unknown"
+  tier: "free" | "paid" | null
+  health: "unknown" | "healthy" | "temporarily_unavailable" | "authentication_failed" | "configuration_error"
+  eligible: boolean
+  paid_authorization_required: boolean
+  free_tier_quota_status: "not_applicable" | "unverified"
+}
+
+export type LLMBudgetStatus = {
+  monthly_budget_inr: string | number
+  usable_budget_inr: string | number
+  protected_reserve_inr: string | number
+  daily_limit_inr: string | number
+  maximum_request_estimate_inr: string | number
+  paid_provider_authorized: boolean
+  monthly_committed_inr: string | number
+  daily_committed_inr: string | number
+  monthly_spent_inr: string | number
+  daily_spent_inr: string | number
+  pending_reserved_inr: string | number
+  remaining_usable_inr: string | number
+  pending_request_count: number
+  provider_pricing: LLMProviderPricingStatus[]
+}
+
+export type LLMUsageRecord = {
+  request_id: string
+  provider: "openai" | "anthropic" | "gemini"
+  model: string
+  estimated_input_tokens: number
+  estimated_output_tokens: number
+  input_tokens: number | null
+  output_tokens: number | null
+  estimated_cost_inr: string | number
+  actual_cost_inr: string | number | null
+  state: "reserved" | "completed" | "released"
+  timestamp: string
+}
+
 export type Market = {
   symbol: string
   name: string
@@ -936,6 +979,12 @@ export const getProductionReadiness = (signal?: AbortSignal) =>
 
 export const getAgents = (signal?: AbortSignal) =>
   getJson<AgentListResponse>("/api/agents", signal)
+
+export const getLLMBudget = (signal?: AbortSignal) =>
+  getJson<LLMBudgetStatus>("/api/llm/budget", signal)
+
+export const getLLMUsage = (signal?: AbortSignal, limit = 100) =>
+  getJson<LLMUsageRecord[]>(`/api/llm/usage?limit=${encodeURIComponent(limit)}`, signal)
 
 export const getMarkets = (signal?: AbortSignal) =>
   getJson<MarketListResponse>("/api/markets", signal)

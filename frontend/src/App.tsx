@@ -8,6 +8,7 @@ import MarketAnalysisView from "./components/MarketAnalysisView"
 import { useSpeechSynthesis } from "./components/useSpeechSynthesis"
 import MarketsView from "./components/MarketsView"
 import Sidebar from "./components/Sidebar"
+import SettingsView from "./components/SettingsView"
 import { NAVIGATION, screenFromHash } from "./services/navigation"
 import { getHealth, getProductionReadiness } from "./services/api"
 import type {
@@ -29,11 +30,13 @@ function App() {
   const [command, setCommand] = useState("")
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [screen, setScreen] = useState(() => screenFromHash(window.location.hash))
+  const [budgetRefreshVersion, setBudgetRefreshVersion] = useState(0)
   const speech = useSpeechSynthesis({ onStateChange: setAssistantState })
 
   const handleAnalysis = (result: AnalyzeResponse, query: string) => {
     setAnalysis(result)
     setLastQuery(query)
+    setBudgetRefreshVersion((value) => value + 1)
     setConversations((current) => [
       {
         id: result.analysis_id,
@@ -139,7 +142,8 @@ function App() {
             />
           )}
           {screen === "markets" && <MarketsView />}
-          {screen !== "home" && screen !== "ai-intelligence" && screen !== "market-analysis" && screen !== "markets" && (
+          {screen === "settings" && <SettingsView refreshKey={budgetRefreshVersion} />}
+          {screen !== "home" && screen !== "ai-intelligence" && screen !== "market-analysis" && screen !== "markets" && screen !== "settings" && (
             <section className="catalogue-view" aria-labelledby="unavailable-title">
               <span className="eyebrow">NOT IMPLEMENTED</span>
               <h2 id="unavailable-title">{NAVIGATION.find((item) => item.id === screen)?.label}</h2>

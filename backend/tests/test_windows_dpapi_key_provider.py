@@ -94,6 +94,28 @@ def _key_file(directory: Path) -> Path:
     return files[0]
 
 
+def _make_protector_pass_probe_then_fail_key_protection(
+    monkeypatch: pytest.MonkeyPatch, *, message: str
+) -> None:
+    """Keep synthetic create-failure tests independent of host DPAPI availability."""
+
+    def protect(self: WindowsDpapiProtector, plaintext: bytearray, *, entropy: bytes) -> bytes:
+        del entropy
+        if not getattr(self, "_test_probe_complete", False):
+            self._test_probe_complete = True  # type: ignore[attr-defined]
+            return bytes(plaintext)
+        raise PersonalKeyProviderUnavailable(message)
+
+    def unprotect(
+        self: WindowsDpapiProtector, protected_blob: bytes, *, entropy: bytes
+    ) -> bytearray:
+        del self, entropy
+        return bytearray(protected_blob)
+
+    monkeypatch.setattr(WindowsDpapiProtector, "protect", protect)
+    monkeypatch.setattr(WindowsDpapiProtector, "unprotect", unprotect)
+
+
 def _legacy_record_entropy(record: _StoredKeyRecord) -> bytes:
     binding = {
         "context": "NimbusDesk/FRIDAY/personal-policy-key/v1",
@@ -498,6 +520,9 @@ def test_legacy_entropy_record_fails_closed_without_rewrite(tmp_path: Path) -> N
 def test_missing_invalid_key_and_failed_native_protection_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _make_protector_pass_probe_then_fail_key_protection(
+        monkeypatch, message="synthetic DPAPI failure"
+    )
     provider = _provider(tmp_path)
     missing = provider.recovery_status(key_id="missing-key")
     assert missing.metadata_available is False
@@ -507,13 +532,6 @@ def test_missing_invalid_key_and_failed_native_protection_fail_closed(
 
     failing = WindowsDpapiKeyProvider(storage_dir=tmp_path / "failing-keys")
     assert failing.status().availability is PersonalKeyProviderAvailability.AVAILABLE
-    monkeypatch.setattr(
-        WindowsDpapiProtector,
-        "protect",
-        lambda self, plaintext, *, entropy: (_ for _ in ()).throw(
-            PersonalKeyProviderUnavailable("synthetic DPAPI failure")
-        ),
-    )
     with pytest.raises(PersonalKeyProviderUnavailable):
         failing.create_key(key_id="personal-key-1", created_at=NOW)
     assert not tuple((tmp_path / "failing-keys").glob("*.key.json"))
@@ -800,14 +818,10 @@ def test_provider_errors_do_not_expose_backend_or_private_diagnostics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     marker = "DO-NOT-EXPOSE-PRIVATE-MATERIAL"
-    provider = WindowsDpapiKeyProvider(storage_dir=tmp_path / "keys")
-    monkeypatch.setattr(
-        WindowsDpapiProtector,
-        "protect",
-        lambda self, plaintext, *, entropy: (_ for _ in ()).throw(
-            PersonalKeyProviderUnavailable(f"synthetic failure {marker}")
-        ),
+    _make_protector_pass_probe_then_fail_key_protection(
+        monkeypatch, message=f"synthetic failure {marker}"
     )
+    provider = WindowsDpapiKeyProvider(storage_dir=tmp_path / "keys")
     with pytest.raises(PersonalKeyProviderUnavailable) as failure:
         provider.create_key(key_id="personal-key-1", created_at=NOW)
     assert marker not in str(failure.value)
@@ -830,6 +844,92 @@ def test_production_constructor_rejects_injected_protection_dependencies(
             acl=_PermissiveAcl(),
         )
     assert not (tmp_path / "keys").exists()
+
+
+def test_constructor_requires_successful_nonpersistent_dpapi_capability_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _ProbeProtector:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.plaintext: bytes | None = None
+            self.entropy: bytes | None = None
+
+        def protect(self, plaintext: bytearray, *, entropy: bytes) -> bytes:
+            self.calls.append("protect")
+            self.plaintext = bytes(plaintext)
+            self.entropy = entropy
+            return b"nonpersistent-probe-ciphertext"
+
+        def unprotect(self, protected_blob: bytes, *, entropy: bytes) -> bytearray:
+            self.calls.append("unprotect")
+            assert protected_blob == b"nonpersistent-probe-ciphertext"
+            assert entropy == self.entropy
+            return bytearray(self.plaintext or b"")
+
+    class _ProbeAcl:
+        def secure(self, path: Path) -> None:
+            del path
+
+        def verify(self, path: Path) -> bool:
+            del path
+            return True
+
+    class _ProbeBackend:
+        pass
+
+    protector = _ProbeProtector()
+    monkeypatch.setattr(dpapi_module, "CryptographyEd25519Backend", _ProbeBackend)
+    monkeypatch.setattr(dpapi_module, "WindowsDpapiProtector", lambda: protector)
+    monkeypatch.setattr(dpapi_module, "WindowsRestrictedAcl", _ProbeAcl)
+
+    provider = WindowsDpapiKeyProvider(storage_dir=tmp_path / "keys")
+
+    assert provider.status().availability is PersonalKeyProviderAvailability.AVAILABLE
+    assert protector.calls == ["protect", "unprotect"]
+    assert not tuple((tmp_path / "keys").glob("*.key.json"))
+
+
+def test_constructor_marks_provider_unavailable_when_dpapi_capability_probe_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FailingProbeProtector:
+        calls = 0
+
+        def protect(self, plaintext: bytearray, *, entropy: bytes) -> bytes:
+            del plaintext, entropy
+            self.calls += 1
+            raise PersonalKeyProviderUnavailable("synthetic DPAPI capability failure")
+
+        def unprotect(self, protected_blob: bytes, *, entropy: bytes) -> bytearray:
+            del protected_blob, entropy
+            pytest.fail("failed capability probes must not attempt decryption")
+
+    class _ProbeAcl:
+        def secure(self, path: Path) -> None:
+            del path
+
+        def verify(self, path: Path) -> bool:
+            del path
+            return True
+
+    class _ProbeBackend:
+        pass
+
+    protector = _FailingProbeProtector()
+    monkeypatch.setattr(dpapi_module, "CryptographyEd25519Backend", _ProbeBackend)
+    monkeypatch.setattr(dpapi_module, "WindowsDpapiProtector", lambda: protector)
+    monkeypatch.setattr(dpapi_module, "WindowsRestrictedAcl", _ProbeAcl)
+
+    provider = WindowsDpapiKeyProvider(storage_dir=tmp_path / "keys")
+
+    status = provider.status()
+    assert protector.calls == 1
+    assert status.availability is PersonalKeyProviderAvailability.UNAVAILABLE
+    assert status.protection is PersonalKeyProtection.UNAVAILABLE
+    assert status.reason_codes == ("WINDOWS_DPAPI_UNAVAILABLE",)
+    assert not (tmp_path / "keys").exists()
+    assert not tuple((tmp_path / "keys").glob("*.key.json"))
 
 
 def test_provider_is_unavailable_off_windows_without_creating_storage(

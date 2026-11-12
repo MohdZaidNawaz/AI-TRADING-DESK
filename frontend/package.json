@@ -7,8 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:command-bar": "node --experimental-strip-types --test tests/commandBarTimeout.test.ts",
     "test:catalogue": "node --experimental-strip-types --test tests/catalogue.test.ts",
     "test:market-freshness": "node --experimental-strip-types --test tests/marketFreshness.test.ts",
+    "test:budget": "node --experimental-strip-types --test tests/budgetPresentation.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

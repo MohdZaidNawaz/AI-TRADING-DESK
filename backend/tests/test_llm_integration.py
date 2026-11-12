@@ -1,6 +1,10 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 import json
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -104,6 +108,31 @@ def test_provider_request_mapping_auth_and_response_parsing(
     assert captured["request"].url.query == b""
 
 
+def test_provider_reported_token_usage_is_normalized() -> None:
+    provider = OpenAIProvider(
+        api_key="secret",
+        model="model",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "{}"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 123, "output_tokens": 45},
+                },
+            )
+        ),
+    )
+    result = _run(provider.generate(_provider_request()))
+    assert result.input_tokens == 123
+    assert result.output_tokens == 45
+
+
 def test_provider_specific_structured_output_shapes() -> None:
     bodies: dict[str, dict[str, Any]] = {}
 
@@ -121,6 +150,78 @@ def test_provider_specific_structured_output_shapes() -> None:
     assert bodies["openai"]["text"]["format"]["strict"] is True
     assert bodies["anthropic"]["output_config"]["format"]["type"] == "json_schema"
     assert bodies["gemini"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert bodies["gemini"]["generationConfig"]["maxOutputTokens"] == request.max_output_tokens
+    assert "responseJsonSchema" not in bodies["gemini"]["generationConfig"]
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "retryable", "provider_code"),
+    [
+        (400, LLMFailureCategory.INVALID_REQUEST, False, "INVALID_ARGUMENT"),
+        (401, LLMFailureCategory.AUTHENTICATION, False, "UNAUTHENTICATED"),
+        (403, LLMFailureCategory.AUTHENTICATION, False, "PERMISSION_DENIED"),
+        (404, LLMFailureCategory.INVALID_REQUEST, False, "NOT_FOUND"),
+        (429, LLMFailureCategory.RATE_LIMIT, True, "RESOURCE_EXHAUSTED"),
+    ],
+)
+def test_gemini_http_errors_preserve_only_safe_bounded_diagnostics(
+    status: int,
+    category: LLMFailureCategory,
+    retryable: bool,
+    provider_code: str,
+) -> None:
+    calls = 0
+    captured_body: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            status,
+            json={
+                "error": {
+                    "code": status,
+                    "status": provider_code,
+                    "message": (
+                        'Rejected field "responseJsonSchema" for evidence. '
+                        "api_key=super-secret-key; see https://provider.invalid/private. "
+                        + ("x" * 400)
+                    ),
+                    "details": [{"raw": "must never be retained"}],
+                }
+            },
+        )
+
+    provider = GeminiProvider(
+        api_key="super-secret-key",
+        model="gemini-3.8-flash",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(LLMProviderError) as captured:
+        _run(provider.generate(_provider_request()))
+
+    error = captured.value
+    assert calls == (2 if retryable else 1)
+    assert error.category == category
+    assert error.retryable is retryable
+    assert error.http_status_code == status
+    assert error.provider_error_code == provider_code
+    assert error.provider_error_message is not None
+    assert len(error.provider_error_message) <= 240
+    safe_diagnostic = json.dumps(
+        {
+            "code": error.provider_error_code,
+            "message": error.provider_error_message,
+        }
+    )
+    assert "super-secret-key" not in safe_diagnostic
+    assert "https://" not in safe_diagnostic
+    assert "responseJsonSchema" not in safe_diagnostic
+    assert "must never be retained" not in safe_diagnostic
+    assert str(error) == category.value
+    assert "responseJsonSchema" not in captured_body["generationConfig"]
 
 
 def _environment(**updates: str) -> dict[str, str | None]:
@@ -135,10 +236,109 @@ def _environment(**updates: str) -> dict[str, str | None]:
         "FRIDAY_LLM_DEFAULT_PROVIDER": "openai",
         "FRIDAY_LLM_MANUAL_FALLBACK_ENABLED": "false",
         "FRIDAY_LLM_TIMEOUT_SECONDS": "5",
+        "FRIDAY_LLM_MAX_ATTEMPTS": "2",
+        "FRIDAY_LLM_RETRY_BASE_SECONDS": "0",
+        "FRIDAY_LLM_MAX_RETRY_DELAY_SECONDS": "10",
         "FRIDAY_LLM_MAX_OUTPUT_TOKENS": "900",
+        "FRIDAY_LLM_BUDGET_DB_PATH": str(
+            Path(__file__).resolve().parents[1]
+            / "runtime"
+            / f"test-llm-usage-{uuid4().hex}.sqlite3"
+        ),
+        "FRIDAY_LLM_PROVIDER_PRICING_JSON": json.dumps(
+            {
+                provider: {
+                    "tier": "free",
+                    "currency": "INR",
+                    "input_per_million": 0,
+                    "output_per_million": 0,
+                }
+                for provider in ("openai", "anthropic", "gemini")
+            }
+        ),
     }
     env.update(updates)
     return env
+
+
+def test_gemini_default_model_uses_generate_content_json_mode() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+        )
+
+    registry = LLMProviderRegistry(
+        environment=_environment(GEMINI_API_KEY="configured-key"),
+        transports={"gemini": httpx.MockTransport(handler)},
+    )
+    provider = registry.candidates(
+        mode="manual",
+        provider="gemini",
+        model=None,
+    )[0]
+    _run(provider.generate(_provider_request()))
+
+    assert provider.model == "gemini-3.8-flash"
+    assert captured["url"].endswith(
+        "/v1beta/models/gemini-3.8-flash:generateContent"
+    )
+    assert captured["body"]["systemInstruction"]["parts"]
+    generation_config = captured["body"]["generationConfig"]
+    assert generation_config == {
+        "responseMimeType": "application/json",
+        "maxOutputTokens": _provider_request().max_output_tokens,
+        "thinkingConfig": {"thinkingLevel": "low"},
+    }
+    assert "responseJsonSchema" not in generation_config
+
+
+def test_older_gemini_model_omits_gemini_3_thinking_configuration() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+        )
+
+    provider = GeminiProvider(
+        api_key="configured-key",
+        model="gemini-2.5-flash",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+    )
+    _run(provider.generate(_provider_request()))
+
+    assert captured["body"]["generationConfig"] == {
+        "responseMimeType": "application/json",
+        "maxOutputTokens": _provider_request().max_output_tokens,
+    }
+    assert "responseJsonSchema" not in captured["body"]["generationConfig"]
+
+
+def test_explicit_gemini_model_override_remains_authoritative() -> None:
+    registry = LLMProviderRegistry(
+        environment=_environment(
+            GEMINI_API_KEY="configured-key",
+            GEMINI_MODEL="gemini-approved-override",
+        )
+    )
+
+    gemini = next(
+        provider
+        for provider in registry.catalogue().providers
+        if provider.provider == "gemini"
+    )
+    assert gemini.model == "gemini-approved-override"
+    registry.validate_manual("gemini", "gemini-approved-override")
+    with pytest.raises(LLMSelectionError, match="configured catalogue"):
+        registry.validate_manual("gemini", "gemini-3.8-flash")
 
 
 def _deterministic(query: str = "Give me a complete overview"):
@@ -148,7 +348,8 @@ def _deterministic(query: str = "Give me a complete overview"):
 
 def test_no_provider_is_truthful_deterministic_fallback() -> None:
     request, deterministic = _deterministic()
-    service = ChiefStrategistLLMService(LLMProviderRegistry(environment=_environment()))
+    registry = LLMProviderRegistry(environment=_environment())
+    service = ChiefStrategistLLMService(registry)
 
     response = _run(service.enhance(request, deterministic))
 
@@ -157,6 +358,11 @@ def test_no_provider_is_truthful_deterministic_fallback() -> None:
     assert response.llm_synthesis.fallback_reason == "not_configured"
     assert response.llm_synthesis.provider is None
     assert response.llm_synthesis.model is None
+    assert all(not provider.configured for provider in registry.catalogue().providers)
+    assert all(
+        provider.last_failure_reason is None
+        for provider in registry.catalogue().providers
+    )
 
 
 def test_successful_llm_synthesis_preserves_deterministic_artifacts() -> None:
@@ -165,7 +371,23 @@ def test_successful_llm_synthesis_preserves_deterministic_artifacts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(_narrative())}]}]})
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(_narrative()),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 111, "output_tokens": 22},
+            },
+        )
 
     registry = LLMProviderRegistry(
         environment=_environment(OPENAI_API_KEY="secret", OPENAI_MODEL="approved-model"),
@@ -184,6 +406,11 @@ def test_successful_llm_synthesis_preserves_deterministic_artifacts() -> None:
     assert response.synthesis.summary.startswith("LLM interpretation:")
     assert "no AI model" not in response.synthesis.caveat
     assert "explanatory narrative only" in response.synthesis.caveat
+    usage = registry.budget_ledger.usage()
+    assert len(usage) == 1
+    assert usage[0].state == "completed"
+    assert usage[0].input_tokens == 111
+    assert usage[0].output_tokens == 22
 
 
 def test_auto_fallback_only_after_retryable_failure() -> None:
@@ -210,11 +437,178 @@ def test_auto_fallback_only_after_retryable_failure() -> None:
     request, deterministic = _deterministic()
     response = _run(ChiefStrategistLLMService(registry).enhance(request, deterministic))
 
-    assert calls == ["openai", "anthropic"]
+    assert calls == ["openai", "openai", "anthropic"]
     assert response.llm_synthesis.provider == "anthropic"
     catalogue = {item.provider: item for item in registry.catalogue().providers}
-    assert catalogue["openai"].health == "unavailable"
+    assert catalogue["openai"].health == "temporarily_unavailable"
+    assert catalogue["openai"].configured is True
+    assert catalogue["openai"].last_failure_reason == "provider_unavailable"
     assert catalogue["anthropic"].health == "healthy"
+    assert catalogue["anthropic"].last_failure_reason is None
+
+
+def test_failed_configured_provider_is_retried_on_later_analysis() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(_narrative()),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    registry = LLMProviderRegistry(
+        environment=_environment(
+            OPENAI_API_KEY="configured-key",
+            OPENAI_MODEL="configured-model",
+            FRIDAY_LLM_MAX_ATTEMPTS="1",
+        ),
+        transports={"openai": httpx.MockTransport(handler)},
+    )
+    service = ChiefStrategistLLMService(registry)
+    request, deterministic = _deterministic()
+
+    first = _run(service.enhance(request, deterministic))
+    first_status = registry.catalogue().providers[0]
+    assert calls == 1
+    assert first.llm_synthesis.status == "deterministic_fallback"
+    assert first.llm_synthesis.fallback_reason == "provider_unavailable"
+    assert first.llm_synthesis.provider == "openai"
+    assert first.llm_synthesis.model == "configured-model"
+    assert first_status.configured is True
+    assert first_status.health == "temporarily_unavailable"
+    assert first_status.last_failure_reason == "provider_unavailable"
+
+    second = _run(service.enhance(request, deterministic))
+    second_status = registry.catalogue().providers[0]
+    assert calls == 2
+    assert second.llm_synthesis.status == "llm_synthesis"
+    assert second.llm_synthesis.provider == "openai"
+    assert second_status.configured is True
+    assert second_status.health == "healthy"
+    assert second_status.available is True
+    assert second_status.last_failure_reason is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_reason"),
+    [
+        ("rate_limit", "rate_limit"),
+        ("temporary_outage", "provider_unavailable"),
+        ("authentication", "authentication"),
+        ("malformed_response", "malformed_response"),
+        ("timeout", "timeout"),
+        ("invalid_request", "invalid_request"),
+        ("transport_error", "transport_error"),
+    ],
+)
+def test_provider_failures_return_distinct_sanitized_metadata(
+    failure: str,
+    expected_reason: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "rate_limit":
+            return httpx.Response(429, text="private provider detail")
+        if failure == "temporary_outage":
+            return httpx.Response(503, text="private provider detail")
+        if failure == "authentication":
+            return httpx.Response(401, text="private provider detail")
+        if failure == "malformed_response":
+            return httpx.Response(200, content=b"not-json private provider detail")
+        if failure == "timeout":
+            raise httpx.ReadTimeout("private provider detail", request=request)
+        if failure == "transport_error":
+            raise httpx.ConnectError("private provider detail", request=request)
+        return httpx.Response(400, text="private provider detail")
+
+    registry = LLMProviderRegistry(
+        environment=_environment(
+            OPENAI_API_KEY="configured-key",
+            OPENAI_MODEL="configured-model",
+        ),
+        transports={"openai": httpx.MockTransport(handler)},
+    )
+    request, deterministic = _deterministic()
+    response = _run(
+        ChiefStrategistLLMService(registry).enhance(request, deterministic)
+    )
+    metadata = response.llm_synthesis
+    provider_status = registry.catalogue().providers[0]
+
+    assert metadata.status == "deterministic_fallback"
+    assert metadata.fallback_reason == expected_reason
+    assert metadata.provider == "openai"
+    assert metadata.model == "configured-model"
+    assert "private provider detail" not in metadata.model_dump_json()
+    assert provider_status.configured is True
+    expected_health = {
+        "authentication": "authentication_failed",
+        "malformed_response": "configuration_error",
+        "invalid_request": "configuration_error",
+    }.get(failure, "temporarily_unavailable")
+    assert provider_status.health == expected_health
+    assert provider_status.last_failure_reason == expected_reason
+
+
+def test_gemini_failure_diagnostic_reaches_fallback_metadata_safely() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": 400,
+                    "status": "INVALID_ARGUMENT",
+                    "message": (
+                        'Unknown field "responseJsonSchema". '
+                        "api_key=configured-key https://provider.invalid/private"
+                    ),
+                }
+            },
+        )
+
+    registry = LLMProviderRegistry(
+        environment=_environment(
+            GEMINI_API_KEY="configured-key",
+            GEMINI_MODEL="gemini-3.8-flash",
+        ),
+        transports={"gemini": httpx.MockTransport(handler)},
+    )
+    request, deterministic = _deterministic()
+    request = request.model_copy(
+        update={
+            "llm_provider_mode": "manual",
+            "llm_provider": "gemini",
+            "llm_model": "gemini-3.8-flash",
+        }
+    )
+    response = _run(
+        ChiefStrategistLLMService(registry).enhance(request, deterministic)
+    )
+
+    metadata = response.llm_synthesis
+    assert metadata.status == "deterministic_fallback"
+    assert metadata.fallback_reason == "invalid_request"
+    assert metadata.http_status_code == 400
+    assert metadata.provider_error_code == "INVALID_ARGUMENT"
+    assert metadata.provider_error_message is not None
+    assert "configured-key" not in metadata.provider_error_message
+    assert "https://" not in metadata.provider_error_message
+    assert "responseJsonSchema" not in metadata.provider_error_message
 
 
 def test_schema_failure_does_not_fall_through_to_another_provider() -> None:
@@ -308,7 +702,14 @@ def test_catalogue_is_sanitized_and_configuration_only() -> None:
     assert "never-return-this" not in payload
     assert "safe-label" in payload
     assert len(registry.catalogue().providers) == 3
-    assert registry.catalogue().providers[0].available is False
+    openai = registry.catalogue().providers[0]
+    assert openai.available is False
+    assert openai.health == "unknown"
+    assert openai.pricing_status == "known"
+    assert openai.tier == "free"
+    assert openai.eligible is True
+    assert openai.paid_authorization_required is False
+    assert openai.free_tier_quota_status == "unverified"
 
 
 def test_context_limit_fails_closed_before_provider_call(
@@ -377,6 +778,7 @@ def test_provider_errors_are_normalized_without_retries(
         model="model",
         timeout_seconds=3,
         transport=httpx.MockTransport(handler),
+        max_attempts=1,
     )
     with pytest.raises(LLMProviderError) as captured:
         _run(provider.generate(_provider_request()))
@@ -384,6 +786,103 @@ def test_provider_errors_are_normalized_without_retries(
     assert captured.value.retryable is retryable
     assert calls == 1
     assert "private-key" not in str(captured.value)
+
+
+def test_transient_provider_failure_is_retried_with_a_strict_bound() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(502)
+        return httpx.Response(
+            200,
+            json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}]},
+        )
+
+    provider = OpenAIProvider(
+        api_key="private-key",
+        model="model",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        max_attempts=2,
+        retry_base_seconds=0,
+    )
+    assert _run(provider.generate(_provider_request())).json_text == "{}"
+    assert calls == 2
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_non_retryable_provider_failures_are_attempted_once(status: int) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status)
+
+    provider = OpenAIProvider(
+        api_key="private-key",
+        model="model",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        max_attempts=3,
+        retry_base_seconds=0,
+    )
+    with pytest.raises(LLMProviderError):
+        _run(provider.generate(_provider_request()))
+    assert calls == 1
+
+
+def test_numeric_retry_after_is_respected_without_exposing_headers() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "0", "X-Private": "secret"})
+        return httpx.Response(
+            200,
+            json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}]},
+        )
+
+    provider = OpenAIProvider(
+        api_key="private-key",
+        model="model",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        max_attempts=2,
+        retry_base_seconds=0,
+    )
+    assert _run(provider.generate(_provider_request())).json_text == "{}"
+    assert calls == 2
+
+
+def test_http_date_retry_after_over_bound_stops_without_retry() -> None:
+    calls = 0
+    retry_at = format_datetime(datetime.now(UTC) + timedelta(minutes=5), usegmt=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"Retry-After": retry_at})
+
+    provider = OpenAIProvider(
+        api_key="private-key",
+        model="model",
+        timeout_seconds=3,
+        transport=httpx.MockTransport(handler),
+        max_attempts=3,
+        retry_base_seconds=0,
+        max_retry_delay_seconds=10,
+    )
+    with pytest.raises(LLMProviderError) as captured:
+        _run(provider.generate(_provider_request()))
+    assert calls == 1
+    assert captured.value.retry_after_seconds is not None
+    assert captured.value.retry_after_seconds > 10
 
 
 def test_response_size_is_bounded() -> None:
@@ -430,7 +929,7 @@ def test_manual_fallback_can_be_explicitly_enabled() -> None:
             request, create_friday_core().analyze(request)
         )
     )
-    assert calls == ["openai", "anthropic"]
+    assert calls == ["openai", "openai", "anthropic"]
     assert response.llm_synthesis.provider == "anthropic"
 
 
@@ -498,6 +997,10 @@ def test_analyze_api_accepts_manual_override_and_returns_sanitized_metadata() ->
         "provider": "openai",
         "model": "route-model",
         "fallback_reason": None,
+        "http_status_code": None,
+        "provider_error_code": None,
+        "provider_error_message": None,
+        "retry_after_seconds": None,
         "latency_ms": response.json()["llm_synthesis"]["latency_ms"],
         "analytical_stance": "insufficient_data",
     }

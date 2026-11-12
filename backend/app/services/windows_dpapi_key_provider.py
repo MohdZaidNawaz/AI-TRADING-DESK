@@ -683,6 +683,7 @@ class WindowsDpapiKeyProvider:
             self._backend = CryptographyEd25519Backend()
             self._storage_dir = storage_dir or _default_storage_dir()
             self._protector = WindowsDpapiProtector()
+            self._verify_native_dpapi_capability()
             self._acl = WindowsRestrictedAcl()
             self._storage_dir.mkdir(parents=True, exist_ok=True)
             self._acl.secure(self._storage_dir)
@@ -948,6 +949,35 @@ class WindowsDpapiKeyProvider:
         return provisional.model_copy(
             update={"protected_private_key_base64": base64.b64encode(protected).decode("ascii")}
         )
+
+    def _verify_native_dpapi_capability(self) -> None:
+        """Prove the current user can perform a non-persistent DPAPI round trip."""
+        plaintext = bytearray(os.urandom(32))
+        entropy = bytearray(os.urandom(32))
+        recovered: bytearray | None = None
+        protected: bytes | None = None
+        try:
+            protected = self._protector.protect(  # type: ignore[union-attr]
+                plaintext,
+                entropy=bytes(entropy),
+            )
+            recovered = self._protector.unprotect(  # type: ignore[union-attr]
+                protected,
+                entropy=bytes(entropy),
+            )
+            if recovered != plaintext:
+                raise PersonalKeyProviderUnavailable("Windows DPAPI capability probe failed")
+        except PersonalKeyProviderUnavailable:
+            raise
+        except Exception:
+            raise PersonalKeyProviderUnavailable("Windows DPAPI capability probe failed") from None
+        finally:
+            _zero(plaintext)
+            _zero(entropy)
+            if recovered is not None:
+                _zero(recovered)
+            if protected is not None:
+                _zero(bytearray(protected))
 
     def _decrypt(self, record: _StoredKeyRecord) -> bytearray:
         if record.state != "active" or record.protected_private_key_base64 is None:

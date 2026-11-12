@@ -3,6 +3,11 @@ import type { FormEvent } from "react"
 
 import { analyzeDeskQuery } from "../services/api"
 import type { AnalyzeResponse } from "../services/api"
+import {
+  analysisAbortMessage,
+  startAnalysisDeadline,
+} from "./analysisDeadline"
+import type { AnalysisDeadline } from "./analysisDeadline"
 import { ASSISTANT_STATE_LABELS } from "./assistantState"
 import type { AssistantVisualState } from "./assistantState"
 import { usePushToTalk } from "./usePushToTalk"
@@ -20,6 +25,11 @@ type CommandBarProps = {
   voiceSupported: boolean
 }
 
+type ActiveAnalysisRequest = {
+  controller: AbortController
+  deadline: AnalysisDeadline
+}
+
 function CommandBar({
   assistantState: state,
   command,
@@ -33,7 +43,7 @@ function CommandBar({
   voiceSupported,
 }: CommandBarProps) {
   const [message, setMessage] = useState("Deterministic research only")
-  const activeRequest = useRef<AbortController | null>(null)
+  const activeRequest = useRef<ActiveAnalysisRequest | null>(null)
 
   const transition = (nextState: AssistantVisualState) => {
     onStateChange(nextState)
@@ -47,7 +57,11 @@ function CommandBar({
   })
 
   useEffect(() => () => {
-    activeRequest.current?.abort()
+    const request = activeRequest.current
+    if (request === null) return
+    request.deadline.clear()
+    request.controller.abort()
+    activeRequest.current = null
   }, [])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -61,16 +75,32 @@ function CommandBar({
       return
     }
 
-    activeRequest.current?.abort()
+    const previousRequest = activeRequest.current
+    if (previousRequest !== null) {
+      previousRequest.deadline.clear()
+      previousRequest.controller.abort()
+    }
     const controller = new AbortController()
-    activeRequest.current = controller
-    const timeout = window.setTimeout(() => controller.abort(), 8000)
+    const deadline = startAnalysisDeadline(
+      controller,
+      (callback, delay) => window.setTimeout(callback, delay),
+      (handle) => window.clearTimeout(handle),
+    )
+    const request = { controller, deadline }
+    activeRequest.current = request
     transition("thinking")
     setMessage("Structuring the research request")
 
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 260))
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) {
+        const timeoutMessage = analysisAbortMessage(deadline.timedOut)
+        if (timeoutMessage !== null) {
+          transition("error")
+          setMessage(timeoutMessage)
+        }
+        return
+      }
       transition("analysing")
       setMessage("Coordinating deterministic specialist routes")
       const result = await analyzeDeskQuery(query, controller.signal)
@@ -82,11 +112,13 @@ function CommandBar({
       )
       if (!speechStarted) transition("idle")
     } catch {
+      const timeoutMessage = analysisAbortMessage(deadline.timedOut)
+      if (controller.signal.aborted && timeoutMessage === null) return
       transition("error")
-      setMessage(controller.signal.aborted ? "Analysis timed out" : "Analysis API unavailable")
+      setMessage(timeoutMessage ?? "Analysis API unavailable")
     } finally {
-      window.clearTimeout(timeout)
-      if (activeRequest.current === controller) activeRequest.current = null
+      deadline.clear()
+      if (activeRequest.current === request) activeRequest.current = null
     }
   }
 
